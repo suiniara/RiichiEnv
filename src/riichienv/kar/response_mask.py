@@ -80,9 +80,8 @@ def _nagashi_possible(snapshot: PublicSnapshot, actor: int, tile: int) -> bool:
 
 def _nagashi_player_possible(snapshot: PublicSnapshot, player: int, actor: int, tile: int) -> bool:
     """Return whether known public facts still permit this player's nagashi."""
-    # Only committed melds count; a pending declaration does not change this tuple.
-    if snapshot.melds[player]:
-        return False
+    # Mahjong Soul FAQ: eligibility depends on own unclaimed discards, not own
+    # calls or kans (docs/kar-nagashi-rules.md). A meld is not a negative fact.
     # A set suffices for existence, never for physical counts or called-away counts.
     known_discards = {t // 4 for t in snapshot.discard_history[player]}
     known_discards.update(t // 4 for t in snapshot.current_rivers[player])

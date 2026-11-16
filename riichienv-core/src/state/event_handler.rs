@@ -132,6 +132,9 @@ impl GameStateEventHandler for GameState {
                     self.players[actor].hand.remove(idx);
                 }
                 self.players[actor].discards.push(tile);
+                // Match live step / LogAction replay: only own public discards
+                // and other players calling them revoke nagashi eligibility.
+                self.players[actor].nagashi_eligible &= crate::types::is_terminal_tile(tile);
                 self.last_discard = Some((actor as u8, tile));
                 if !tsumogiri {
                     self.last_tedashis[actor] = Some(tile);
@@ -176,11 +179,12 @@ impl GameStateEventHandler for GameState {
             }
             MjaiEvent::Pon {
                 actor,
+                target,
                 pai,
                 consumed,
-                ..
             } => {
                 let tile = parse_mjai_tile(&pai);
+                self.players[target].nagashi_eligible = false;
                 self.current_player = actor as u8;
                 let c1 = parse_mjai_tile(&consumed[0]);
                 let c2 = parse_mjai_tile(&consumed[1]);
@@ -211,11 +215,12 @@ impl GameStateEventHandler for GameState {
             }
             MjaiEvent::Chi {
                 actor,
+                target,
                 pai,
                 consumed,
-                ..
             } => {
                 let tile = parse_mjai_tile(&pai);
+                self.players[target].nagashi_eligible = false;
                 self.current_player = actor as u8;
                 let c1 = parse_mjai_tile(&consumed[0]);
                 let c2 = parse_mjai_tile(&consumed[1]);
@@ -260,11 +265,12 @@ impl GameStateEventHandler for GameState {
             }
             MjaiEvent::Kan {
                 actor,
+                target,
                 pai,
                 consumed,
-                ..
             } => {
                 let tile = parse_mjai_tile(&pai);
+                self.players[target].nagashi_eligible = false;
                 self.current_player = actor as u8;
                 let mut tiles = vec![tile];
                 for c in &consumed {

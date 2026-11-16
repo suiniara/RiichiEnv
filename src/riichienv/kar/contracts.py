@@ -12,7 +12,7 @@ REFERENCE_SCHEMA_ID = "kar-v1.2.2"
 SCHEMA_ID = "kar-riichienv-v1"
 ENGINE_COMMIT = "0ee1236a283b15508f3ac28407027f340b81e1de"
 SCHEMA_OVERLAY_SHA256 = "90286d088014eb72e9f99f1b3c35d0a7553bcf5fec99e8aeb3ba5f02a010716a"
-RESPONSE_MASK_VERSION = "public_rule_response_mask_v1"
+RESPONSE_MASK_VERSION = "public_rule_response_mask_v2_mjsoul_nagashi"
 GAME_MODE = "4p-red-half"
 MAX_CANDIDATES = 32
 KIND_NAMES = (
@@ -83,7 +83,9 @@ def content_hash(value: Any) -> str:
 
 @dataclass(frozen=True)
 class Ruleset:
-    name: str = "mahjong_soul_4p_red_half_v1"
+    # v2 makes the FAQ-backed nagashi interpretation explicit in every artifact
+    # binding; own calls/kans do not disqualify (docs/kar-nagashi-rules.md).
+    name: str = "mahjong_soul_4p_red_half_v2"
     engine_commit: str = ENGINE_COMMIT
     game_mode: str = GAME_MODE
     rank_tiebreak: str = "initial_seat_order_east_south_west_north"

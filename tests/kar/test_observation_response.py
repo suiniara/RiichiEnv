@@ -227,13 +227,16 @@ def test_nagashi_no_meld_and_only_terminal_honor_discards_remains_possible():
     ],
     ids=["B-chi", "C-pon", "D-daiminkan", "E-ankan", "F-committed-kakan"],
 )
-def test_nagashi_any_committed_meld_disqualifies_that_player(player, kind, tiles):
+def test_nagashi_own_committed_meld_does_not_disqualify_under_mjsoul(player, kind, tiles):
+    # Mahjong Soul FAQ id=47 defines eligibility by own unclaimed discards,
+    # not by menzen or meld count: https://mahjongsoul.com/faq/
     state = _nagashi_snapshot(player)
     melds = list(state.melds)
     melds[player] = (PublicMeld(kind, tuple(convert.mjai_to_tid(tile) for tile in tiles)),)
     called = replace(state, melds=tuple(melds))
-    assert public_rule_response_mask(called, _nagashi_discard("1m"))[Response.NAGASHI_MANGAN] is False
-    # Disqualification must not erase history or depend on a changed river.
+    assert _nagashi_player_possible(called, player, actor=0, tile=0) is True
+    assert public_rule_response_mask(called, _nagashi_discard("1m"))[Response.NAGASHI_MANGAN] is True
+    # Preserve the original scenarios and assert their containers stay unchanged.
     assert called.discard_history == state.discard_history
     assert called.current_rivers == state.current_rivers
 
@@ -248,16 +251,16 @@ def test_nagashi_pending_kakan_preserves_the_existing_pon_not_a_committed_kan():
         ]
     )
     before = view.snapshot()
-    # The candidate is 2m: actor 0 cannot qualify; the other players are
-    # disqualified by a called-away discard, the existing PON, or a middle tile.
-    assert _nagashi_possible(before, actor=0, tile=1) is False
+    # Only actor 0's 2m candidate, P1's called-away discard and P3's middle
+    # tile disqualify those seats. P2's existing PON still permits nagashi.
+    assert _nagashi_possible(before, actor=0, tile=1) is True
     view.apply_event({"type": "kakan", "actor": 2, "pai": "9p"})
     pending = view.snapshot()
     assert pending.pending_kan_actor == 2 and pending.pending_kan_kind == "kakan"
     assert pending.melds == before.melds
     assert pending.melds[2][0].kind == "pon" and len(pending.melds[2][0].tiles) == 3
     assert pending.known_counts()[17] == 3
-    assert _nagashi_possible(pending, actor=0, tile=1) is False
+    assert _nagashi_possible(pending, actor=0, tile=1) is True
     # A kan response window is still not a valid public discard-mask entry.
     with pytest.raises(ValueError, match="pending kan"):
         public_rule_response_mask(pending, _nagashi_discard("2m"))
@@ -348,12 +351,13 @@ def test_nagashi_incomplete_history_without_definite_disqualifiers(actor, known_
 
 
 @pytest.mark.parametrize("actor", range(4))
-def test_nagashi_incomplete_history_with_existing_meld_disqualification(actor):
+def test_nagashi_incomplete_history_own_melds_do_not_fabricate_disqualification(actor):
+    # Official FAQ's unclaimed-discard condition does not add a menzen rule.
     state = _nagashi_incomplete_snapshot(actor)
     melds = tuple((PublicMeld("pon", (convert.mjai_to_tid(wind),) * 3),) for wind in ("E", "S", "W", "N"))
     called = replace(state, melds=melds)
-    assert all(not _nagashi_player_possible(called, player, actor, tile=0) for player in range(4))
-    assert public_rule_response_mask(called, _nagashi_discard("1m"))[Response.NAGASHI_MANGAN] is False
+    assert all(_nagashi_player_possible(called, player, actor, tile=0) for player in range(4))
+    assert public_rule_response_mask(called, _nagashi_discard("1m"))[Response.NAGASHI_MANGAN] is True
     assert called.discard_history == state.discard_history and called.current_rivers == state.current_rivers
 
 
