@@ -313,15 +313,137 @@ def test_nagashi_all_four_players_are_independent_candidates():
     assert public_rule_response_mask(state, _nagashi_discard("2m"))[Response.NAGASHI_MANGAN] is True
 
 
-def test_nagashi_incomplete_history_remains_possible_unless_all_players_have_melds():
-    state = replace(_nagashi_snapshot(), history_complete=False)
-    assert public_rule_response_mask(state, _nagashi_discard("2m"))[Response.NAGASHI_MANGAN] is True
-    melds = tuple((PublicMeld("pon", (convert.mjai_to_tid(wind),) * 3),) for wind in ("E", "S", "W", "N"))
-    called = replace(state, melds=melds)
-    assert public_rule_response_mask(called, _nagashi_discard("1m"))[Response.NAGASHI_MANGAN] is False
+def _nagashi_incomplete_snapshot(actor):
+    history = ((convert.mjai_to_tid("9p"),),) * 4
+    return replace(
+        _nagashi_snapshot(),
+        observer_player_id=actor,
+        history_complete=False,
+        discard_history=history,
+        current_rivers=history,
+    )
+
+
+@pytest.mark.parametrize("actor", range(4))
+def test_nagashi_incomplete_history_with_definite_disqualifiers(actor):
+    state = replace(_nagashi_snapshot(actor), observer_player_id=actor, history_complete=False)
+    # The old early return ignored known facts: the actor's 2m candidate and
+    # every other player's observed 5s. Missing events do not invalidate either.
+    assert all(not _nagashi_player_possible(state, player, actor, tile=1) for player in range(4))
+    assert _nagashi_possible(state, actor, tile=1) is False
+    assert public_rule_response_mask(state, _nagashi_discard("2m"))[Response.NAGASHI_MANGAN] is False
+
+
+@pytest.mark.parametrize("actor", range(4))
+@pytest.mark.parametrize("known_tiles", [(), ("1m", "9p", "E")], ids=["empty", "terminals-and-honor"])
+def test_nagashi_incomplete_history_without_definite_disqualifiers(actor, known_tiles):
+    history = (tuple(convert.mjai_to_tid(tile) for tile in known_tiles),) * 4
+    state = replace(_nagashi_incomplete_snapshot(actor), discard_history=history, current_rivers=history)
+    assert all(_nagashi_player_possible(state, player, actor, tile=0) for player in range(4))
+    assert _nagashi_possible(state, actor, tile=0) is True
+    assert public_rule_response_mask(state, _nagashi_discard("1m"))[Response.NAGASHI_MANGAN] is True
     assert not public_rule_response_mask(state, _nagashi_discard("1m"), replace(MJSOUL_RULESET, nagashi_mangan=False))[
         Response.NAGASHI_MANGAN
     ]
+
+
+@pytest.mark.parametrize("actor", range(4))
+def test_nagashi_incomplete_history_with_existing_meld_disqualification(actor):
+    state = _nagashi_incomplete_snapshot(actor)
+    melds = tuple((PublicMeld("pon", (convert.mjai_to_tid(wind),) * 3),) for wind in ("E", "S", "W", "N"))
+    called = replace(state, melds=melds)
+    assert all(not _nagashi_player_possible(called, player, actor, tile=0) for player in range(4))
+    assert public_rule_response_mask(called, _nagashi_discard("1m"))[Response.NAGASHI_MANGAN] is False
+    assert called.discard_history == state.discard_history and called.current_rivers == state.current_rivers
+
+
+@pytest.mark.parametrize("actor", range(4))
+@pytest.mark.parametrize("player", range(4))
+@pytest.mark.parametrize("source", ["history", "river"])
+def test_nagashi_incomplete_history_rejects_each_known_middle_discard_source(actor, player, source):
+    state = _nagashi_incomplete_snapshot(actor)
+    history, rivers = list(state.discard_history), list(state.current_rivers)
+    middle = convert.mjai_to_tid("2m")
+    # PublicSnapshot has no cross-container validation. A partial view can
+    # retain either known public record; the other container cannot erase it.
+    history[player] = (middle,) if source == "history" else ()
+    rivers[player] = (middle,) if source == "river" else ()
+    state = replace(state, discard_history=tuple(history), current_rivers=tuple(rivers))
+    assert not state.melds[player]
+    assert _nagashi_player_possible(state, player, actor, tile=0) is False
+
+
+@pytest.mark.parametrize("actor", range(4))
+@pytest.mark.parametrize("player", range(4))
+def test_nagashi_incomplete_history_middle_candidate_only_disqualifies_its_actor(actor, player):
+    state = _nagashi_incomplete_snapshot(actor)
+    assert _nagashi_player_possible(state, player, actor, tile=1) is (player != actor)
+
+
+@pytest.mark.parametrize("actor", range(4))
+@pytest.mark.parametrize("player", range(4))
+@pytest.mark.parametrize(
+    "history_tiles,river_tiles",
+    [(("9p", "E"), ("E",)), (("E",), ("9p", "E"))],
+    ids=["history-longer", "river-longer"],
+)
+def test_nagashi_incomplete_history_length_difference_alone_is_not_called_away(
+    actor, player, history_tiles, river_tiles
+):
+    state = _nagashi_incomplete_snapshot(actor)
+    history, rivers = list(state.discard_history), list(state.current_rivers)
+    history[player] = tuple(convert.mjai_to_tid(tile) for tile in history_tiles)
+    rivers[player] = tuple(convert.mjai_to_tid(tile) for tile in river_tiles)
+    state = replace(state, discard_history=tuple(history), current_rivers=tuple(rivers))
+    assert len(state.discard_history[player]) != len(state.current_rivers[player])
+    assert _nagashi_player_possible(state, player, actor, tile=0) is True
+
+
+@pytest.mark.parametrize("actor", range(4))
+@pytest.mark.parametrize("relative", [1, 2, 3])
+def test_nagashi_incomplete_history_any_other_possible_player_keeps_category(actor, relative):
+    eligible_player = (actor + relative) % 4
+    state = _nagashi_incomplete_snapshot(actor)
+    history = tuple(
+        (convert.mjai_to_tid("9p" if player in {actor, eligible_player} else "5s"),)
+        for player in range(4)
+    )
+    state = replace(state, discard_history=history, current_rivers=history)
+    # Only the candidate disqualifies the actor; exactly one other seat remains.
+    expected = [player == eligible_player for player in range(4)]
+    assert [_nagashi_player_possible(state, player, actor, tile=1) for player in range(4)] == expected
+    assert _nagashi_possible(state, actor, tile=1) is True
+    assert public_rule_response_mask(state, _nagashi_discard("2m"))[Response.NAGASHI_MANGAN] is True
+
+
+@pytest.mark.parametrize("actor", range(4))
+@pytest.mark.parametrize("history_complete", [True, False])
+@pytest.mark.parametrize("source", ["history", "river", "candidate"])
+def test_nagashi_evidence_checks_are_read_only_and_preserve_other_response_categories(actor, history_complete, source):
+    control = replace(_nagashi_snapshot(actor), observer_player_id=actor, history_complete=history_complete)
+    melds = list(control.melds)
+    melds[(actor + 1) % 4] = (PublicMeld("pon", (convert.mjai_to_tid("E"),) * 3),)
+    control = replace(control, melds=tuple(melds))
+    history, rivers = list(control.discard_history), list(control.current_rivers)
+    if source == "history":
+        history[actor] = (convert.mjai_to_tid("2m"),)
+    elif source == "river":
+        rivers[actor] = (convert.mjai_to_tid("2m"),)
+    state = replace(control, discard_history=tuple(history), current_rivers=tuple(rivers))
+    candidate = _nagashi_discard("2m" if source == "candidate" else "1m")
+    before, control_before = state.to_bytes(), control.to_bytes()
+    base_tile = convert.mjai_to_tid("2m" if source == "candidate" else "1m") // 4
+    for player in range(4):
+        assert _nagashi_player_possible(state, player, actor, base_tile) is False
+    assert _nagashi_possible(state, actor, base_tile) is False
+    expected = public_rule_response_mask(control, _nagashi_discard("1m"))
+    actual = public_rule_response_mask(state, candidate)
+    assert expected[Response.NAGASHI_MANGAN] is True
+    assert actual[Response.NAGASHI_MANGAN] is False
+    assert all(actual[index] == value for index, value in enumerate(expected) if index != Response.NAGASHI_MANGAN)
+    assert state.to_bytes() == before and control.to_bytes() == control_before
+    assert state.discard_history == tuple(history) and state.current_rivers == tuple(rivers)
+    assert state.melds == control.melds
 
 
 @pytest.mark.parametrize("history_complete", [True, False])

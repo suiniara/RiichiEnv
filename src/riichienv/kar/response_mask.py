@@ -79,17 +79,20 @@ def _nagashi_possible(snapshot: PublicSnapshot, actor: int, tile: int) -> bool:
 
 
 def _nagashi_player_possible(snapshot: PublicSnapshot, player: int, actor: int, tile: int) -> bool:
+    """Return whether known public facts still permit this player's nagashi."""
     # Only committed melds count; a pending declaration does not change this tuple.
     if snapshot.melds[player]:
         return False
-    if not snapshot.history_complete:
-        return True  # Unknown history cannot prove this otherwise eligible player impossible.
-    history = [t // 4 for t in snapshot.discard_history[player]]
+    # A set suffices for existence, never for physical counts or called-away counts.
+    known_discards = {t // 4 for t in snapshot.discard_history[player]}
+    known_discards.update(t // 4 for t in snapshot.current_rivers[player])
     if player == actor:
-        history.append(tile)
-    if len(snapshot.current_rivers[player]) != len(snapshot.discard_history[player]):
+        known_discards.add(tile)
+    if any(t < 27 and t % 9 not in {0, 8} for t in known_discards):
         return False
-    if any(t < 27 and t % 9 not in {0, 8} for t in history):
+    if not snapshot.history_complete:
+        return True  # Missing past events do not invalidate the known public facts above.
+    if len(snapshot.current_rivers[player]) != len(snapshot.discard_history[player]):
         return False
     return True
 
