@@ -3,10 +3,17 @@ from dataclasses import replace
 import pytest
 
 from riichienv import convert
+from riichienv.kar.actions import tile136_to_tile37
 from riichienv.kar.contracts import MJSOUL_RULESET, Response
-from riichienv.kar.observation import ObserverLedger, project_observer
+from riichienv.kar.observation import ObserverLedger, PublicMeld, project_observer
 from riichienv.kar.response import resolve_discard_response
-from riichienv.kar.response_mask import public_rule_response_mask, validate_response_target
+from riichienv.kar.response_mask import (
+    _nagashi_player_possible,
+    _nagashi_possible,
+    public_rule_response_mask,
+    validate_response_target,
+)
+from riichienv.kar.tokenize import TokenizationUnavailableError, encode_prefix
 
 
 def round_events(own=None):
@@ -184,3 +191,163 @@ def test_unknown_observer_hand_does_not_make_known_counts():
     assert state.physical_ledger_complete is False
     assert state.known_counts() is None
     assert convert.mjai_to_tid("5pr") // 4 == 13
+
+
+def _nagashi_discard(tile):
+    return tile136_to_tile37(convert.mjai_to_tid(tile)) * 4
+
+
+def _nagashi_snapshot(eligible_player=0):
+    history = tuple((convert.mjai_to_tid("9p" if player == eligible_player else "5s"),) for player in range(4))
+    return replace(
+        ledger(round_events()).snapshot(),
+        discard_history=history,
+        current_rivers=history,
+        remaining_draws=0,
+    )
+
+
+def test_nagashi_no_meld_and_only_terminal_honor_discards_remains_possible():
+    state = _nagashi_snapshot()
+    original_history = state.discard_history
+    assert not any(state.melds)
+    assert public_rule_response_mask(state, _nagashi_discard("1m"))[Response.NAGASHI_MANGAN] is True
+    assert state.discard_history == original_history
+
+
+@pytest.mark.parametrize("player", range(4))
+@pytest.mark.parametrize(
+    "kind,tiles",
+    [
+        ("chi", ("1s", "2s", "3s")),
+        ("pon", ("P",) * 3),
+        ("daiminkan", ("P",) * 4),
+        ("ankan", ("P",) * 4),
+        ("kakan", ("P",) * 4),
+    ],
+    ids=["B-chi", "C-pon", "D-daiminkan", "E-ankan", "F-committed-kakan"],
+)
+def test_nagashi_any_committed_meld_disqualifies_that_player(player, kind, tiles):
+    state = _nagashi_snapshot(player)
+    melds = list(state.melds)
+    melds[player] = (PublicMeld(kind, tuple(convert.mjai_to_tid(tile) for tile in tiles)),)
+    called = replace(state, melds=tuple(melds))
+    assert public_rule_response_mask(called, _nagashi_discard("1m"))[Response.NAGASHI_MANGAN] is False
+    # Disqualification must not erase history or depend on a changed river.
+    assert called.discard_history == state.discard_history
+    assert called.current_rivers == state.current_rivers
+
+
+def test_nagashi_pending_kakan_preserves_the_existing_pon_not_a_committed_kan():
+    view = ledger(
+        round_events()
+        + [
+            {"type": "dahai", "actor": 3, "pai": "5s", "tsumogiri": False},
+            {"type": "dahai", "actor": 1, "pai": "9p", "tsumogiri": False},
+            {"type": "pon", "actor": 2, "target": 1, "pai": "9p", "consumed": ["9p", "9p"]},
+        ]
+    )
+    before = view.snapshot()
+    # The candidate is 2m: actor 0 cannot qualify; the other players are
+    # disqualified by a called-away discard, the existing PON, or a middle tile.
+    assert _nagashi_possible(before, actor=0, tile=1) is False
+    view.apply_event({"type": "kakan", "actor": 2, "pai": "9p"})
+    pending = view.snapshot()
+    assert pending.pending_kan_actor == 2 and pending.pending_kan_kind == "kakan"
+    assert pending.melds == before.melds
+    assert pending.melds[2][0].kind == "pon" and len(pending.melds[2][0].tiles) == 3
+    assert pending.known_counts()[17] == 3
+    assert _nagashi_possible(pending, actor=0, tile=1) is False
+    # A kan response window is still not a valid public discard-mask entry.
+    with pytest.raises(ValueError, match="pending kan"):
+        public_rule_response_mask(pending, _nagashi_discard("2m"))
+
+
+@pytest.mark.parametrize("kind", ["chi", "pon", "daiminkan"])
+def test_nagashi_called_away_terminal_stays_in_history_but_disqualifies_owner(kind):
+    state = _nagashi_snapshot(eligible_player=1)
+    rivers = list(state.current_rivers)
+    rivers[1] = ()
+    tiles = ("7p", "8p", "9p") if kind == "chi" else ("9p",) * (4 if kind == "daiminkan" else 3)
+    melds = list(state.melds)
+    melds[2] = (PublicMeld(kind, tuple(convert.mjai_to_tid(tile) for tile in tiles), source=1),)
+    called = replace(state, current_rivers=tuple(rivers), melds=tuple(melds))
+    assert called.discard_history[1] == (convert.mjai_to_tid("9p"),)
+    assert called.current_rivers[1] == () and not called.melds[1]
+    assert public_rule_response_mask(called, _nagashi_discard("1m"))[Response.NAGASHI_MANGAN] is False
+
+
+@pytest.mark.parametrize("middle_source", ["history", "candidate"])
+def test_nagashi_middle_tile_in_history_or_current_candidate_disqualifies(middle_source):
+    state = _nagashi_snapshot()
+    candidate = _nagashi_discard("2m" if middle_source == "candidate" else "1m")
+    if middle_source == "history":
+        history = ((convert.mjai_to_tid("2m"),), *state.discard_history[1:])
+        state = replace(state, discard_history=history, current_rivers=history)
+    assert public_rule_response_mask(state, candidate)[Response.NAGASHI_MANGAN] is False
+
+
+@pytest.mark.parametrize("eligible_player", range(4))
+def test_nagashi_checks_all_players_and_adds_candidate_only_to_its_actor(eligible_player):
+    state = _nagashi_snapshot(eligible_player)
+    assert public_rule_response_mask(state, _nagashi_discard("1m"))[Response.NAGASHI_MANGAN] is True
+    assert public_rule_response_mask(state, _nagashi_discard("2m"))[Response.NAGASHI_MANGAN] is (eligible_player != 0)
+    for player in range(4):
+        assert _nagashi_player_possible(state, player, actor=0, tile=0) is (player == eligible_player)
+    # Another player's meld must not disqualify the eligible player.
+    melds = list(state.melds)
+    melds[(eligible_player + 1) % 4] = (PublicMeld("pon", (convert.mjai_to_tid("P"),) * 3),)
+    assert (
+        public_rule_response_mask(replace(state, melds=tuple(melds)), _nagashi_discard("1m"))[Response.NAGASHI_MANGAN]
+        is True
+    )
+
+
+def test_nagashi_all_four_players_are_independent_candidates():
+    state = _nagashi_snapshot()
+    history = ((convert.mjai_to_tid("9p"),),) * 4
+    state = replace(state, discard_history=history, current_rivers=history)
+    assert all(_nagashi_player_possible(state, player, actor=0, tile=0) for player in range(4))
+    assert _nagashi_player_possible(state, 0, actor=0, tile=1) is False
+    assert all(_nagashi_player_possible(state, player, actor=0, tile=1) for player in (1, 2, 3))
+    assert public_rule_response_mask(state, _nagashi_discard("2m"))[Response.NAGASHI_MANGAN] is True
+
+
+def test_nagashi_incomplete_history_remains_possible_unless_all_players_have_melds():
+    state = replace(_nagashi_snapshot(), history_complete=False)
+    assert public_rule_response_mask(state, _nagashi_discard("2m"))[Response.NAGASHI_MANGAN] is True
+    melds = tuple((PublicMeld("pon", (convert.mjai_to_tid(wind),) * 3),) for wind in ("E", "S", "W", "N"))
+    called = replace(state, melds=melds)
+    assert public_rule_response_mask(called, _nagashi_discard("1m"))[Response.NAGASHI_MANGAN] is False
+    assert not public_rule_response_mask(state, _nagashi_discard("1m"), replace(MJSOUL_RULESET, nagashi_mangan=False))[
+        Response.NAGASHI_MANGAN
+    ]
+
+
+@pytest.mark.parametrize("history_complete", [True, False])
+@pytest.mark.parametrize("physical_ledger_complete", [True, False])
+@pytest.mark.parametrize("visibility_complete", [True, False])
+def test_snapshot_known_counts_requires_physical_and_visibility_not_history(
+    history_complete, physical_ledger_complete, visibility_complete
+):
+    state = replace(
+        ledger(round_events()).snapshot(),
+        history_complete=history_complete,
+        physical_ledger_complete=physical_ledger_complete,
+        visibility_complete=visibility_complete,
+    )
+    counts = state.known_counts()
+    if physical_ledger_complete and visibility_complete:
+        assert counts is not None and len(counts) == 34
+        assert counts[0] == 1 and sum(counts) == 14
+    else:
+        assert counts is None
+
+
+@pytest.mark.parametrize("missing", ["history_complete", "physical_ledger_complete", "visibility_complete"])
+def test_tokenizer_still_rejects_each_incomplete_prefix_flag(missing):
+    state = ledger(round_events() + [{"type": "tsumo", "actor": 0, "pai": "9p"}]).snapshot()
+    candidates = (_nagashi_discard("1m"), _nagashi_discard("2m"))
+    assert encode_prefix(state, candidates).rows
+    with pytest.raises(TokenizationUnavailableError, match="complete audited observer prefix"):
+        encode_prefix(replace(state, **{missing: False}), candidates)

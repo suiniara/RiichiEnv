@@ -1,8 +1,9 @@
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
-from riichienv import GameRule, RiichiEnv
+from riichienv import GameRule, RiichiEnv, convert
+from riichienv.kar.observation import ObserverLedger, extract_rule_features
 from riichienv.kar.rule_features import (
     OTHER_WAITS_BY_RANK,
     RYANMEN_PAIRS_BY_RANK,
@@ -299,3 +300,88 @@ def test_rank_features_reject_unknown_observer():
 def test_rank_features_require_raw_integer_scores(score):
     with pytest.raises(ValueError, match="raw integer"):
         current_rank_features([score, 25000, 25000, 25000], [0, 1, 2, 3], 0)
+
+
+def _rule_feature_snapshot():
+    view = ObserverLedger(0, (0, 1, 2, 3))
+    view.apply_event({"type": "start_game"})
+    view.apply_event(
+        {
+            "type": "start_kyoku",
+            "bakaze": "E",
+            "kyoku": 1,
+            "honba": 0,
+            "kyotaku": 0,
+            "oya": 0,
+            "scores": [25000] * 4,
+            "dora_marker": "5p",
+            "tehais": [
+                ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "3p", "5p", "C"],
+                ["?"] * 13,
+                ["?"] * 13,
+                ["?"] * 13,
+            ],
+        }
+    )
+    history = (
+        (),
+        tuple(convert.mjai_to_tid(tile) for tile in ("2p", "8p", "5p")),
+        (convert.mjai_to_tid("5p"),),
+        (),
+    )
+    return replace(view.snapshot(), discard_history=history, current_rivers=history)
+
+
+@pytest.mark.parametrize("history_complete", [True, False])
+@pytest.mark.parametrize("physical_ledger_complete", [True, False])
+@pytest.mark.parametrize("visibility_complete", [True, False])
+def test_rule_features_preserve_each_completeness_dependency(
+    history_complete, physical_ledger_complete, visibility_complete
+):
+    state = replace(
+        _rule_feature_snapshot(),
+        history_complete=history_complete,
+        physical_ledger_complete=physical_ledger_complete,
+        visibility_complete=visibility_complete,
+    )
+    original_history = state.discard_history
+    counts = state.known_counts()
+    reliable_counts = physical_ledger_complete and visibility_complete
+    if reliable_counts:
+        assert counts is not None and len(counts) == 34 and counts[13] == 4
+    else:
+        assert counts is None
+    features = extract_rule_features(state)
+    flags = features["hand_count_flags"]
+    assert len(flags) == 34 and all(len(row) == 16 for row in flags)
+    # Genbutsu P1/P2/P3 then Full Suji P1/P2/P3: 0=Unknown, 1=False, 2=True.
+    assert flags[13][:6] == ((2, 2, 1, 2, 1, 1) if history_complete else (0,) * 6)
+    assert flags[13][6] == (2 if reliable_counts else 0)
+    # The explicitly given public 5p indicator still identifies 6p as dora,
+    # independently of missing history or unrelated physical/visibility gaps.
+    assert flags[14][7] == 2 and flags[13][7] == 1
+    assert all(row[8:] == (0,) * 8 for row in flags)
+    assert state.discard_history == original_history
+
+
+def test_missing_physical_information_keeps_complete_public_discard_features():
+    state = replace(_rule_feature_snapshot(), physical_ledger_complete=False)
+    features = extract_rule_features(state)["hand_count_flags"]
+    assert features[13][:6] == (2, 2, 1, 2, 1, 1)
+    assert all(row[6] == 0 for row in features)
+    assert state.discard_history[1]
+
+
+def test_missing_history_keeps_physical_counts_but_not_genbutsu_or_full_suji():
+    state = replace(_rule_feature_snapshot(), history_complete=False)
+    assert state.known_counts()[13] == 4
+    flags = extract_rule_features(state)["hand_count_flags"]
+    assert all(row[:6] == (0,) * 6 for row in flags)
+    assert flags[13][6] == 2
+
+
+def test_no_public_dora_indicator_is_unknown_not_confirmed_non_dora():
+    state = replace(_rule_feature_snapshot(), dora_indicators=(), physical_ledger_complete=False)
+    flags = extract_rule_features(state)["hand_count_flags"]
+    assert all(row[7] == 0 for row in flags)
+    assert flags[13][:6] == (2, 2, 1, 2, 1, 1)

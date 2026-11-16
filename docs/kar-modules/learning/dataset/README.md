@@ -22,6 +22,18 @@ SQLite 以只读方式使用；每个进程自己的连接与有限历史缓存�
 
 读取数据不自动启动训练，但打开/核验大型文件仍有 I/O 副作用。无独立 CLI，不写回 SQLite，不修改 raw。
 
+## 私有回归夹具选择与更新
+
+`tests/kar/m1/test_dataset.py` 可通过 `KAR_M1_TEST_DATASET_DIR` 显式选择测试数据；未指定时优先使用工作区 `kar-m1-data/cpu-current-contract`，只在它不存在时回退到历史 `cpu-probe-v2`。选中目录不完整或合同过期仍然报错，不能因为有旧资产而静默 skip；只有没有配置且两处私有资产都不存在时才沿用缺资产 skip。
+
+当前合同数据必须从真实 M0 验收清单重新 replay/编码，不能改旧 manifest 字段假装兼容。以下是数据重导出，不是模型训练，输出目录须全新且位于 raw 目录之外：
+
+```bash
+uv run --no-sync python -m riichienv.kar export-data --acceptance ../kar-m0-reports/final-acceptance-20261116 --proto ../kar-m0-assets/mahjongsoul.proto --output ../kar-m1-data/cpu-current-contract --train-games 6 --validation-games 2 --test-games 0
+```
+
+历史 raw 与旧导出保留不变。若上述新目录已存在，选择另一全新目录并用显式变量指定，不能覆盖旧证据或放宽 `DecisionDataset` 校验。
+
 ## 错误、测试与状态
 
-缺 manifest、数据库 hash 或合同冲突、未知 split、非法 sample/候选/标签会拒绝，不恢复成随机样本。对应 [m1/test_dataset.py](../../../../tests/kar/m1/test_dataset.py)、[production/test_full_trainer.py](../../../../tests/kar/production/test_full_trainer.py)。本轮未打开实际数据集或运行测试。
+缺 manifest、数据库 hash 或合同冲突、未知 split、非法 sample/候选/标签会拒绝，不恢复成随机样本。对应 [m1/test_dataset.py](../../../../tests/kar/m1/test_dataset.py)、[production/test_full_trainer.py](../../../../tests/kar/production/test_full_trainer.py)。示例不授予运行或更新许可；本轮未运行训练或 GPU 作业，实际 CPU 数据与测试验收以绑定来源和源码版本的结果为准。

@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,12 +20,60 @@ from riichienv.kar.observation import ObserverLedger
 from riichienv.kar.schema import decode_token
 
 
+def _private_dataset_path(workspace, explicit=None):
+    data_root = workspace / "kar-m1-data"
+    candidates = (
+        (Path(explicit).expanduser(),)
+        if explicit is not None
+        else (data_root / "cpu-current-contract", data_root / "cpu-probe-v2")
+    )
+    for path in candidates:
+        if explicit is not None or path.exists():
+            if not (path / "manifest.json").is_file():
+                raise ValueError(f"Selected private M1 fixture is missing or incomplete: {path}")
+            # Selection is not compatibility: DecisionDataset still checks every
+            # manifest/database contract, including explicitly selected legacy data.
+            return path
+    return None
+
+
 @pytest.fixture(scope="module")
 def real_dataset_dir():
-    path = Path(__file__).parents[4] / "kar-m1-data" / "cpu-probe-v2"
-    if not (path / "manifest.json").is_file():
+    path = _private_dataset_path(Path(__file__).parents[4], os.environ.get("KAR_M1_TEST_DATASET_DIR"))
+    if path is None:
         pytest.skip("Private M1 CPU data has not been exported")
     return path
+
+
+def test_private_fixture_selection_prefers_current_without_bypassing_validation(tmp_path):
+    root = tmp_path / "kar-m1-data"
+    legacy = root / "cpu-probe-v2"
+    legacy.mkdir(parents=True)
+    (legacy / "manifest.json").write_text("{}", encoding="utf-8")
+    assert _private_dataset_path(tmp_path) == legacy
+    with pytest.raises(ValueError, match="incomplete|changed"):
+        DecisionDataset(legacy, "train")
+    current = root / "cpu-current-contract"
+    current.mkdir()
+    (current / "manifest.json").write_text("{}", encoding="utf-8")
+    assert _private_dataset_path(tmp_path) == current
+    assert _private_dataset_path(tmp_path, explicit=str(legacy)) == legacy
+    with pytest.raises(ValueError, match="incomplete|changed"):
+        DecisionDataset(current, "train")
+
+
+@pytest.mark.parametrize("selection", ["explicit-missing", "incomplete-current", "incomplete-legacy"])
+def test_missing_or_incomplete_selected_private_fixture_is_not_skipped(tmp_path, selection):
+    explicit = str(tmp_path / "explicit") if selection == "explicit-missing" else None
+    if explicit is None:
+        name = "cpu-current-contract" if selection == "incomplete-current" else "cpu-probe-v2"
+        (tmp_path / "kar-m1-data" / name).mkdir(parents=True)
+    with pytest.raises(ValueError, match="missing or incomplete"):
+        _private_dataset_path(tmp_path, explicit=explicit)
+
+
+def test_private_fixture_selection_reports_absence_only_when_no_assets_exist(tmp_path):
+    assert _private_dataset_path(tmp_path) is None
 
 
 def test_binary_vectorized_dtype_matches_frozen_schema(make_sample):

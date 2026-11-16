@@ -75,16 +75,23 @@ def public_rule_response_mask(
 
 
 def _nagashi_possible(snapshot: PublicSnapshot, actor: int, tile: int) -> bool:
+    return any(_nagashi_player_possible(snapshot, player, actor, tile) for player in range(4))
+
+
+def _nagashi_player_possible(snapshot: PublicSnapshot, player: int, actor: int, tile: int) -> bool:
+    # Only committed melds count; a pending declaration does not change this tuple.
+    if snapshot.melds[player]:
+        return False
     if not snapshot.history_complete:
-        return True
-    for player in range(4):
-        history = [t // 4 for t in snapshot.discard_history[player]]
-        if player == actor:
-            history.append(tile)
-        called_away = len(snapshot.current_rivers[player]) != len(snapshot.discard_history[player])
-        if not called_away and all(t >= 27 or t % 9 in {0, 8} for t in history):
-            return True
-    return False
+        return True  # Unknown history cannot prove this otherwise eligible player impossible.
+    history = [t // 4 for t in snapshot.discard_history[player]]
+    if player == actor:
+        history.append(tile)
+    if len(snapshot.current_rivers[player]) != len(snapshot.discard_history[player]):
+        return False
+    if any(t < 27 and t % 9 not in {0, 8} for t in history):
+        return False
+    return True
 
 
 def validate_response_target(allowed: tuple[bool, ...], target: int) -> None:

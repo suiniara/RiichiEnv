@@ -74,7 +74,12 @@ class PublicSnapshot:
         return canonical_bytes(asdict(self))
 
     def known_counts(self) -> tuple[int, ...] | None:
-        if not self.physical_ledger_complete:
+        """Count physical visible regions only when both ledger and visibility are complete.
+
+        Public discard history has its own completeness flag and is not required
+        for this count: called-away tiles live in melds, not the current rivers.
+        """
+        if not self.physical_ledger_complete or not self.visibility_complete:
             return None
         return known_count_base34(
             [t // 4 for t in self.hand],
@@ -397,6 +402,7 @@ def project_observer(
 
 
 def extract_rule_features(snapshot: PublicSnapshot) -> dict[str, Any]:
+    """Preserve per-feature dependencies: history, physical counts and given dora."""
     if snapshot.remaining_draws is None:
         raise ValueError("Rule features require an initialized round snapshot")
     counts = snapshot.known_counts()

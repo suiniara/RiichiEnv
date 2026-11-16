@@ -28,8 +28,16 @@ def _setup(tmp_path, monkeypatch, *, statuses=None, golden=False, room=12):
     monkeypatch.setattr(corpus, "load_protocol", lambda _: SimpleNamespace(source_sha256="a" * 64))
 
     def decode(payload, *_args, **_kwargs):
+        game_id = payload.decode()
+        # The producer hashes normalized events before invoking the mocked replay.
+        # Keep distinct semantic facts, not only distinct IDs (IDs are excluded).
+        events = (
+            {"type": "start_game", "id": game_id},
+            {"type": "tsumo", "actor": 0, "pai": ("1m", "2m", "3m")[ids.index(game_id)]},
+        )
         return SimpleNamespace(
-            game_id=payload.decode(),
+            game_id=game_id,
+            events=events,
             source_sha256=hashlib.sha256(payload).hexdigest(),
             protocol_sha256="a" * 64,
             metadata={"category": 2, "mode": 2, "mode_id": room, "account_seats": [0, 1, 2, 3]},
@@ -71,6 +79,10 @@ def test_unique_games_are_split_and_golden_games_are_reserved(tmp_path, monkeypa
     assert report["golden_game_ids_reserved"] == [ids[0]]
     assert report["response_support_independent_games"]["0"] == 2
     assert report["selection_complete"] is True and report["all_disk_scanned"] is False
+    assert len({row["normalized_game_sha256"] for row in report["rows"]}) == len(ids)
+    for row in report["rows"]:
+        receipt = json.loads((tmp_path / "audit" / "receipts" / f"{row['game_id']}.json").read_text(encoding="utf-8"))
+        assert receipt["normalized_game_sha256"] == row["normalized_game_sha256"]
     train = json.loads((tmp_path / "audit" / "train.manifest.json").read_text(encoding="utf-8"))
     assert {game["game_id"] for game in train["games"]} == set(ids[1:])
 
