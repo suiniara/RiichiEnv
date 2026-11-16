@@ -2,7 +2,7 @@ use pyo3::IntoPyObject;
 use pyo3::prelude::*;
 use std::collections::HashMap;
 
-use riichienv_core::action::{Action, Action3P, ActionEncoder, Phase};
+use riichienv_core::action::{Action, Action3P, ActionEncoder, ActionType, Phase};
 
 /// Wrapper that accepts both `Action` and `Action3P` from Python.
 pub struct AnyAction(Action);
@@ -475,6 +475,81 @@ impl RiichiEnv {
     }
 
     #[getter]
+    pub fn get_ippatsu_cycle(&self) -> Vec<bool> {
+        with_variant!(self, |s| s
+            .players
+            .iter()
+            .map(|p| p.ippatsu_cycle)
+            .collect())
+    }
+    #[setter]
+    pub fn set_ippatsu_cycle(&mut self, flags: Vec<bool>) -> PyResult<()> {
+        let np = self.variant.num_players() as usize;
+        if flags.len() != np {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "ippatsu_cycle requires {np} flags, got {}",
+                flags.len()
+            )));
+        }
+        with_variant_mut!(self, |s| {
+            for (player, &flag) in s.players.iter_mut().zip(flags.iter()) {
+                player.ippatsu_cycle = flag;
+            }
+        });
+        Ok(())
+    }
+
+    #[getter]
+    pub fn get_double_riichi_declared(&self) -> Vec<bool> {
+        with_variant!(self, |s| s
+            .players
+            .iter()
+            .map(|p| p.double_riichi_declared)
+            .collect())
+    }
+    #[setter]
+    pub fn set_double_riichi_declared(&mut self, flags: Vec<bool>) -> PyResult<()> {
+        let np = self.variant.num_players() as usize;
+        if flags.len() != np {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "double_riichi_declared requires {np} flags, got {}",
+                flags.len()
+            )));
+        }
+        with_variant_mut!(self, |s| {
+            for (player, &flag) in s.players.iter_mut().zip(flags.iter()) {
+                player.double_riichi_declared = flag;
+            }
+        });
+        Ok(())
+    }
+
+    #[getter]
+    pub fn get_missed_agari_riichi(&self) -> Vec<bool> {
+        with_variant!(self, |s| s
+            .players
+            .iter()
+            .map(|p| p.missed_agari_riichi)
+            .collect())
+    }
+    #[setter]
+    pub fn set_missed_agari_riichi(&mut self, flags: Vec<bool>) -> PyResult<()> {
+        let np = self.variant.num_players() as usize;
+        if flags.len() != np {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "missed_agari_riichi requires {np} flags, got {}",
+                flags.len()
+            )));
+        }
+        with_variant_mut!(self, |s| {
+            for (player, &flag) in s.players.iter_mut().zip(flags.iter()) {
+                player.missed_agari_riichi = flag;
+            }
+        });
+        Ok(())
+    }
+
+    #[getter]
     pub fn get_phase(&self) -> Phase {
         with_variant!(self, |s| s.phase)
     }
@@ -852,6 +927,79 @@ impl RiichiEnv {
 
     pub fn _get_legal_actions(&mut self, pid: u8) -> Vec<Action> {
         with_variant_mut!(self, |s| s._get_legal_actions_internal(pid))
+    }
+
+    #[pyo3(signature = (actor, declaration, player_id))]
+    pub fn preview_kan_responses(
+        &self,
+        actor: u8,
+        declaration: Action,
+        player_id: u8,
+    ) -> PyResult<Vec<Action>> {
+        let GameStateVariant::FourPlayer(state) = &self.variant else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "kan response preview requires a four-player environment",
+            ));
+        };
+        if actor >= 4 || player_id >= 4 || actor == player_id {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "actor and responder must be distinct four-player seats",
+            ));
+        }
+        if state.is_done
+            || state.needs_initialize_next_round
+            || state.needs_tsumo
+            || state.phase != Phase::WaitAct
+            || state.current_player != actor
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "kan response preview requires the actor's pre-declaration turn",
+            ));
+        }
+        if !matches!(
+            declaration.action_type,
+            ActionType::Ankan | ActionType::Kakan
+        ) || declaration.actor.is_some_and(|seat| seat != actor)
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "declaration must be a complete ankan or kakan belonging to the actor",
+            ));
+        }
+        let mut declaration = declaration;
+        declaration.actor = Some(actor);
+        if !state
+            ._get_legal_actions_internal(actor)
+            .contains(&declaration)
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "declaration is not a complete legal kan action",
+            ));
+        }
+        let mut preview = state.as_ref().clone();
+        // WaitAct replay states can retain offers from a closed response window.
+        preview.current_claims.clear();
+        preview.step(&HashMap::from([(actor, declaration)]));
+        if preview.last_error.is_some() {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "native kan preview rejected a previously validated declaration",
+            ));
+        }
+        let responses = if preview.phase == Phase::WaitResponse
+            && preview.active_players.contains(&player_id)
+        {
+            preview._get_legal_actions_internal(player_id)
+        } else {
+            Vec::new()
+        };
+        if responses.iter().any(|action| {
+            !matches!(action.action_type, ActionType::Ron | ActionType::Pass)
+                || action.actor != Some(player_id)
+        }) {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "native kan preview exposed a non-response action",
+            ));
+        }
+        Ok(responses)
     }
 
     #[pyo3(signature = (actions))]

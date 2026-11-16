@@ -1,0 +1,301 @@
+from dataclasses import FrozenInstanceError
+
+import pytest
+
+from riichienv import GameRule, RiichiEnv
+from riichienv.kar.rule_features import (
+    OTHER_WAITS_BY_RANK,
+    RYANMEN_PAIRS_BY_RANK,
+    current_rank_features,
+    full_suji_exclusion,
+    genbutsu,
+    known_count_base34,
+    no_visible_possible_ryanmen_shape,
+    public_dora_types,
+)
+
+RANK_CASES = (
+    (1, ((2, 3),), (4,)),
+    (2, ((3, 4),), (5,)),
+    (3, ((4, 5),), (6,)),
+    (4, ((2, 3), (5, 6)), (1, 7)),
+    (5, ((3, 4), (6, 7)), (2, 8)),
+    (6, ((4, 5), (7, 8)), (3, 9)),
+    (7, ((5, 6),), (4,)),
+    (8, ((6, 7),), (5,)),
+    (9, ((7, 8),), (6,)),
+)
+
+
+@pytest.mark.parametrize("rank,pairs,other_waits", RANK_CASES)
+def test_frozen_ryanmen_tables(rank, pairs, other_waits):
+    assert RYANMEN_PAIRS_BY_RANK[rank] == pairs
+    assert OTHER_WAITS_BY_RANK[rank] == other_waits
+    assert set(RYANMEN_PAIRS_BY_RANK) == set(range(1, 10))
+    assert set(OTHER_WAITS_BY_RANK) == set(range(1, 10))
+
+
+@pytest.mark.parametrize("suit_start", [0, 9, 18])
+@pytest.mark.parametrize("rank,pairs,other_waits", RANK_CASES)
+def test_full_suji_requires_every_opposite_wait_in_the_same_suit(suit_start, rank, pairs, other_waits):
+    target = suit_start + rank - 1
+    history = {suit_start + wait - 1 for wait in other_waits}
+    assert full_suji_exclusion(target, set()) is False
+    assert full_suji_exclusion(target, {target}) is False
+    assert full_suji_exclusion(target, history) is True
+    for wait in history:
+        assert full_suji_exclusion(target, history - {wait}) is False
+    another_suit = (suit_start + 9) % 27
+    assert full_suji_exclusion(target, {another_suit + wait - 1 for wait in other_waits}) is False
+
+
+@pytest.mark.parametrize("suit_start", [0, 9, 18])
+@pytest.mark.parametrize("rank,pairs,other_waits", RANK_CASES)
+def test_visible_ryanmen_requires_every_possible_pair_to_be_blocked(suit_start, rank, pairs, other_waits):
+    target = suit_start + rank - 1
+    counts = [0] * 34
+    assert no_visible_possible_ryanmen_shape(target, counts) is False
+    for left, _ in pairs:
+        counts[suit_start + left - 1] = 4
+    assert no_visible_possible_ryanmen_shape(target, counts) is True
+    for left, _ in pairs:
+        incomplete = counts.copy()
+        incomplete[suit_start + left - 1] = 3
+        assert no_visible_possible_ryanmen_shape(target, incomplete) is False
+
+    counts = [0] * 34
+    counts[target] = 4
+    assert no_visible_possible_ryanmen_shape(target, counts) is True
+
+    counts = [0] * 34
+    another_suit = (suit_start + 9) % 27
+    for left, _ in pairs:
+        counts[another_suit + left - 1] = 4
+    assert no_visible_possible_ryanmen_shape(target, counts) is False
+
+
+@pytest.mark.parametrize("suit_start", [0, 9, 18])
+@pytest.mark.parametrize("target_rank,valid_block,penchan_block", [(3, 4, 1), (7, 5, 8)])
+def test_penchan_pairs_neither_preserve_nor_block_ryanmen(suit_start, target_rank, valid_block, penchan_block):
+    target = suit_start + target_rank - 1
+    counts = [0] * 34
+    counts[suit_start + valid_block - 1] = 4
+    assert no_visible_possible_ryanmen_shape(target, counts) is True
+
+    counts = [0] * 34
+    counts[suit_start + penchan_block - 1] = 4
+    assert no_visible_possible_ryanmen_shape(target, counts) is False
+
+
+@pytest.mark.parametrize("target", range(27, 34))
+def test_honor_shape_features_are_not_applicable(target):
+    counts = [4] * 34
+    assert full_suji_exclusion(target, set(range(34))) is None
+    assert no_visible_possible_ryanmen_shape(target, counts) is None
+    assert genbutsu(target, {target}) is True
+    assert genbutsu(target, set()) is False
+
+
+def test_missing_history_or_public_ledger_is_unknown_not_false():
+    assert genbutsu(4, None) is None
+    assert full_suji_exclusion(4, None) is None
+    assert no_visible_possible_ryanmen_shape(4, None) is None
+    assert genbutsu(4, set()) is False
+    assert full_suji_exclusion(4, set()) is False
+    assert no_visible_possible_ryanmen_shape(4, [0] * 34) is False
+
+
+def test_known_count_preserves_distinct_copies_across_public_regions():
+    counts = known_count_base34(
+        observer_hand=[4],
+        current_rivers=[[4], [4], [], []],
+        current_melds=[[], [], [], []],
+        dora_indicators=[4],
+        other_public_reveals=[27],
+    )
+    assert isinstance(counts, tuple)
+    assert len(counts) == 34
+    assert counts[4] == 4
+    assert counts[27] == 1
+    assert sum(counts) == 5
+    assert no_visible_possible_ryanmen_shape(4, counts) is True
+
+
+def test_called_away_discard_remains_in_history_but_not_the_current_river():
+    history = {4}
+    counts = known_count_base34(
+        observer_hand=[],
+        current_rivers=[[], [], [], []],
+        current_melds=[[], [], [4, 4, 4], []],
+        dora_indicators=[],
+    )
+    assert genbutsu(4, history) is True
+    assert counts[4] == 3
+    assert history == {4}
+
+
+def test_meld_tiles_do_not_become_the_owners_discard_history():
+    counts = known_count_base34([], [[], [], [], []], [[], [4, 4, 4, 4], [], []], [])
+    assert counts[4] == 4
+    assert genbutsu(4, set()) is False
+
+
+def test_red_and_nonred_fives_each_count_once_after_external_base34_conversion():
+    counts = known_count_base34([4, 4], [[4], [], [], []], [[], [], [], []], [4])
+    assert counts[4] == 4
+
+
+def test_known_count_empty_regions_are_real_zero():
+    assert known_count_base34([], [], [], []) == (0,) * 34
+
+
+def test_known_count_rejects_more_than_four_visible_copies_without_clipping():
+    with pytest.raises(ValueError, match="more than four"):
+        known_count_base34([4], [[4, 4], [], [], []], [[], [], [], []], [4, 4])
+
+
+@pytest.mark.parametrize("tile", [-1, 34, 136, 1.5, True, "4"])
+def test_invalid_base34_tiles_are_rejected(tile):
+    with pytest.raises(ValueError, match="base34"):
+        genbutsu(tile, set())
+    with pytest.raises(ValueError, match="base34"):
+        full_suji_exclusion(tile, set())
+    with pytest.raises(ValueError, match="base34"):
+        no_visible_possible_ryanmen_shape(tile, [0] * 34)
+    with pytest.raises(ValueError, match="base34"):
+        public_dora_types([tile])
+    with pytest.raises(ValueError, match="base34"):
+        known_count_base34([tile], [], [], [])
+
+
+@pytest.mark.parametrize("region", ["hand", "river", "meld", "indicator", "reveal"])
+def test_all_visible_regions_validate_tile_ids(region):
+    inputs = {
+        "observer_hand": [],
+        "current_rivers": [[], [], [], []],
+        "current_melds": [[], [], [], []],
+        "dora_indicators": [],
+        "other_public_reveals": [],
+    }
+    if region == "hand":
+        inputs["observer_hand"] = [34]
+    elif region == "river":
+        inputs["current_rivers"][2] = [34]
+    elif region == "meld":
+        inputs["current_melds"][1] = [34]
+    elif region == "indicator":
+        inputs["dora_indicators"] = [34]
+    else:
+        inputs["other_public_reveals"] = [34]
+    with pytest.raises(ValueError, match="base34"):
+        known_count_base34(**inputs)
+
+
+@pytest.mark.parametrize("history", [{-1}, {34}, {False}, {1.5}])
+def test_discard_history_is_validated(history):
+    with pytest.raises(ValueError, match="base34"):
+        genbutsu(4, history)
+    with pytest.raises(ValueError, match="base34"):
+        full_suji_exclusion(4, history)
+
+
+@pytest.mark.parametrize("count", [-1, 5, 1.5, True])
+def test_visible_count_entries_must_be_exact_integers_between_zero_and_four(count):
+    counts = [0] * 34
+    counts[12] = count
+    with pytest.raises(ValueError, match="known counts"):
+        no_visible_possible_ryanmen_shape(4, counts)
+
+
+@pytest.mark.parametrize("length", [0, 33, 35])
+def test_visible_count_vector_requires_all_34_tile_types(length):
+    with pytest.raises(ValueError, match="34 entries"):
+        no_visible_possible_ryanmen_shape(4, [0] * length)
+
+
+@pytest.mark.parametrize("indicator", range(34))
+def test_public_dora_cycles(indicator):
+    if indicator < 27:
+        expected = indicator + 1 if indicator % 9 != 8 else indicator - 8
+    elif indicator < 31:
+        expected = indicator + 1 if indicator != 30 else 27
+    else:
+        expected = indicator + 1 if indicator != 33 else 31
+    assert public_dora_types([indicator]) == frozenset({expected})
+
+
+def test_public_dora_uses_only_given_public_indicators():
+    assert public_dora_types([]) == frozenset()
+    assert public_dora_types([8, 8, 30, 33]) == frozenset({0, 27, 31})
+
+
+@pytest.mark.parametrize("observer", range(4))
+def test_equal_scores_follow_fixed_initial_order_and_keep_zero_gaps_present(observer):
+    features = current_rank_features([25000] * 4, [0, 1, 2, 3], observer)
+    assert features.rank == observer + 1
+    assert features.gap_to_higher == 0.0
+    assert features.gap_to_lower == 0.0
+    assert features.gap_to_higher_present is (observer > 0)
+    assert features.gap_to_lower_present is (observer < 3)
+
+
+def test_tie_break_uses_explicit_initial_order_not_player_number():
+    order = [3, 1, 0, 2]
+    for rank, observer in enumerate(order, 1):
+        assert current_rank_features([25000] * 4, order, observer).rank == rank
+    assert order == [3, 1, 0, 2]
+
+
+def test_rank_features_support_named_player_ids_and_normalize_raw_gaps():
+    scores = {"east": 20000, "south": 35000, "west": 35000, "north": 10000}
+    order = ["west", "east", "south", "north"]
+    assert current_rank_features(scores, order, "west").rank == 1
+    assert current_rank_features(scores, order, "south").rank == 2
+    features = current_rank_features(scores, order, "east")
+    assert features.rank == 3
+    assert features.gap_to_higher_present is True
+    assert features.gap_to_higher == pytest.approx(0.3)
+    assert features.gap_to_lower_present is True
+    assert features.gap_to_lower == pytest.approx(0.2)
+
+
+def test_rank_features_do_not_clip_large_gaps_or_reject_negative_points():
+    features = current_rank_features([-10000, 120000, 25000, 25000], [0, 1, 2, 3], 1)
+    assert features.rank == 1
+    assert features.gap_to_higher_present is False
+    assert features.gap_to_lower_present is True
+    assert features.gap_to_lower == pytest.approx(1.9)
+
+
+def test_current_dealer_rotation_cannot_change_a_tie_break():
+    env = RiichiEnv(seed=42, rule=GameRule.default_mjsoul())
+    initial_order = [0, 1, 2, 3]
+    for current_oya in range(4):
+        env.reset(oya=current_oya, scores=[25000] * 4)
+        observation = env.get_observation(0)
+        assert observation.oya == current_oya
+        actual = [current_rank_features(observation.scores, initial_order, player).rank for player in range(4)]
+        assert actual == env.ranks() == [1, 2, 3, 4]
+
+
+def test_rank_features_are_immutable():
+    features = current_rank_features([25000] * 4, [0, 1, 2, 3], 0)
+    with pytest.raises(FrozenInstanceError):
+        features.rank = 4
+
+
+@pytest.mark.parametrize("order", [[], [0, 1, 2], [0, 1, 2, 2], [0, 1, 2, 4]])
+def test_rank_features_require_the_same_four_distinct_players(order):
+    with pytest.raises(ValueError, match="four"):
+        current_rank_features([25000] * 4, order, 0)
+
+
+def test_rank_features_reject_unknown_observer():
+    with pytest.raises(ValueError, match="observer"):
+        current_rank_features([25000] * 4, [0, 1, 2, 3], 4)
+
+
+@pytest.mark.parametrize("score", [25000.0, True, "25000"])
+def test_rank_features_require_raw_integer_scores(score):
+    with pytest.raises(ValueError, match="raw integer"):
+        current_rank_features([score, 25000, 25000, 25000], [0, 1, 2, 3], 0)

@@ -1,6 +1,9 @@
 **/*.pyc
 **/__pycache__
 **/*.so
+# Local Windows native build products
+**/*.pyd
+**/*.pdb
 target
 **/.python-version
 trunk

@@ -1,0 +1,116 @@
+from dataclasses import replace
+
+import pytest
+
+torch = pytest.importorskip("torch")
+
+from riichienv.kar.calibration import (
+    CalibrationArtifact,
+    calibrated_policy_identity,
+    calibration_split,
+    choose_validation_tau,
+)
+from riichienv.kar.calibration_quality import CalibrationQualityPolicy
+from riichienv.kar.contracts import game_split
+from riichienv.kar.learning.deployment import validate_frozen_policy
+from riichienv.kar.policy import PolicyOptions
+from riichienv.kar.runtime_contracts import RuntimeBinding
+from riichienv.kar.selection_quality import TauSelectionPolicy
+from riichienv.kar.support import EventSupport
+
+# ruff: noqa: E402 -- optional ML dependency is checked before the deployment import
+
+
+def policy_fixture():
+    identities = []
+    index = 0
+    while len(identities) < 20:
+        value = f"synthetic-policy-contract-{index}"
+        if game_split(value, "kar-riichienv-v1-games") == "validation":
+            identities.append(value)
+        index += 1
+    split = replace(
+        calibration_split(identities), validation_manifest_sha256="a" * 64, main_split_salt="kar-riichienv-v1-games"
+    )
+    binding = RuntimeBinding.current("b" * 64, "c" * 64)
+    support = EventSupport("c" * 64, (500,) * 21, "synthetic contract support")
+    quality = CalibrationQualityPolicy(
+        {key: 5.0 for key in ("action", "response", "rank")},
+        {key: 1.0 for key in ("action", "response", "rank")},
+        {key: 0.5 for key in ("action", "response", "rank")},
+        1,
+        1,
+        0.8,
+        "synthetic preregistration",
+    )
+    metrics = {key: {"count": 2, "nll": 1.0, "brier": 0.2, "ece": 0.1} for key in ("action", "response", "rank")}
+    metrics.update(gate_multi_discard_count=2, gate_retention=1.0)
+    artifact = CalibrationArtifact(
+        binding,
+        support.digest,
+        split,
+        (1.0, 1.0, 1.0),
+        -10.0,
+        "d" * 64,
+        "e" * 64,
+        metrics,
+        metrics,
+        "synthetic production-shaped unit fixture,not actual model calibration",
+        False,
+        quality,
+        "cpu",
+    )
+    identity = calibrated_policy_identity(binding, support, artifact)
+    outcomes = {float("inf"): {game: 0.0 for game in split.fit_games}, 0.5: {game: 0.5 for game in split.fit_games}}
+    selection = choose_validation_tau(
+        outcomes,
+        split=split,
+        binding=binding,
+        grid=(float("inf"), 0.5),
+        policy_identity=identity,
+        selection_policy=TauSelectionPolicy(bootstrap_replicates=20),
+    )
+    return binding, support, artifact, selection
+
+
+def test_finite_release_rejects_changed_calibration_or_sampling_policy():
+    binding, support, artifact, selection = policy_fixture()
+    validate_frozen_policy(
+        PolicyOptions("empirical_only", 0.5), binding, support, artifact, selection, inference_device_type="cpu"
+    )
+    changed = replace(artifact, temperatures=(2.0, 1.0, 1.0))
+    with pytest.raises(ValueError):
+        validate_frozen_policy(
+            PolicyOptions("empirical_only", 0.5), binding, support, changed, selection, inference_device_type="cpu"
+        )
+    with pytest.raises(ValueError):
+        validate_frozen_policy(
+            PolicyOptions("empirical_only", 0.5, diagnostic_argmax=True),
+            binding,
+            support,
+            artifact,
+            selection,
+            inference_device_type="cpu",
+        )
+
+
+def test_calibration_origin_backend_cannot_be_restamped_by_export():
+    binding, support, artifact, selection = policy_fixture()
+    with pytest.raises(ValueError, match="backend"):
+        validate_frozen_policy(PolicyOptions(), binding, support, artifact, None, inference_device_type="cuda")
+
+
+def test_preregistered_quality_policy_is_required_and_quality_failure_is_persisted():
+    binding, support, artifact, selection = policy_fixture()
+    bad = {key: dict(value) if hasattr(value, "items") else value for key, value in artifact.check_metrics.items()}
+    bad["rank"] = {**bad["rank"], "nll": 500.0}
+    rejected = replace(artifact, check_metrics=bad)
+    document = rejected.to_record()
+    assert document["quality_report"]["status"] == "failed" and not document["empirical_check_valid"]
+    assert CalibrationArtifact.from_record(document, binding, support).quality_report["status"] == "failed"
+    with pytest.raises(ValueError):
+        validate_frozen_policy(
+            PolicyOptions("empirical_only", 0.5), binding, support, rejected, selection, inference_device_type="cpu"
+        )
+    with pytest.raises(ValueError):
+        replace(artifact, quality_policy=None).validate(binding, support)

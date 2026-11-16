@@ -82,10 +82,17 @@ class ActionType:
 
 class Action:
     action_type: ActionType
-    tile: int
+    tile: int | None
     consume_tiles: list[int]
+    actor: int | None
 
-    def __init__(self, action_type: ActionType, tile: int = 0, consume_tiles: list[int] = []): ...
+    def __init__(
+        self,
+        type: ActionType = ActionType.PASS,  # noqa: A002
+        tile: int | None = None,
+        consume_tiles: list[int] = [],
+        actor: int | None = None,
+    ): ...
     def to_dict(self) -> dict[str, Any]: ...
     def to_mjai(self) -> str: ...
 
@@ -232,6 +239,13 @@ class Observation:
 
     events: list[Any]
     hand: list[int]
+    hands: list[list[int]]
+    melds: list[list[Meld]]
+    discards: list[list[int]]
+    dora_indicators: list[int]
+    scores: list[int]
+    riichi_declared: list[bool]
+    drawn_tile: int | None
     player_id: int
     prev_events_size: int
     forced_tedashi: bool
@@ -833,6 +847,7 @@ class RiichiEnv:
     def reset(
         self, oya: int | None = None, honba: int | None = None, *args: Any, **kwargs: Any
     ) -> dict[int, Observation]: ...
+    def preview_kan_responses(self, actor: int, declaration: Action, player_id: int) -> list[Action]: ...
     def step(self, actions: dict[int, Action | Action3P]) -> dict[int, Observation]: ...
     def done(self) -> bool: ...
     def get_observations(self, players: list[int] | None = None) -> dict[int, Observation]: ...

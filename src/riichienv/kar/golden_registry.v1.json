@@ -1,0 +1,57 @@
+{
+  "registry_version": "mjsoul_real_golden_v1",
+  "schema_id": "kar-riichienv-v1",
+  "source_role": "golden_only",
+  "main_training_membership": "excluded",
+  "authenticity_scope": "User-declared local raw origins are byte-bound, not authenticated by a provider signature.",
+  "required_real_positive": [
+    "red_draw_normal_5p_hand",
+    "normal_draw_red_5p_hand",
+    "riichi_discard_ron",
+    "multiple_ron",
+    "triple_ron",
+    "pon_then_discard",
+    "daiminkan_rinshan_tsumo",
+    "kakan_chankan",
+    "kakan_commit",
+    "exhaustive_last_discard",
+    "opponent_ankan_red_hidden",
+    "kokushi_ankan_ron",
+    "four_winds",
+    "four_riichi",
+    "four_kans",
+    "nagashi_mangan"
+  ],
+  "required_derived_from_real": [
+    "four_observers_same_split",
+    "future_hidden_ura_prefix_invariance",
+    "candidate_order_invariance",
+    "missing_response_not_next_draw",
+    "non_discard_not_applicable",
+    "initial_tie_and_oya_invariance",
+    "called_tile_counted_once",
+    "full_suji_both_sides",
+    "ryanmen_edge_exclusions",
+    "unknown_zero_presence",
+    "public_mask_public_only"
+  ],
+  "rule_not_applicable": {
+    "abort_triple_ron": {
+      "rule_field": "sanchaho_is_draw",
+      "required_value": false,
+      "disabled_response_id": 19,
+      "retained_response_id": 14
+    }
+  },
+  "verification_requirements": [
+    "real_raw_record provenance declaration",
+    "raw source file bytes match source_sha256",
+    "actual proto bytes match protocol_sha256",
+    "source file is decoded again using result-only decoder",
+    "normalized events and record digests match decoded game",
+    "complete native replay receipt and independently recomputed settlement agree",
+    "completion certificate is independently recomputed",
+    "case predicate and expected output are recomputed",
+    "manifest labels, catalog rows and synthetic fixtures alone never satisfy real coverage"
+  ]
+}

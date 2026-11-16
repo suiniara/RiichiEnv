@@ -32,18 +32,29 @@ build-backend = "maturin"
 python-source = "src"
 manifest-path = "riichienv-python/Cargo.toml"
 module-name = "riichienv._riichienv"
-include = ["src/riichienv/visualizer/assets/**"]
+include = ["src/riichienv/visualizer/assets/**", "src/riichienv/kar/*.json"]
 
 [dependency-groups]
 dev = [
+    { include-group = "kar" },
     "maturin>=1.9.4,<2.0",
     "pre-commit>=4.5.1",
     "pytest>=9.0.3",
     "ruff>=0.8.0",
     "ty>=0.0.7",
+    "types-protobuf>=6.31,<8",
 ]
 debug = [
     "jupyterlab",
+]
+kar = [
+    "protobuf>=6.31.1,<8",
+    "grpcio-tools>=1.76,<2",
+]
+kar-ml = [
+    { include-group = "kar" },
+    "torch==2.15.0",
+    "numpy>=2.4,<3",
 ]
 
 [tool.ruff]
@@ -90,6 +101,7 @@ line-ending = "auto"
 minversion = "9.0"
 testpaths = ["tests"]
 norecursedirs = ["trunk"]
+markers = ["parameter_updates: diagnostic tests containing backward or parameter updates; require explicit opt-in"]
 
 [tool.ty.src]
 exclude = ["scripts", "tests", "demos", "riichienv-ml", "riichienv-ml-xt", "riichienv-validation", "riichienv-ui/demos"]

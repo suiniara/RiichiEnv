@@ -1,0 +1,27 @@
+<!-- kar-module: riichienv.kar.learning.training_config -->
+<!-- api: ProductionTrainConfig, training_recipe_sha256, main_model_registration, validate_main_model_registration, third_epoch_allowed -->
+# learning.training_config — 正式配方、登记和第三轮条件
+
+源码：[training_config.py](../../../../src/riichienv/kar/learning/training_config.py) · [learning 索引](../README.md)
+
+## 主要接口
+
+`ProductionTrainConfig` 记录 phase、实际 N_train/N_eligible、tier、planned_epochs、预算、seed、设备/精度、microbatch、特征模式和固定超参。M1 仅 Small 一轮，M2 为两轮/条件第三轮；有效 batch Small/Medium/Large 为128/256/512。
+
+`training_recipe_sha256(arguments)` 先于价格生成标准化配方身份；`to_record/from_record` 校验往返派生字段。不能为了让旧许可通过而丢字段。
+
+## 唯一登记
+
+`main_model_registration(dataset_sha, config, output_root, prerequisites=None)` 生成 v3 登记，固定实际 training 输出、M2 共享账本、配方和前置证据。没有 prerequisites 的草稿 `execution_ready=false`。
+
+`validate_main_model_registration(...)` 校验全部身份/路径，并重读真实 M1/验证来源。原始 trainer 也执行它，因此不能绕开上层调度器换目录重置预算或跳过 M1。
+
+## 第三轮 gate
+
+`third_epoch_allowed(previous, current, tolerance, budget_has_room=...)` 要求完整 validation 报告，但**只使用其中 model_selection/cal_fit 子记录**。角色 salt、cal_check_used=false、同一游戏集合、完整 cal_fit、总目标改善、各头登记恶化容忍值及预算都须满足。
+
+缺指标不当零；cal_check/test 或不同游戏集合不能决定追加一轮。它是已登记的条件分支，不是重新搜索超参。
+
+## 依赖、测试与状态
+
+配置本身不创建网络；运行前置核验可能读检查点/账本元数据。对应 [production/test_planning.py](../../../../tests/kar/production/test_planning.py)、[test_stage_prerequisites.py](../../../../tests/kar/production/test_stage_prerequisites.py)、[test_review_finance_and_resume.py](../../../../tests/kar/production/test_review_finance_and_resume.py)。本轮未生成可执行登记或运行训练。
