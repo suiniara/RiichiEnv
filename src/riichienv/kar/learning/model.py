@@ -247,7 +247,8 @@ class KARTransformer(nn.Module):
         rows = torch.arange(batch.size, device=hidden.device)
         valid = batch.fields["valid"].clone()
         positions = batch.fields["positions"][rows, batch.decide_index] + 1
-        policy = self.policy_head(decide.float())
+        with torch.autocast(device_type=decide.device.type, enabled=False):
+            policy = self.policy_head(decide.float())
         candidates = canonical_candidate_ids(batch.candidates, batch.size).clone()
         tensors = [tensor for pair in keys for tensor in pair] + [valid, positions, policy, candidates]
         return PrefixCache(
