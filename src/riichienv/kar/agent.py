@@ -129,6 +129,7 @@ def run_match(agents: dict[int, KARAgent], *, wall_seed: int, max_decisions: int
                     "actor": env.current_player,
                     "consumed": [convert.tid_to_mjai(tile) for tile in native.consume_tiles],
                 }
+        pending_passes = projection.capture_self_passes(choices) if env.phase == Phase.WaitResponse else ()
         if env.phase == Phase.WaitResponse:
             if not choices:
                 raise ValueError("Native response window has no observer choices")
@@ -143,7 +144,8 @@ def run_match(agents: dict[int, KARAgent], *, wall_seed: int, max_decisions: int
             raise ValueError("Native game is stuck without a legal decision or automatic transition")
         new_events = list(env.mjai_log[before:])
         projection.observe_native(
-            new_events, declared_ankan=declared_ankan, pending_kan_window=env.phase == Phase.WaitResponse
+            new_events, declared_ankan=declared_ankan, pending_kan_window=env.phase == Phase.WaitResponse,
+            confirmed_self_passes=pending_passes,
         )
         if len(projection.events) == projected_before:
             raise ValueError("Native execution did not advance a public event or validated kan transaction")

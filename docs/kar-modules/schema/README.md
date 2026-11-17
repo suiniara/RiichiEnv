@@ -1,5 +1,5 @@
 <!-- kar-module: riichienv.kar.schema -->
-<!-- api: load_schema, schema_hash, schema_status, token_defaults, validate_token, encode_token, decode_token -->
+<!-- api: load_schema, schema_hash, schema_status, action_factor_ids, token_defaults, validate_token, encode_token, decode_token -->
 # schema — Token 字段与二进制合同
 
 源码：[schema.py](../../../src/riichienv/kar/schema.py) · [冻结资源](../assets/README.md) · [总索引](../README.md)
@@ -15,6 +15,7 @@
 - `token_defaults(kind=0, block=0, position=0, valid=None)`：构造字段完整的初始行，仍需按对应 kind 填写。
 - `validate_token(row)`：检查字段集合、范围、present 位与 kind-specific 语义。
 - `encode_token(row)` / `decode_token(data)`：行 ↔ 固定 139 字节 little-endian Token。
+- `action_factor_ids(action_id)`：从同一冻结 manifest 给出 ACTION 五因子，供后缀与 LEGAL_SET 共用；非舍牌的 tile/tsumogiri/riichi 为 N/A，不私改全部动作的因子。
 
 ## 数据与合同
 

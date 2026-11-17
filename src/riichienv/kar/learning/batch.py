@@ -37,6 +37,20 @@ TOKEN_DTYPE = np.dtype(
 assert TOKEN_DTYPE.itemsize == TOKEN_BYTE_SIZE
 
 
+def canonical_candidate_ids(candidates: Tensor, size: int) -> Tensor:
+    """Canonical set order for pooling/cache identity; padding is not a member."""
+    if candidates.ndim != 2 or candidates.shape != (size, 32):
+        raise ValueError("Expected thirty-two padded complete action candidates")
+    if candidates.dtype != torch.int64 or torch.any((candidates < 0) | (candidates > 546)):
+        raise ValueError("Candidate IDs must be int64 complete actions or pad=546")
+    ordered = candidates.sort(dim=-1).values
+    if torch.any((ordered[:, 1:] == ordered[:, :-1]) & (ordered[:, 1:] != 546)):
+        raise ValueError("Legal candidate IDs must be unique")
+    if not torch.all((ordered != 546).any(-1)):
+        raise ValueError("A decision requires a nonempty legal set")
+    return ordered
+
+
 @dataclass(frozen=True)
 class ModelBatch:
     fields: dict[str, Tensor]
@@ -60,12 +74,9 @@ class ModelBatch:
 
     @property
     def legal_mask(self) -> Tensor:
-        if self.candidates.ndim != 2 or self.candidates.shape != (self.size, 32):
-            raise ValueError("Expected thirty-two padded complete action candidates")
-        if self.candidates.dtype != torch.int64 or torch.any((self.candidates < 0) | (self.candidates > 546)):
-            raise ValueError("Candidate IDs must be int64 complete actions or pad=546")
-        mask = torch.zeros(self.size, 547, device=self.candidates.device, dtype=torch.bool)
-        mask.scatter_(1, self.candidates, True)
+        ordered = canonical_candidate_ids(self.candidates, self.size)
+        mask = torch.zeros(self.size, 547, device=ordered.device, dtype=torch.bool)
+        mask.scatter_(1, ordered, True)
         mask = mask[:, :546]
         if not torch.all(mask.any(-1)):
             raise ValueError("A decision requires a nonempty legal set")

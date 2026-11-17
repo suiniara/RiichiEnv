@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 from riichienv import HandEvaluator, convert
 
-from .observation import ObserverLedger, PublicSnapshot
+from .observation import ObserverLedger, PublicSnapshot, SelfPassTrigger
 from .payments import end_game_pot
 from .settlement import _meld
 
-LIVE_EVENT_VERSION = "native_public_resolution_projection_v2"
+if TYPE_CHECKING:
+    from .actions import MappedAction
+
+LIVE_EVENT_VERSION = "native_public_resolution_projection_v3_private_pass"
 _DRAW_ALIASES = {
     "exhaustive_draw": "exhaustive_draw",
     "nagashimangan": "nagashi_mangan",
@@ -74,7 +77,14 @@ class LiveEventProjection:
             raise ValueError("Invalid observer")
         return self.ledgers[seat].snapshot()
 
+    def capture_self_passes(self, choices: Mapping[int, MappedAction]) -> tuple[SelfPassTrigger, ...]:
+        """Side-effect-free receipts. Confirm only after atomic native submission succeeds."""
+        return tuple(self.ledgers[seat].pass_trigger() for seat, choice in choices.items()
+                     if choice.spec.action_type == "PASS")
+
     def _append(self, event: dict[str, Any], record: int) -> None:
+        if event["type"] == "self_pass":
+            raise ValueError("Private self Pass must never be broadcast as a public event")
         event = {**event, "source_record_index": record}
         for ledger in self.ledgers:
             ledger.apply_event(event)
@@ -175,7 +185,13 @@ class LiveEventProjection:
         *,
         declared_ankan: dict[str, Any] | None = None,
         pending_kan_window: bool = False,
+        confirmed_self_passes: Sequence[SelfPassTrigger] = (),
     ) -> None:
+        if any(event.get("type") == "self_pass" for event in raw_events):
+            raise ValueError("Observer-private Pass cannot enter the native public stream")
+        if any(not isinstance(trigger, SelfPassTrigger) or not 0 <= trigger.observer_player_id < 4
+               for trigger in confirmed_self_passes):
+            raise ValueError("Invalid confirmed private Pass receipt")
         if self.ended and (raw_events or declared_ankan is not None):
             raise ValueError("Events after completed match")
         if declared_ankan is not None:
@@ -238,3 +254,7 @@ class LiveEventProjection:
             self._append(raw, record)
             index += 1
         self.raw_cursor += len(raw_events)
+        # Public events are fully validated first. Markers are inserted at their
+        # observed closing anchor, before any later round in the same native batch.
+        for trigger in confirmed_self_passes:
+            self.ledgers[trigger.observer_player_id].record_self_pass(trigger, provenance="native_committed_pass")

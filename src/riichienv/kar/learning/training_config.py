@@ -8,7 +8,13 @@ from typing import Any
 from ..budget import BudgetPlan
 from ..calibration_roles import CALIBRATION_SPLIT_SALT, calibration_is_fit
 from ..contracts import content_hash, model_tier
-from ..versioning import MODEL_TIER_BASIS, RULE_FEATURE_MASK_VERSION, TRAIN_CONFIG_VERSION, TRAINING_PLAN_VERSION
+from ..versioning import (
+    INPUT_PIPELINE_VERSION,
+    MODEL_TIER_BASIS,
+    RULE_FEATURE_MASK_VERSION,
+    TRAIN_CONFIG_VERSION,
+    TRAINING_PLAN_VERSION,
+)
 
 EFFECTIVE_BATCH = {"small": 128, "medium": 256, "large": 512}
 
@@ -16,6 +22,7 @@ EFFECTIVE_BATCH = {"small": 128, "medium": 256, "large": 512}
 def _config_versions() -> dict[str, str]:
     return {
         "training_config_version": TRAIN_CONFIG_VERSION,
+        "input_pipeline_version": INPUT_PIPELINE_VERSION,
         "training_plan_version": TRAINING_PLAN_VERSION,
         "rule_feature_mask_version": RULE_FEATURE_MASK_VERSION,
         "model_tier_basis": MODEL_TIER_BASIS,

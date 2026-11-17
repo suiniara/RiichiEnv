@@ -24,10 +24,10 @@ def conditional_input(snapshot, legal_ids, action_id):
 
 ## 缓存与杠事务
 
-缓存绑定观察者、起家顺序、Schema、历史前缀等上下文；旧行冻结，不能修改后继续输出陈旧字节。杠接受 Token 使用既有 kind，并由当前公共提交证据产生；合成的原生迟到确认不能重复生成声明。
+缓存绑定观察者、起家顺序、Schema、输入语义版本与复合历史前缀；旧行冻结，不能输出陈旧字节。`snapshot.events` 可含本家确认 SELF_PASS，`processed_events` 是复合事件数而非公共 cutoff。SELF_PASS(kind26) 校验 owner/provenance/确认锚，不推进公共逻辑时钟，批量/增量一致。ACTION 与 LEGAL_SET 共用 Schema 因子工厂。杠接受 Token 仍只由当前公共提交证据产生。
 
 不要让真实 E/R 标签进入前缀。候选独立 ACTION 分支由模型侧隔离，不把多个未来动作串成一条可互见历史。
 
 ## 错误、调用方与测试
 
-`TokenizationUnavailableError` 表示必要可见事实不足。上游为 [observation](../observation/README.md)，下游为 `input_audit`、`learning/export`、`learning/inference`。对应 [test_tokenize.py](../../../tests/kar/test_tokenize.py)、[test_token_cache.py](../../../tests/kar/test_token_cache.py)、[m1/test_model.py](../../../tests/kar/m1/test_model.py)及杠事务回归。本轮未执行示例或测试。
+`TokenizationUnavailableError` 表示必要可见事实不足。上游为 [observation](../observation/README.md)，下游为 `input_audit`、`learning/export`、`learning/inference`。对应 [test_tokenize.py](../../../tests/kar/test_tokenize.py)、[test_token_cache.py](../../../tests/kar/test_token_cache.py)、[m1/test_model.py](../../../tests/kar/m1/test_model.py)及 [test_self_pass_history.py](../../../tests/kar/test_self_pass_history.py)。本轮未执行阶段任务或反向/参数更新；定向历史及缓存对拍结果见[输入链路合同](../../kar-input-chain-repair.md)。

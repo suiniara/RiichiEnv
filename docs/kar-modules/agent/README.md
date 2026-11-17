@@ -15,7 +15,7 @@
 
 own-action、两步立直、所有活跃响应者的联合提交和自动推进分别处理。合法可抢暗杠的空原生日志窗口由已验证动作和公开阶段推进，而不是误判停滞。
 
-策略只取得本家 Observation 和白名单快照；不能依赖全知环境筛选模型 response mask。动作执行后用 [live_events](../live_events/README.md)处理全部增量，不能污染动作前输入。
+策略只取得本家 Observation 和白名单快照；不能依赖全知环境筛选 response mask。响应选择先捕获 owner-only Pass 上下文；原子执行失败/取消不确认，成功后才向 [live_events](../live_events/README.md) 提交私有确认。它只进入本家后续历史，动作前输入和公共 trace 不变。
 
 ## 输出与边界
 
@@ -27,4 +27,4 @@ own-action、两步立直、所有活跃响应者的联合提交和自动推进�
 
 `python -m riichienv.kar.agent` 是固定静态 logits 的功能入口，包含实际规则对局，不是纯帮助/静态检查。没有账号连接、在线雀魂客户端或 MCTS。
 
-对应 [core/test_live_agent.py](../../../tests/kar/core/test_live_agent.py)、[core/test_runtime.py](../../../tests/kar/core/test_runtime.py)。本轮未执行任何 agent 或对局。
+对应 [test_self_pass_history.py](../../../tests/kar/test_self_pass_history.py) 和 [core/test_live_agent.py](../../../tests/kar/core/test_live_agent.py)。本轮未运行完整半庄或阶段任务；只用真实原生环境与受控策略，设8次决策 cap 的合成回归验证 Pass 接线及失败不确认。

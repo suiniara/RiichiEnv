@@ -28,7 +28,7 @@ assert config.parameter_count == 5_239_435
 
 维度必须正整数；width 可整除 heads，单头维度为偶数以用于 RoPE。norm_eps、rope_base 有范围要求。preset 不是预算许可，选大模型仍需 N_train 阶梯、M1 证据和预算放行。
 
-特征语义版本为 `visible_rule_features_v1_2_2`，随机置空版本另为 `sample_mask_v1`，不再混用。`use_rule_features` 是数据视图，不增加/删除参数。不要为了对齐旧权重手工改维度后保留原 contract hash。
+forward 版本为 `kar_transformer_v2_legal_set`，另以 `input_pipeline_version` 绑定 LEGAL_SET/SELF_PASS 语义；维度和参数数目不变不等于旧权重精确兼容。特征语义仍为 `visible_rule_features_v1_2_2`，随机置空仍为 `sample_mask_v1`；这两项没有因接线而回滚。
 
 ## 接线与状态
 

@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from ..contracts import content_hash
 from ..versioning import FEATURE_CONTRACT_VERSION, LOSS_CONTRACT_VERSION
 
-MODEL_VERSION = "kar_transformer_v1"
+MODEL_VERSION = "kar_transformer_v2_legal_set"
 FEATURE_VERSION = FEATURE_CONTRACT_VERSION
 LOSS_VERSION = LOSS_CONTRACT_VERSION
 

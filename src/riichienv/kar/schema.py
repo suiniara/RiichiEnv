@@ -109,11 +109,22 @@ _ACTION_TYPES = {
     "RON": 10,
 }
 _ACTION_FIELDS = ("action_ids", "action_type_ids", "action_tile37", "action_tsumogiri", "action_riichi")
+ACTION_FACTOR_FIELDS = _ACTION_FIELDS
 _REAL_TILES = frozenset(range(1, 38))
 _RED_TILES = frozenset((1, 11, 21))
 _BASE_TILES = _REAL_TILES - _RED_TILES
 _TOKEN_STRUCT = struct.Struct("<" + "B" * 27 + "f" * 20 + "B" * 20 + "H" + "B" * 5 + "I" + "B")
 TOKEN_BYTE_SIZE = _TOKEN_STRUCT.size
+
+
+def action_factor_ids(action_id: int) -> tuple[int, int, int, int, int]:
+    """Frozen ACTION factors, shared by suffix encoding and LEGAL_SET pooling."""
+    spec = action_spec(action_id)
+    family = _ACTION_TYPES[spec.action_type]
+    if spec.action_type != "DISCARD":
+        return action_id, family, 0, 0, 0
+    assert spec.tile37 is not None and spec.tsumogiri is not None and spec.riichi is not None
+    return action_id, family, spec.tile37 + 1, 1 + int(spec.tsumogiri), 1 + int(spec.riichi)
 
 
 def schema_hash(schema: dict[str, Any]) -> str:

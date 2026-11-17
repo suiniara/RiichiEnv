@@ -2,28 +2,22 @@
 <!-- api: RMSNorm, block_attention_mask, InputEmbedding, TransformerBlock, ModelOutputs, PrefixCache, KARTransformer -->
 # learning.model — 三头 Transformer 与共享前缀
 
-源码：[model.py](../../../../src/riichienv/kar/learning/model.py) · [learning 索引](../README.md)
+源码：[model.py](../../../../src/riichienv/kar/learning/model.py) · [learning 索引](../README.md) · [输入链路合同](../../../kar-input-chain-repair.md)
 
-## 接口
+## 接口与输入
 
-`KARTransformer(config=None)` 构建并随机初始化网络，真实参数总量必须符合 `ModelConfig.parameter_count`。`forward(ModelBatch)` 返回 `ModelOutputs`：policy `[B,546]`、response `[B,21]`、rank `[B,21,4]` 和 ACTION 存在标记。
+`KARTransformer(config=None)` 按冻结 preset 随机初始化，真实参数数必须等于公式。`forward(ModelBatch)` 输出 policy `[B,546]`、response `[B,21]`、rank `[B,21,4]`，读出保持 FP32。
 
-`encode_prefix(batch)` 返回 `PrefixCache` 与前缀 policy logits；`score_actions(cache, action_batch)` 共享同一决策 K/V，返回各独立假设 ACTION 的 response/rank logits。
+`InputEmbedding.forward(fields, candidates=None)` 对 LEGAL_SET 行使用完整 `batch.candidates`：复用 ACTION 的五张 scalar 表求组合向量均值。padding=546 不参与均值，真实 ID 唯一/非空/最多32，按全局ID规范排序。非舍牌按 manifest/Schema 使用 N/A 因子；没有新候选表或可训练参数，numeric[16] 数量语义保留。
 
-`InputEmbedding`、`TransformerBlock`、`RMSNorm`、`block_attention_mask` 是实现组件，不是独立训练入口。
+`encode_prefix(batch)` 与训练 dense 共用 `_hidden`；`score_actions(cache, action_batch)` 的单 ACTION 不重复加入候选池。前缀必须有一个 LEGAL_SET；teacher ACTION 不影响 DECIDE，独立分支互不可见。
 
-## 架构与因果合同
+## 架构与缓存
 
-五个 tile 字段独立 Embedding、40D 数值投影、RMSNorm、QKV/RoPE/SwiGLU、零 dropout。三头读出 logits 保持 FP32；不能借 BF16 改写 loss 的数值合同。
+五张独立 tile 表、40D 数值投影、RMSNorm/QKV/RoPE/SwiGLU、零 dropout 与三个头均保留。缓存绑定 owner、参数及计算 buffer 版本、完整规范候选集、输入/模型合同、上下文、设备和自身 Tensor 状态。旧输入版本、跨决策、集合改变或缓存/模型被改动均拒绝；CPU TokenHistoryCache 是另一层。
 
-DECIDE 不可看 ACTION 后缀；多个候选分支互不可见。状态块置换/padding 不应改变有效结果。forward 不接收真实 E/R 标签，真实动作仅以明确的条件后缀出现。
+`MODEL_VERSION=kar_transformer_v2_legal_set` 标明 forward 改变，不能因参数形状相同声称旧权重精确兼容。完整 Schema ID/hash 没有因此改名。
 
-## 缓存与失败
+## 验证与边界
 
-缓存绑定模型 owner、参数/缓冲版本、上下文、设备/配置及缓存 Tensor 状态。更新、load_state_dict、跨观察者/决策或修改缓存后不得复用。CPU `TokenHistoryCache` 是另一层，不是该 K/V 缓存。
-
-非法 block/valid 形状、参数数不符、缺前缀上下文或过期缓存会报错。模型是库原语：构造/forward 本身会占内存、进行计算，不等于已经得到上层作业授权。
-
-## 测试与状态
-
-对应 [m1/test_model.py](../../../../tests/kar/m1/test_model.py)、[core/test_frozen_inference.py](../../../../tests/kar/core/test_frozen_inference.py)。本轮未创建任何网络、运行 forward/backward 或测试；网络结构已编码不代表权重已训练或棋力有效。
+对应 [test_legal_set_pool.py](../../../../tests/kar/m1/test_legal_set_pool.py)、[test_model.py](../../../../tests/kar/m1/test_model.py)。本轮未执行 backward、optimizer.step、GPU 或阶段训练；只运行有硬守卫的 CPU forward、精确向量、dense/cache、隔离及参数量回归。构造网络会分配内存，不授予训练许可。

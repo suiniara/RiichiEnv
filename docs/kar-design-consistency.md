@@ -1,5 +1,7 @@
 # KAR-v1.2.2 / RiichiEnv 设计一致性与迁移合同
 
+> 本页 v2/1348 项描述是后来提交为 `a869669` 的历史一致性轮。当前 LEGAL_SET/SELF_PASS 输入链路升级为 artifact v3，见[输入链路修复](kar-input-chain-repair.md)。Schema、雀魂 mask v2、train 口径及严格版本绑定均保留；旧报告不自动成为新 forward 的运行证据。
+
 本次基线：`e24c24bd4b0ace681a2feaa093eede94754aafa2`，分支 `kar/riichienv-v1-20261117`。
 正式主设计为工作区设计包的 `KAR-v1.2.2-DESIGN.md`，文件 SHA256：
 `4349039c44175ece77f6dddad3a2106fbd3e0e0339935122df242175c83cbdba`。

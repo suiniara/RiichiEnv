@@ -12,7 +12,8 @@ from .actions import manifest_hash
 from .contracts import MJSOUL_RULESET, REFERENCE_SCHEMA_ID, RESPONSE_MASK_VERSION, SCHEMA_ID, SCHEMA_OVERLAY_SHA256
 from .schema import schema_status
 
-ARTIFACT_CONTRACT_VERSION = "kar_riichienv_contract_v2"
+ARTIFACT_CONTRACT_VERSION = "kar_riichienv_contract_v3"
+INPUT_PIPELINE_VERSION = "legal_set_pool_private_self_pass_v1"
 SCHEMA_MAPPING_VERSION = "riichienv_complete_v1_from_kar_v1_2_2_v1"
 ARCHITECTURE_ID = "kar_kl_response_value_v1"
 FEATURE_CONTRACT_VERSION = "visible_rule_features_v1_2_2"
@@ -20,7 +21,7 @@ RULE_FEATURE_MASK_VERSION = "sample_mask_v1"
 TRAINING_PLAN_VERSION = "budget_ladder_v1"
 LOSS_CONTRACT_VERSION = "sentinel_safe_v1_2_1"
 MODEL_TIER_BASIS = "N_train_half_games"
-TRAIN_CONFIG_VERSION = "explicit_train_split_scale_v2"
+TRAIN_CONFIG_VERSION = "explicit_train_split_scale_v3_inputs"
 
 
 def artifact_contract() -> dict[str, Any]:
@@ -34,6 +35,7 @@ def artifact_contract() -> dict[str, Any]:
         raise ValueError("Complete host schema and design-reference identity are required")
     return {
         "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
+        "input_pipeline_version": INPUT_PIPELINE_VERSION,
         "schema_id": schema["schema_id"],
         "schema_hash": schema["schema_hash"],
         "schema_mapping_version": SCHEMA_MAPPING_VERSION,

@@ -1,5 +1,5 @@
 <!-- kar-module: riichienv.kar.learning.batch -->
-<!-- api: ModelBatch, collate_inputs, feature_mask_draw, rule_feature_view -->
+<!-- api: ModelBatch, canonical_candidate_ids, collate_inputs, feature_mask_draw, rule_feature_view -->
 # learning.batch — 输入组批与规则特征视图
 
 源码：[batch.py](../../../../src/riichienv/kar/learning/batch.py) · [learning 索引](../README.md)
@@ -8,7 +8,7 @@
 
 `collate_inputs(examples)` 将 139 字节 Token 流解成按字段存储的 Tensor、padding、完整候选及 DECIDE/ACTION 索引，返回 `ModelBatch`。模型输入不包含 response/rank 真值。
 
-`ModelBatch` 提供 `fields`、`candidates`、索引、context IDs、`legal_mask`、`size` 和设备迁移。候选 padding 使用 546，它不是合法全局动作；真实 ID 仍为 0..545。缺 ACTION 使用约定的索引标记，不伪造真实后缀。
+`ModelBatch` 提供 `fields`、`candidates`、索引、context IDs、`legal_mask`、`size` 和设备迁移。`canonical_candidate_ids(candidates,size)` 对32槽 int64 ID 排序，拒绝空集合/重复真实ID/越界，padding=546 允许重复但不计入集合。此规范集同时用于 LEGAL_SET 池化和 K/V 缓存身份；它不是另一张 Embedding 表。真实 ID 仍为 0..545。缺 ACTION 使用索引标记，不伪造真实后缀。
 
 ## 特征模式
 
@@ -26,4 +26,4 @@
 
 ## 测试与状态
 
-对应 [m1/test_model.py](../../../../tests/kar/m1/test_model.py)、[production/test_training_contracts.py](../../../../tests/kar/production/test_training_contracts.py)、[test_diagnostic_distributions.py](../../../../tests/kar/production/test_diagnostic_distributions.py)。本轮未组批、分配模型或运行测试。
+对应 [test_legal_set_pool.py](../../../../tests/kar/m1/test_legal_set_pool.py)、[test_model.py](../../../../tests/kar/m1/test_model.py)。本轮未执行 backward/optimizer.step 或阶段任务；仅有界 CPU 输入/前向复验。

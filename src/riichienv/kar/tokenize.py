@@ -10,11 +10,20 @@ from typing import Any
 
 from riichienv import convert
 
-from .actions import action_spec, tile136_to_tile37
+from .actions import tile136_to_tile37
 from .contracts import MAX_CANDIDATES
 from .kan_transactions import COMMITTED_KAN_KINDS, pending_kan_commits
-from .observation import PublicSnapshot, extract_rule_features
-from .schema import ACTIVE_SCHEMA_ID, encode_token, load_schema, schema_hash, token_defaults
+from .observation import SELF_PASS_PROVENANCES, PublicSnapshot, extract_rule_features
+from .schema import (
+    ACTION_FACTOR_FIELDS,
+    ACTIVE_SCHEMA_ID,
+    action_factor_ids,
+    encode_token,
+    load_schema,
+    schema_hash,
+    token_defaults,
+)
+from .versioning import INPUT_PIPELINE_VERSION
 
 
 class TokenizationUnavailableError(ValueError):
@@ -220,6 +229,7 @@ class _HistoryState:
     indicators: list[int] = field(default_factory=list)
     seen_cash: set[tuple[Any, ...]] = field(default_factory=set)
     seen_ura: set[tuple[Any, ...]] = field(default_factory=set)
+    public_event_id: int = -1
 
 
 @dataclass(frozen=True)
@@ -235,7 +245,7 @@ class TokenHistoryCache:
         self.reset()
 
     def reset(self) -> None:
-        self._binding: tuple[int, tuple[int, ...], str, str] | None = None
+        self._binding: tuple[int, tuple[int, ...], str, str, str] | None = None
         self._events: tuple[str, ...] = ()
         self._positions: tuple[int, ...] = ()
         self._state = _HistoryState()
@@ -267,6 +277,7 @@ class TokenHistoryCache:
             tuple(snapshot.initial_seat_order_player_ids),
             ACTIVE_SCHEMA_ID,
             _active_hash(),
+            INPUT_PIPELINE_VERSION,
         )
         length = len(self._events)
         if (
@@ -348,6 +359,8 @@ def _history(  # noqa: PLR0915
 
     for event, position in zip(events, positions[start_index:]):
         typ = event["type"]
+        if typ != "self_pass":
+            state.public_event_id += 1
         if typ == "kan_commit" and (pending is None or event.get("kan_type") != pending["kind"]):
             raise ValueError("Kan commitment token lacks its matching declaration")
         if pending is not None and pending_kan_commits(
@@ -549,6 +562,14 @@ def _history(  # noqa: PLR0915
         elif typ in {"end_kyoku", "end_game"}:
             append(_row(28, position, stage=5 if typ == "end_game" else 0))
         elif typ == "self_pass":
+            trigger_id, confirmed_id = event.get("trigger_event_id"), event.get("confirmed_at_event_id")
+            if (
+                event.get("actor") != observer or event.get("target") == observer
+                or event.get("confirmed") is not True or event.get("provenance") not in SELF_PASS_PROVENANCES
+                or type(trigger_id) is not int or type(confirmed_id) is not int
+                or not 0 <= trigger_id < confirmed_id == state.public_event_id <= snapshot.cutoff_event_id
+            ):
+                raise ValueError("SELF_PASS must be owner-only, confirmed and anchored without future information")
             row = _row(26, position, actor=1, source=_relative(event["target"], observer))
             row["tiles"][0] = _tile(event["pai"])
             append(row)
@@ -709,27 +730,10 @@ def append_action(prefix: TokenSequence, action_id: int) -> TokenSequence:
         raise ValueError("An ACTION suffix cannot mix schema versions")
     if prefix.rows[-1]["kind"] != 9 or action_id not in prefix.candidates:
         raise ValueError("An ACTION suffix requires a legal candidate and an unsuffixed DECIDE prefix")
-    spec = action_spec(action_id)
-    families = {
-        "DISCARD": 1,
-        "ANKAN": 2,
-        "KAKAN": 3,
-        "TSUMO": 4,
-        "KYUSHU_KYUHAI": 5,
-        "PASS": 6,
-        "CHI": 7,
-        "PON": 8,
-        "DAIMINKAN": 9,
-        "RON": 10,
-    }
     row = _row(
-        10, prefix.logical_position + 1, 3, actor=1, action_ids=action_id, action_type_ids=families[spec.action_type]
+        10, prefix.logical_position + 1, 3, actor=1,
+        **dict(zip(ACTION_FACTOR_FIELDS, action_factor_ids(action_id))),
     )
-    if spec.action_type == "DISCARD":
-        assert spec.tile37 is not None
-        row["action_tile37"] = spec.tile37 + 1
-        row["action_tsumogiri"] = _flag(spec.tsumogiri)
-        row["action_riichi"] = _flag(spec.riichi)
     encoded = _freeze_token(row, prefix.schema_hash)
     return TokenSequence._from_validated(
         (*prefix._encoded_rows, encoded),

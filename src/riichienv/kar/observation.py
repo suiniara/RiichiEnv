@@ -89,6 +89,19 @@ class PublicSnapshot:
         )
 
 
+SELF_PASS_PROVENANCES = frozenset({"native_committed_pass", "inferred_unique_next_draw_pass"})
+
+
+@dataclass(frozen=True)
+class SelfPassTrigger:
+    observer_player_id: int
+    trigger_event_id: int
+    round_event_id: int
+    trigger_type: str
+    target: int
+    pai: str
+
+
 class ObserverLedger:
     def __init__(self, observer_player_id: int, initial_seat_order_player_ids: tuple[int, ...]):
         if observer_player_id not in range(4) or sorted(initial_seat_order_player_ids) != list(range(4)):
@@ -126,6 +139,115 @@ class ObserverLedger:
         self.logical_clock = 0
         self.last_visible_group: tuple[str, int] | None = None
         self.visibility_complete = True
+        self._round_event_id = -1
+        self._public_events: list[dict[str, Any]] = []
+        self._public_event_indices: list[int] = []
+        self._pass_triggers: dict[int, SelfPassTrigger] = {}
+        self._active_pass_trigger: int | None = None
+        self._pass_confirmations: dict[int, int] = {}
+        self._recorded_passes: set[int] = set()
+
+    def pass_trigger(self) -> SelfPassTrigger:
+        """Capture owner-only response context, not a submission or approval."""
+        trigger = self._pass_triggers.get(self._active_pass_trigger if self._active_pass_trigger is not None else -1)
+        if (
+            trigger is None or trigger.target == self.observer
+            or self.decision_phase not in {"discard_response", "kan_response"}
+        ):
+            raise ValueError("A self Pass needs this observer's current public response trigger")
+        if trigger.trigger_type == "kakan" and not any(
+            meld.kind == "pon" and meld.tiles[0] // 4 == _tile(trigger.pai) // 4
+            for meld in self.melds[trigger.target]
+        ):
+            raise ValueError("A kakan response requires the existing committed pon")
+        return trigger
+
+    def record_self_pass(self, trigger: SelfPassTrigger, *, provenance: str) -> bool:
+        """Materialize a confirmed owner action at its public closing-event anchor.
+
+        Public event IDs/clocks do not advance. The caller must have submitted a
+        real Pass successfully, or use the frozen unique-next-draw inference.
+        A previously frozen snapshot is never mutated.
+        """
+        if (
+            not isinstance(trigger, SelfPassTrigger)
+            or trigger.observer_player_id != self.observer
+            or trigger.target == self.observer
+            or self._pass_triggers.get(trigger.trigger_event_id) != trigger
+        ):
+            raise ValueError("Foreign or unknown private Pass trigger")
+        if not isinstance(provenance, str) or provenance not in SELF_PASS_PROVENANCES:
+            raise ValueError("Private Pass requires confirmed, supported provenance")
+        confirmed = self._pass_confirmations.get(trigger.trigger_event_id)
+        if confirmed is None:
+            raise ValueError("Private Pass trigger has no observed closing event")
+        closing = self._public_events[confirmed]
+        if provenance == "inferred_unique_next_draw_pass" and (
+            trigger.trigger_type != "dahai" or closing["type"] != "tsumo"
+            or closing.get("actor") != (trigger.target + 1) % 4
+        ):
+            raise ValueError("An unestablished/overridden call cannot be inferred as private Pass")
+        if trigger.trigger_event_id in self._recorded_passes:
+            return False
+        marker = {"type": "self_pass", "actor": self.observer, "target": trigger.target, "pai": trigger.pai,
+                  "trigger_type": trigger.trigger_type, "trigger_event_id": trigger.trigger_event_id,
+                  "round_event_id": trigger.round_event_id, "confirmed_at_event_id": confirmed,
+                  "confirmed": True, "provenance": provenance}
+        anchor = self._public_event_indices[confirmed]
+        index = anchor + 1
+        self.events.insert(index, canonical_bytes(marker).decode("utf-8"))
+        self.history_positions.insert(index, self.history_positions[anchor])
+        for public_id in range(confirmed + 1, len(self._public_event_indices)):
+            self._public_event_indices[public_id] += 1
+        self._recorded_passes.add(trigger.trigger_event_id)
+        return True
+
+    def _apply_self_pass(self, event: dict[str, Any]) -> None:
+        if event.get("actor") != self.observer or event.get("confirmed") is not True:
+            raise ValueError("A private Pass belongs only to its confirmed owner")
+        source_id = event.get("trigger_event_id")
+        trigger = self._pass_triggers.get(source_id) if type(source_id) is int else None
+        if trigger is None or any(event.get(key) != getattr(trigger, key) for key in ("target", "pai", "trigger_type")):
+            raise ValueError("Private Pass source facts differ from the observed trigger")
+        confirmed = event.get("confirmed_at_event_id")
+        if type(confirmed) is not int or self._pass_confirmations.get(trigger.trigger_event_id) != confirmed:
+            raise ValueError("Private Pass cannot use a future or foreign confirmation")
+        provenance = event.get("provenance")
+        if not isinstance(provenance, str):
+            raise ValueError("Private Pass requires an explicit provenance string")
+        self.record_self_pass(trigger, provenance=provenance)
+
+    def _update_pass_window(self, public: dict[str, Any]) -> None:
+        typ = public["type"]
+        current = self._pass_triggers.get(self._active_pass_trigger if self._active_pass_trigger is not None else -1)
+        if current is not None:
+            closed = False
+            if typ == "tsumo":
+                target = (current.target + 1) % 4 if current.trigger_type == "dahai" else current.target
+                closed = public["actor"] == target
+            elif typ in {"chi", "pon", "kan", "daiminkan"}:
+                closed = (
+                    current.trigger_type == "dahai" and public["target"] == current.target
+                    and public["pai"] == current.pai
+                )
+            elif typ == "kan_commit":
+                closed = public["actor"] == current.target and public.get("kan_type") == current.trigger_type
+            elif typ == "hora":
+                closed = public.get("target") == current.target and public.get("actor") != current.target
+            elif typ == "ryukyoku":
+                closed = current.trigger_type == "dahai"
+            if closed:
+                self._pass_confirmations[current.trigger_event_id] = self.event_id
+                self._active_pass_trigger = None
+        if typ in {"start_kyoku", "end_kyoku", "end_game"}:
+            self._active_pass_trigger = None
+        if typ == "start_kyoku":
+            self._round_event_id = self.event_id
+        if typ in {"dahai", "ankan", "kakan"}:
+            pai = public["consumed"][0] if typ == "ankan" else public["pai"]
+            trigger = SelfPassTrigger(self.observer, self.event_id, self._round_event_id, typ, public["actor"], pai)
+            self._pass_triggers[self.event_id] = trigger
+            self._active_pass_trigger = self.event_id
 
     def _remove_hand(self, tile: int) -> None:
         if tile in self.hand:
@@ -156,6 +278,9 @@ class ObserverLedger:
 
     def apply_event(self, event: dict[str, Any]) -> None:  # noqa: PLR0915
         typ = event["type"]
+        if typ == "self_pass":
+            self._apply_self_pass(event)
+            return
         self.event_id += 1
         if self.pending is not None and pending_kan_commits(
             event,
@@ -342,7 +467,10 @@ class ObserverLedger:
             self.logical_clock += 1
             self.last_visible_group = group
         self.history_positions.append(self.logical_clock)
+        self._public_event_indices.append(len(self.events))
         self.events.append(canonical_bytes(public).decode("utf-8"))
+        self._public_events.append(public)
+        self._update_pass_window(public)
 
     def snapshot(self) -> PublicSnapshot:
         return PublicSnapshot(

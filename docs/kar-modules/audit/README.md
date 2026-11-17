@@ -12,7 +12,7 @@
 
 ## 数据边界
 
-监督处理可以在离线阶段查看后续响应/终局事实，但决策输入只来自 cutoff 的白名单快照。重放使用 `apply_event` 和明确阶段合法性检查；不依靠会注入真实日志选择的 replay helper 生成合法集合。
+监督处理可以查看后续事实作标签，但当前决策前缀只来自冻结 cutoff。唯一正常 NEXT_DRAW 产生 Pass 监督时，私有 SELF_PASS 仍等到循环实际处理该确认摸牌后才写入本家后续历史；有无 export callback 都得到相同后续输入。被覆盖的 CHI/PON/争议意图不伪造为 Pass，provenance 保留。原生阶段和独立结算检查继续执行。
 
 服务器番符/支付和 header 分数仅作比较目标，不得反过来修正独立账本。缺少响应、里宝或完整结算证据时保持未知/BLOCKED，不能填零。相同 game 的四视角不增加独立支持数。
 
@@ -24,4 +24,4 @@
 
 ## 测试与状态
 
-对应 [test_audit.py](../../../tests/kar/test_audit.py)、[test_draw_obligations.py](../../../tests/kar/test_draw_obligations.py)、[test_parallel_replay.py](../../../tests/kar/test_parallel_replay.py)。本轮未运行规则重放或测试。
+对应 [test_self_pass_history.py](../../../tests/kar/test_self_pass_history.py)、[test_audit.py](../../../tests/kar/test_audit.py)、[test_native_replay.py](../../../tests/kar/test_native_replay.py)。本轮未运行阶段任务或真实校准/重导出；仅有界输入链路与桥接回归，完整半庄证书不由这些测试替代。

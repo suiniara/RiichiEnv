@@ -6,7 +6,9 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from .batch import ModelBatch
+from ..schema import ACTION_FACTOR_FIELDS, action_factor_ids
+from ..versioning import INPUT_PIPELINE_VERSION
+from .batch import ModelBatch, canonical_candidate_ids
 from .config import ModelConfig
 
 SCALAR_EMBEDDINGS = {
@@ -58,14 +60,18 @@ def block_attention_mask(block: Tensor, valid: Tensor) -> Tensor:
 
 
 class InputEmbedding(nn.Module):
+    action_factors: Tensor
+
     def __init__(self, width: int):
         super().__init__()
         self.scalar = nn.ModuleDict({key: nn.Embedding(count, width) for key, count in SCALAR_EMBEDDINGS.items()})
         self.tiles = nn.ModuleList([nn.Embedding(39, width) for _ in range(5)])
         self.flags = nn.ModuleList([nn.Embedding(3, width) for _ in range(16)])
         self.numeric = nn.Linear(40, width, bias=False)
+        factors = [action_factor_ids(action) for action in range(546)] + [(546, 0, 0, 0, 0)]
+        self.register_buffer("action_factors", torch.tensor(factors, dtype=torch.int64), persistent=False)
 
-    def forward(self, fields: dict[str, Tensor]) -> Tensor:
+    def forward(self, fields: dict[str, Tensor], candidates: Tensor | None = None) -> Tensor:
         value = self.numeric(torch.cat((fields["numeric"].float(), fields["numeric_present"].float()), dim=-1))
         for key, table in self.scalar.items():
             value = value + table(fields[key])
@@ -73,6 +79,19 @@ class InputEmbedding(nn.Module):
             value = value + table(fields["tiles"][..., column])
         for column, table in enumerate(self.flags):
             value = value + table(fields["flags"][..., column])
+        legal_rows = (fields["kind"] == 8) & fields["valid"]
+        if torch.any(legal_rows):
+            if candidates is None or not torch.all(legal_rows.sum(-1) == 1):
+                raise ValueError("A prefix requires one LEGAL_SET row and its complete candidates")
+            ordered = canonical_candidate_ids(candidates, fields["kind"].shape[0])
+            factors = self.action_factors[ordered]
+            combined = self.scalar[ACTION_FACTOR_FIELDS[0]](factors[..., 0])
+            for column, name in enumerate(ACTION_FACTOR_FIELDS[1:], 1):
+                combined = combined + self.scalar[name](factors[..., column])
+            members = ordered != 546
+            pooled = torch.where(members[..., None], combined, 0).sum(1, dtype=torch.float32)
+            pooled = pooled / members.sum(-1, keepdim=True)
+            value = value + legal_rows[..., None] * pooled[:, None, :].to(value.dtype)
         return value * fields["valid"][..., None]
 
 
@@ -138,6 +157,9 @@ class PrefixCache:
     policy_logits: Tensor
     device: torch.device
     dtype: torch.dtype
+    candidates: Tensor
+    input_pipeline_version: str
+    model_contract_sha256: str
 
 
 class KARTransformer(nn.Module):
@@ -163,7 +185,7 @@ class KARTransformer(nn.Module):
                 nn.init.zeros_(module.bias)
 
     def _identity(self) -> tuple[tuple[int, int], ...]:
-        return tuple((parameter.data_ptr(), parameter._version) for parameter in self.parameters())
+        return tuple((tensor.data_ptr(), tensor._version) for tensor in (*self.parameters(), *self.buffers()))
 
     def _hidden(self, batch: ModelBatch, *, capture: bool = False) -> tuple[Tensor, tuple[tuple[Tensor, Tensor], ...]]:
         valid, block, position = batch.fields["valid"], batch.fields["block"], batch.fields["positions"]
@@ -171,8 +193,10 @@ class KARTransformer(nn.Module):
             raise ValueError("Model token metadata must share [B,L] shape")
         if torch.any((block < 0) | (block > 3)) or torch.any(position < 0):
             raise ValueError("Invalid block or logical position")
+        if not torch.all(((batch.fields["kind"] == 8) & valid).sum(-1) == 1):
+            raise ValueError("Dense/prefix computation requires one LEGAL_SET row")
         mask = block_attention_mask(block, valid)
-        value = self.embedding(batch.fields)
+        value = self.embedding(batch.fields, batch.candidates)
         cache = []
         for layer in self.layers:
             value, key, content = layer(value, position, mask, valid)
@@ -224,7 +248,8 @@ class KARTransformer(nn.Module):
         valid = batch.fields["valid"].clone()
         positions = batch.fields["positions"][rows, batch.decide_index] + 1
         policy = self.policy_head(decide.float())
-        tensors = [tensor for pair in keys for tensor in pair] + [valid, positions, policy]
+        candidates = canonical_candidate_ids(batch.candidates, batch.size).clone()
+        tensors = [tensor for pair in keys for tensor in pair] + [valid, positions, policy, candidates]
         return PrefixCache(
             id(self),
             self._identity(),
@@ -236,18 +261,27 @@ class KARTransformer(nn.Module):
             policy,
             hidden.device,
             hidden.dtype,
+            candidates,
+            INPUT_PIPELINE_VERSION,
+            self.config.contract_hash,
         )
 
     @torch.no_grad()
     def score_actions(
         self, cache: PrefixCache, actions: ModelBatch, owners: Tensor | None = None
     ) -> tuple[Tensor, Tensor]:
+        if (
+            getattr(cache, "input_pipeline_version", None) != INPUT_PIPELINE_VERSION
+            or getattr(cache, "model_contract_sha256", None) != self.config.contract_hash
+        ):
+            raise ValueError("Prefix cache input/model contract differs")
         if self.training or cache.owner != id(self) or cache.parameter_identity != self._identity():
             raise ValueError("Stale or foreign model prefix cache")
         tensors = [tensor for pair in cache.key_values for tensor in pair] + [
             cache.valid,
             cache.action_position,
             cache.policy_logits,
+            cache.candidates,
         ]
         if tuple(tensor._version for tensor in tensors) != cache.tensor_versions:
             raise ValueError("Prefix cache tensors were modified")
@@ -273,6 +307,8 @@ class KARTransformer(nn.Module):
         expected_ids = tuple(cache.context_ids[index] for index in owners.cpu().tolist())
         if actions.context_ids != expected_ids:
             raise ValueError("Candidate belongs to another observer/decision")
+        if not torch.equal(canonical_candidate_ids(actions.candidates, actions.size), cache.candidates[owners]):
+            raise ValueError("Candidate set differs from the cached prefix input")
         if not torch.equal(actions.fields["positions"][:, 0], cache.action_position[owners]):
             raise ValueError("Candidate logical position differs from the cached prefix")
         value = self.embedding(actions.fields)

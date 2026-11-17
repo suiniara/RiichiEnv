@@ -1,8 +1,27 @@
-# KAR 实现覆盖与本轮设计一致性验收（2026-11-17）
+# KAR 实现覆盖与输入链路定向复验（2026-11-17）
 
-逐模块职责、接口、数据合同、使用方式及测试位置见 [72个模块 README 总索引](kar-modules/README.md) 与 [learning 子包索引](kar-modules/learning/README.md)。
+逐模块职责、接口、数据合同、使用方式及测试位置见 [73个模块 README 总索引](kar-modules/README.md) 与 [learning 子包索引](kar-modules/learning/README.md)。
 
-## 范围与状态
+## 当前：输入链路修复与 forward-only 定向复验
+
+基线 `a8696698af57dfeeb4c2699c4b685eea56e19f77`。本轮为 **372 passed、0 failed/errors/skipped**，Ruff/Ty 通过；所有最终测试由硬守卫记录 backward/autograd.grad/optimizer.step 调用为0，CUDA未初始化。准确源码/测试聚合 SHA 为 `3d0ab308450d263d698f0cfe557f5c70b630ce729589e59b5640dd8dd72feedd`，每组执行前后相同。
+
+| 输入链要求 | 本次实际证据 | 状态 |
+|---|---|---|
+| LEGAL_SET 真正进入向量 | 固定五表权重精确均值、等长集合改变向量及 raw policy，非只 legal mask | PASS |
+| 完整集合/非舍牌/排列/padding | 全动作族 N/A 因子、唯一/非空/32容量、规范排序、padding不入分母 | PASS |
+| dense/cache 与 ACTION 隔离 | 同一 InputEmbedding，单ACTION不重复池化，teacher不影响DECIDE，集合/输入版本/buffer更改拒绝缓存 | PASS |
+| 参数规模不变 | 四个实际 preset sum(numel)，Small/Medium/Large仍为5,239,435/14,790,795/26,536,587 | PASS |
+| 私有 SELF_PASS 接线 | 普通与抢暗杠真实原子Pass、受控8次决策run_match、KAKAN原PON事务单元 | PASS |
+| 隐私/时间/去重 | 本家下一前缀kind26，其他三家字节不变，当前前缀冻结，批量/增量同字节，重复no-op | PASS |
+| 离线可信与失败边界 | 唯一正常摸牌确认后才加入后续历史，取消/失败不记，被覆盖CHI不推Pass，callback有无同输入 | PASS |
+| 旧输入版本拒绝 | artifact v3 + input_pipeline_version，forward/model/recipe身份改变，旧shape相同不代表精确兼容 | PASS |
+
+实际测试组：LEGAL_SET 22、私有Pass 21、参数量4、前向缓存7、Token/公开输入235、审计桥38、版本45；复跑不重复计数。命令/原始输出/JUnit/源码清单见工作区 `kar-fix-reports/input-chain-20261117`，合同细节见[输入链路文档](kar-input-chain-repair.md)。
+
+本轮**未执行 backward、optimizer.step、阶段训练、GPU/云、真实校准或重导出**。新增池化训练梯度、完整训练阶段和旧产物迁移仍为 IMPLEMENTED / NOT EXECUTED；未因前向通过而宣称梯度或棋力通过。下方1348项及十五项梯度矩阵是旧轮历史，不可移植到新forward。
+
+## 历史范围与状态（以下保留 a869 之前的验收记录）
 
 宿主为 **RiichiEnv**；依据 `KAR-v1.2.2-DESIGN.md` 及已批准的 `kar-riichienv-v1` 完整 Schema、雀魂 mode12 主 cohort、`N_train_half_games` 模型阶梯适配。Kanachan 仅保留动作编号参考。
 
@@ -103,7 +122,7 @@ Schema 非别名映射、设计 §7.5/§17 冲突的用户裁定、版本前后�
 - 构建/角色/标定/登记/基准合同不匹配时拒绝静默复用；代码补齐不会产生训练或评测许可。
 - 58 项表是代码层覆盖；只有下面明确列出且本轮实际运行通过的项目标记 PASS。提交与发布状态以 Git 为准，本页不授予阶段运行许可。
 
-## 本轮十五项设计一致性矩阵
+## 历史：十五项设计一致性矩阵（不是当前输入 v3 的复验）
 
 执行基线 HEAD：`e24c24bd4b0ace681a2feaa093eede94754aafa2`，包含本轮未提交工作树补丁。PASS 的范围限于表内 CPU 验收，不表示棋力、真实完整数据或云端性能通过。
 

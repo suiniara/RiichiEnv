@@ -29,7 +29,7 @@ from .decision import ReplayDecision
 from .golden import golden_coverage
 from .input_audit import InputAudit
 from .native_replay import NativeReplayBridge
-from .observation import ObserverLedger, PublicSnapshot, extract_rule_features
+from .observation import ObserverLedger, PublicSnapshot, SelfPassTrigger, extract_rule_features
 from .response import draw_response, resolve_discard_response
 from .response_mask import public_rule_response_mask, validate_response_target
 from .schema import schema_status
@@ -124,6 +124,7 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
     terminal_snapshots: dict[int, PublicSnapshot] | None = None
     pending_discard: tuple[PublicSnapshot, int] | None = None
     next_draw_player: int | None = None
+    pending_self_passes: list[SelfPassTrigger] = []
     for index, event in enumerate(events):
         inputs.trigger_event_id = index
         typ = event["type"]
@@ -243,7 +244,15 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
             bridge.after_apply(event)
             for ledger in ledgers:
                 ledger.apply_event(event)
-            if on_decision is not None and typ == "dahai":
+            if typ == "tsumo":
+                # The next draw is now observed, not a future fact. Current Pass
+                # examples were frozen at the discard; only later history changes.
+                for trigger in pending_self_passes:
+                    ledgers[trigger.observer_player_id].record_self_pass(
+                        trigger, provenance="inferred_unique_next_draw_pass"
+                    )
+                pending_self_passes.clear()
+            if typ == "dahai":
                 resolved = resolve_discard_response(events, index)
                 if resolved.response_observed and resolved.response_target == 0:
                     responder_ids = [seat for seat in range(4) if seat != event["actor"]]
@@ -251,11 +260,12 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
                         mapped = legal_candidates(observation, source_player=event["actor"])
                         complete_ids = [candidate.global_id for candidate in mapped]
                         if 221 in complete_ids and len(complete_ids) > 1:
-                            # The prefix is immediately after the triggering discard,
-                            # before ACK/draw; only the label uses the closed window.
+                            # Future resolution is a supervision label only. Do
+                            # not materialize SELF_PASS before its actual draw.
                             inputs.inspect(
                                 ledgers[seat].snapshot(), complete_ids, 221, provenance="inferred_unique_next_draw_pass"
                             )
+                            pending_self_passes.append(ledgers[seat].pass_trigger())
             applied += 1
             if typ in {"hora", "ryukyoku"} and "scores" in event:
                 final_server_scores = list(event["scores"])

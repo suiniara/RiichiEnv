@@ -6,7 +6,7 @@
 
 ## 职责与接口
 
-`artifact_contract()` 返回数据、运行时、检查点和发布共用的显式身份：完整 host Schema、设计/overlay 引用、独立特征语义与置空版本、Response Mask v2、训练计划及选型口径。
+`artifact_contract()` 返回数据、运行时、检查点和发布共用的显式身份。活动格式为 `kar_riichienv_contract_v3`，新增 `input_pipeline_version=legal_set_pool_private_self_pass_v1`；保留完整 host Schema、设计引用、Response Mask v2、独立特征/置空版本及 train 选型。输入 forward/历史变化不能仅因参数形状相同而兼容，旧 v2/缺 input 版本的记录明确拒绝。
 
 `validate_artifact_contract(record, context=...)` 对每个必需字段检查精确值；缺失不填当前默认值，旧记录必须明确拒绝。
 
