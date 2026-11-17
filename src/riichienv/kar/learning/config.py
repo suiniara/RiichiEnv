@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 from ..contracts import content_hash
+from ..versioning import FEATURE_CONTRACT_VERSION, LOSS_CONTRACT_VERSION
 
 MODEL_VERSION = "kar_transformer_v1"
-FEATURE_VERSION = "sample_mask_v1"
-LOSS_VERSION = "sentinel_safe_v1_2_1"
+FEATURE_VERSION = FEATURE_CONTRACT_VERSION
+LOSS_VERSION = LOSS_CONTRACT_VERSION
 
 
 @dataclass(frozen=True)

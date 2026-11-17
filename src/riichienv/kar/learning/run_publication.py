@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..contracts import content_hash
+from ..versioning import validate_artifact_contract
 
 
 def performance_summary(value: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -47,6 +48,7 @@ def completed_run_record(
     checkpoint: dict[str, Any],
     recovered: bool,
 ) -> dict[str, Any]:
+    validate_artifact_contract(contract, context="completed run")
     if state.get("finished") is not True or not state.get("validation_history") or state.get("completed_epochs", 0) < 1:
         raise ValueError("Only a committed finished training state can publish completion")
     if checkpoint["metadata"]["step"] != state["step"] or checkpoint["metadata"]["release_contract"] != contract:
@@ -61,6 +63,9 @@ def completed_run_record(
     return {
         "status": "PASS",
         "phase": phase,
+        **{key: contract["training"][key] for key in (
+            "model_tier", "N_train_half_games", "N_eligible_half_games", "model_tier_basis"
+        )},
         "completed_epochs": state["completed_epochs"],
         "planned_epochs": planned_epochs,
         "step": state["step"],

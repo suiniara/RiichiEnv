@@ -11,6 +11,7 @@ from ..contracts import content_hash
 from ..release import implementation_release_identity
 from ..runtime_contracts import RuntimeBinding
 from ..selection_quality import TAU_SELECTION_VERSION, TauSelectionPolicy, validate_finite_tau_selection
+from ..versioning import RULE_FEATURE_MASK_VERSION, validate_artifact_contract
 from .config import FEATURE_VERSION, ModelConfig
 
 if TYPE_CHECKING:
@@ -54,6 +55,7 @@ def m2_prerequisites(  # noqa: PLR0915
         run = _read_signed(root / "run_manifest.json", "run_manifest_sha256")
         if run != saved or run.get("status") != "PASS" or run.get("full_epoch_training") is not True:
             raise ValueError("M1 summary differs from its actual completed training arm")
+        validate_artifact_contract(run["release_contract"], context="M1 prerequisite")
         training = run["release_contract"]["training"]
         if (
             run.get("completed_epochs") != 1
@@ -122,6 +124,7 @@ def m2_prerequisites(  # noqa: PLR0915
             {
                 "model_config_hash": ModelConfig.from_preset("small").contract_hash,
                 "feature_version": FEATURE_VERSION,
+                "rule_feature_mask_version": RULE_FEATURE_MASK_VERSION,
                 "use_rule_features": config.use_rule_features,
                 "inference_feature_dropout": 0,
             }

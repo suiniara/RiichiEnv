@@ -4,13 +4,11 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from .actions import manifest_hash
 from .calibration_roles import CALIBRATION_PARTITION_VERSION, CALIBRATION_SPLIT_SALT
-from .contracts import MJSOUL_RULESET, SCHEMA_ID, content_hash
+from .contracts import content_hash
 from .kan_transactions import KAN_TRANSACTION_VERSION
-from .schema import schema_status
+from .versioning import ARCHITECTURE_ID, artifact_contract
 
-ARCHITECTURE_ID = "kar_kl_response_value_v1"
 UTILITY_VERSION = "average_rank_utility_v1"
 POLICY_VERSION = "restricted_kl_runtime_v1"
 SUPPORT_VERSION = "train_independent_games_v1"
@@ -27,14 +25,8 @@ def sha256_value(value: str, name: str) -> str:
 
 
 def runtime_contract() -> dict[str, Any]:
-    schema = schema_status()
-    if schema["status"] != "PASS":
-        raise ValueError("Complete schema unavailable")
     return {
-        "schema_id": SCHEMA_ID,
-        "schema_hash": schema["schema_hash"],
-        "ruleset_hash": MJSOUL_RULESET.ruleset_hash,
-        "action_manifest_hash": manifest_hash(),
+        **artifact_contract(),
         "architecture_id": ARCHITECTURE_ID,
         "utility_version": UTILITY_VERSION,
         "utility_values": list(UTILITIES),

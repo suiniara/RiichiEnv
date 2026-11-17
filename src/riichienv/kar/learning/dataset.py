@@ -14,6 +14,7 @@ from torch.utils.data import Dataset
 
 from ..contracts import content_hash
 from ..schema import TOKEN_BYTE_SIZE
+from ..versioning import game_count_contract
 from .batch import ModelBatch, collate_inputs
 from .export import _file_sha, learning_contract
 from .losses import Labels
@@ -65,6 +66,13 @@ class DecisionDataset(Dataset[dict[str, Any]]):
         current = learning_contract()
         if any(self.manifest["scope"].get(key) != value for key, value in current.items()):
             raise ValueError("Dataset schema/rules/feature/loss contract differs")
+        counts = self.manifest.get("counts", {})
+        scale = game_count_contract(
+            self.manifest["scope"].get("available_split_counts", {}),
+            {split: counts.get(split, {}).get("games") for split in ("train", "validation", "test")},
+        )
+        if any(self.manifest.get(key) != value for key, value in scale.items()):
+            raise ValueError("Dataset eligible/train/split count evidence differs")
         self.path = self.directory / "decisions.sqlite3"
         if verify_hash and _file_sha(self.path) != self.manifest["database_sha256"]:
             raise ValueError("Dataset database SHA-256 mismatch")
@@ -75,6 +83,12 @@ class DecisionDataset(Dataset[dict[str, Any]]):
         db = self._db()
         if db.execute("SELECT value FROM metadata WHERE key='complete'").fetchone() != ("true",):
             raise ValueError("Dataset transaction is not marked complete")
+        stored_scope = db.execute("SELECT value FROM metadata WHERE key='scope'").fetchone()
+        if stored_scope is None or json.loads(stored_scope[0]) != self.manifest["scope"]:
+            raise ValueError("Dataset SQLite/manifest scope contract differs")
+        stored_games = dict(db.execute("SELECT split,COUNT(*) FROM games GROUP BY split").fetchall())
+        if any(stored_games.get(split, 0) != count for split, count in scale["exported_split_counts"].items()):
+            raise ValueError("Dataset complete-game counts differ from SQLite")
         self.indices = db.execute(
             "SELECT s.row_id,s.history_rows FROM samples s JOIN games g ON s.game_id=g.game_id "
             "WHERE g.split=? ORDER BY s.row_id",

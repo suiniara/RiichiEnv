@@ -7,6 +7,7 @@ from riichienv.kar import acceptance
 from riichienv.kar.actions import manifest_hash
 from riichienv.kar.contracts import MJSOUL_RULESET, cohort_hash, content_hash, game_split
 from riichienv.kar.schema import schema_status
+from riichienv.kar.versioning import artifact_contract
 
 
 def _save(path, value):
@@ -53,6 +54,7 @@ def _fixture(tmp_path, monkeypatch, status="PASS"):
     manifest = raw_root / "manifest.jsonl"
     manifest.write_text("".join(json.dumps(row) + "\n" for row in inputs), encoding="utf-8")
     scope = {
+        **artifact_contract(),
         "mode": "audit",
         "schema_hash": schema_status()["schema_hash"],
         "ruleset_hash": MJSOUL_RULESET.ruleset_hash,

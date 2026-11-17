@@ -19,6 +19,7 @@ from ..budget import BudgetLedger
 from ..contracts import content_hash, model_tier
 from ..evaluation_authorization import exclusive_job
 from ..release import complete_release_contract
+from ..versioning import MODEL_TIER_BASIS
 from .batch import feature_mask_draw, rule_feature_view
 from .config import ModelConfig
 from .dataset import DecisionDataset, TrainingBatch, collate_examples
@@ -224,8 +225,12 @@ def _dataset_contract(dataset: DecisionDataset, validation: DecisionDataset, con
             "Production data must have actual nonempty train/validation and exact complete-train-game evidence"
         )
     available = manifest["scope"]["available_split_counts"]
-    if sum(available.values()) != config.N_eligible_half_games:
-        raise ValueError("Eligible-game evidence differs from M0 selection")
+    if (
+        sum(available.values()) != config.N_eligible_half_games
+        or manifest.get("N_eligible_half_games") != config.N_eligible_half_games
+        or manifest.get("model_tier_basis") != MODEL_TIER_BASIS
+    ):
+        raise ValueError("Eligible/train count evidence differs from the explicit M0 selection basis")
     if config.phase == "M2" and (
         manifest["is_probe_subset"]
         or manifest["counts"]["train"]["games"] != available["train"]

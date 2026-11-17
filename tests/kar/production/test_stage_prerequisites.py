@@ -14,6 +14,7 @@ from riichienv.kar.learning.training_config import (
 )
 from riichienv.kar.runtime_contracts import RuntimeBinding
 from riichienv.kar.selection_quality import TAU_SELECTION_VERSION, TauSelectionPolicy, paired_tau_evidence
+from riichienv.kar.versioning import RULE_FEATURE_MASK_VERSION, artifact_contract
 
 
 def sign(body, key):
@@ -62,7 +63,9 @@ def m1_fixture(tmp_path, monkeypatch, *, train_games=900):
             "completed_epochs": 1,
             "planned_epochs": 1,
             "dataset_manifest_sha256": "c" * 64,
-            "release_contract": {"training": config.to_record(), "implementation": implementation},
+            "release_contract": {
+                **artifact_contract(), "training": config.to_record(), "implementation": implementation
+            },
             "final_validation": {"report": {"partition": "validation", "full_validation_split_evaluated": True}},
             "checkpoint_sha256": sha,
             "budget_ledger": ledger.state_dict(),
@@ -98,6 +101,7 @@ def growth_fixture(path, results, config):
         {
             "model_config_hash": ModelConfig.from_preset("small").contract_hash,
             "feature_version": FEATURE_VERSION,
+            "rule_feature_mask_version": RULE_FEATURE_MASK_VERSION,
             "use_rule_features": config.use_rule_features,
             "inference_feature_dropout": 0,
         }

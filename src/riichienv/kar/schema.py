@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .actions import action_spec, tile37_to_base34
+from .contracts import REFERENCE_SCHEMA_ID, SCHEMA_OVERLAY_SHA256
 
 ACTIVE_SCHEMA_ID = "kar-riichienv-v1"
 SCHEMA_CANONICAL_SHA256 = "fcc02a0bef0a7e95ca219c59ae199c4d1f5129372fac91323d3791bc30c31673"
@@ -127,6 +128,11 @@ def _validate_document(schema: dict[str, Any]) -> None:
         raise ValueError("Unexpected active schema identity")
     if schema.get("parent_registry") is not None or schema.get("legacy_compatibility") != "not_claimed":
         raise ValueError("The new registry must not claim missing legacy compatibility")
+    if (
+        schema.get("reference_design_schema_id") != REFERENCE_SCHEMA_ID
+        or schema.get("reference_overlay_sha256") != SCHEMA_OVERLAY_SHA256
+    ):
+        raise ValueError("Schema design/overlay references differ; they are not aliases for the host identity")
     if set(schema.get("fields", {})) != set(_FIELDS):
         raise ValueError("The schema must define every token field")
     kinds = schema.get("kinds", {})

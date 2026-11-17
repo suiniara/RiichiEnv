@@ -12,6 +12,7 @@ from ..authorization import UpdateAuthorization, load_update_authorization, requ
 from ..budget import BudgetLedger, CostForecast, choose_training_tier
 from ..contracts import content_hash
 from ..evaluation_authorization import exclusive_job
+from ..versioning import validate_artifact_contract
 from .distributed import DistributedContext
 from .prerequisites import m2_prerequisites
 from .trainer import train_production
@@ -29,6 +30,7 @@ def _read_run(path: Path, config: ProductionTrainConfig, dataset_sha256: str) ->
         raise ValueError("Prior completed phase evidence was modified or has another recipe")
     if record.get("dataset_manifest_sha256") != dataset_sha256:
         raise ValueError("Completed arm belongs to another training selection")
+    validate_artifact_contract(record["release_contract"], context="completed phase")
     from ..release import implementation_release_identity  # noqa: PLC0415
 
     if (

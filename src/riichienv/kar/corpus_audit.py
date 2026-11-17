@@ -24,6 +24,7 @@ from .contracts import (
 from .golden import find_golden_candidates, golden_coverage, verify_golden_evidence
 from .mjsoul import decode_record_bytes, load_protocol
 from .schema import schema_status
+from .versioning import MODEL_TIER_BASIS, artifact_contract
 
 SEMANTIC_GAME_VERSION = "result_event_semantics_v1"
 
@@ -130,6 +131,7 @@ def audit_corpus(  # noqa: PLR0915
             "response.py",
             "response_mask.py",
             "rule_features.py",
+            "versioning.py",
             "kan_transactions.py",
             "schema.py",
             "settlement.py",
@@ -138,6 +140,7 @@ def audit_corpus(  # noqa: PLR0915
         )
     }
     scope = {
+        **artifact_contract(),
         "mode": mode,
         "implementation_sha256": content_hash(implementation),
         "input_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
@@ -312,7 +315,7 @@ def audit_corpus(  # noqa: PLR0915
         "golden_game_ids_reserved": sorted(golden_ids),
         "N_eligible_half_games": sum(len(games) for games in split_games.values()),
         "N_train_half_games": n_train,
-        "model_tier_basis": "N_train_half_games",
+        "model_tier_basis": MODEL_TIER_BASIS,
         "provisional_model_tier": model_tier(n_train),
         **response_support_evidence(support, split_salt),
         "training_allowed": status == "PASS",

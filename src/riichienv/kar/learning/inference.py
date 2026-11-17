@@ -9,6 +9,7 @@ from ..contracts import content_hash
 from ..observation import PublicSnapshot
 from ..runtime_contracts import RuntimeBinding
 from ..tokenize import TokenSequence, append_action, encode_prefix
+from ..versioning import RULE_FEATURE_MASK_VERSION
 from .batch import collate_inputs, rule_feature_view
 from .config import FEATURE_VERSION
 from .model import KARTransformer, PrefixCache
@@ -37,6 +38,7 @@ class FrozenModelPredictor:
             {
                 "model_config_hash": model.config.contract_hash,
                 "feature_version": FEATURE_VERSION,
+                "rule_feature_mask_version": RULE_FEATURE_MASK_VERSION,
                 "use_rule_features": use_rule_features,
                 "inference_feature_dropout": 0,
             }

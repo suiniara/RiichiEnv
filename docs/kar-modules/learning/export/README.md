@@ -14,7 +14,7 @@
 
 Golden/语义别名排除、主 cohort、game split、protocol/raw/receipt/acceptance 身份在导出前检查。响应来自完整实际窗口，value 来自完整半庄；缺目标保留有效位，不能伪造 NEXT_DRAW 或按结果修改输入。
 
-导出 scope 保留可用 split 数与是否 probe subset；实际 train rho 在完成导出后固定。完整清单接口不受诊断小批上限限制。角色 salt、杠事务和输入/损失版本都属于当前合同。
+导出 scope 使用 [versioning](../../versioning/README.md) 的统一合同，保留完整可用 split 数。manifest 分开保存切分前 `N_eligible_half_games`、实际导出的 `N_train_half_games`、`available_split_counts` 和 `exported_split_counts`，不得把探针子集冒充完整 cohort。主力门槛固定 `model_tier_basis=N_train_half_games`，实际 train rho 在完成导出后固定。完整清单接口不受诊断小批上限限制。角色 salt、杠事务、特征语义、随机置空、训练计划与损失版本均显式记录。
 
 ## CLI 与产物
 
@@ -24,4 +24,4 @@ Golden/语义别名排除、主 cohort、game split、protocol/raw/receipt/accep
 
 ## 失败、测试与状态
 
-选择被改、raw/协议不符、任一游戏重放失败、标签/mask 不一致或完整性缺失会阻断，不能丢坏行后报告完整成功。对应 [m1/test_dataset.py](../../../../tests/kar/m1/test_dataset.py)、[test_acceptance_shards.py](../../../../tests/kar/test_acceptance_shards.py)。本轮未导出或重放数据。
+选择被改、raw/协议不符、任一游戏重放失败、标签/mask 不一致或完整性缺失会阻断，不能丢坏行后报告完整成功。对应 [m1/test_dataset.py](../../../../tests/kar/m1/test_dataset.py)、[test_acceptance_shards.py](../../../../tests/kar/test_acceptance_shards.py)。本轮未对真实数据重新导出；合成来源/元数据及临时 SQLite 的合同回归结果见[实现覆盖报告](../../../kar-implementation-coverage.md)。

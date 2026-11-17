@@ -12,7 +12,7 @@
 
 ## 数据与验证
 
-默认校验数据库 hash、导出完成性、scope、Schema/规则/特征/损失/角色版本和分区信息。真实最终 rank 从外部 1..4 明确转换到训练 0..3。action/response/value 有效位及响应 allowed mask 分开保存。
+默认校验数据库 hash、导出完成性、scope、Schema/规则/特征/损失/角色版本和分区信息。现在还要求显式设计映射、`rule_feature_mask_version`、`training_plan_version` 与计数口径；SQLite 内部 scope 必须等于 manifest，实际 games 表的 split 计数必须等于导出计数。真实最终 rank 从外部 1..4 明确转换到训练 0..3。action/response/value 有效位及响应 allowed mask 分开保存。
 
 SQLite 以只读方式使用；每个进程自己的连接与有限历史缓存不应在 fork/worker 之间错误复用。`verify_hash=False` 不是生产迁移办法，不能以省时理由信任未知数据库。
 
@@ -26,13 +26,9 @@ SQLite 以只读方式使用；每个进程自己的连接与有限历史缓存�
 
 `tests/kar/m1/test_dataset.py` 可通过 `KAR_M1_TEST_DATASET_DIR` 显式选择测试数据；未指定时优先使用工作区 `kar-m1-data/cpu-current-contract`，只在它不存在时回退到历史 `cpu-probe-v2`。选中目录不完整或合同过期仍然报错，不能因为有旧资产而静默 skip；只有没有配置且两处私有资产都不存在时才沿用缺资产 skip。
 
-当前合同数据必须从真实 M0 验收清单重新 replay/编码，不能改旧 manifest 字段假装兼容。以下是数据重导出，不是模型训练，输出目录须全新且位于 raw 目录之外：
+当前合同数据必须从匹配本版显式身份的真实 M0 验收清单重新 replay/编码，不能改旧 manifest 字段假装兼容。`final-acceptance-20261116`、`cpu-current-contract` 等既有目录名是历史名称，不证明其内容符合当前 `kar_riichienv_contract_v2`。
 
-```bash
-uv run --no-sync python -m riichienv.kar export-data --acceptance ../kar-m0-reports/final-acceptance-20261116 --proto ../kar-m0-assets/mahjongsoul.proto --output ../kar-m1-data/cpu-current-contract --train-games 6 --validation-games 2 --test-games 0
-```
-
-历史 raw 与旧导出保留不变。若上述新目录已存在，选择另一全新目录并用显式变量指定，不能覆盖旧证据或放宽 `DecisionDataset` 校验。
+本轮没有重导出或改写这些目录。后续若单独获准重建，须先重新取得当前合同的 M0 验收，按 [export](../export/README.md) 接口写入全新且位于 raw 目录之外的目录，再通过显式测试变量选择；不能覆盖旧证据或放宽 `DecisionDataset` 校验。
 
 ## 错误、测试与状态
 

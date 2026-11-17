@@ -17,6 +17,7 @@ from ..runtime import RuntimePolicy
 from ..runtime_contracts import RuntimeBinding
 from ..selection_quality import TAU_SELECTION_VERSION, validate_finite_tau_selection
 from ..support import EventSupport
+from ..versioning import artifact_contract, validate_artifact_contract
 from .config import ModelConfig
 from .inference import FrozenModelPredictor, model_weights_sha256
 from .model import KARTransformer
@@ -113,6 +114,7 @@ def save_frozen_release(
     options: PolicyOptions | None = None,
     tau_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    validate_artifact_contract(training_contract, context="frozen training contract")
     predictor = FrozenModelPredictor(model, train_manifest_sha256, use_rule_features=use_rule_features)
     options = options or PolicyOptions()
     validate_frozen_policy(
@@ -129,6 +131,7 @@ def save_frozen_release(
     policy = asdict(options)
     policy["tau"] = "infinity" if math.isinf(options.tau) else options.tau
     record = {
+        **artifact_contract(),
         "release_version": RELEASE_VERSION,
         "model_config": asdict(model.config),
         "binding": predictor.binding.to_record(),
@@ -178,6 +181,8 @@ class FrozenRelease:
         unsigned = {key: value for key, value in record.items() if key != "release_sha256"}
         if record.get("release_version") != RELEASE_VERSION or record.get("release_sha256") != content_hash(unsigned):
             raise ValueError("Frozen release identity differs")
+        validate_artifact_contract(record, context="frozen release")
+        validate_artifact_contract(record.get("training_contract", {}), context="frozen training contract")
         current = implementation_release_identity()
         if any(record["implementation"][key] != current[key] for key in ("source_sha256", "native_extension_sha256")):
             raise ValueError("Frozen policy source/native build changed; explicit migration is required")

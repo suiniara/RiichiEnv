@@ -10,7 +10,7 @@
 
 `implementation_release_identity()` 校验打包身份或本地 Git 版本/dirty 状态，并记录实际 native 扩展 hash、Python 和平台。缺明确来源时拒绝用 unknown commit 替代。
 
-`complete_release_contract(...)` 联合 runtime 合同、训练/数据、rho、规则特征模式、预算、校准、支持、策略和可选配对计划，供生产检查点和发布层绑定。
+`complete_release_contract(...)` 联合 runtime 合同、训练/数据、rho、规则特征模式、预算、校准、支持、策略和可选配对计划，供生产检查点和发布层绑定。Response Mask 版本从统一合同读取，不再硬编码 v1；配置、数据的 N_train/N_eligible 和预测 recipe 必须一致。规则特征语义版本与随机置空版本分别记录，完整 Schema ID/hash 与设计引用也分开绑定。
 
 ## 内容边界
 
@@ -26,4 +26,4 @@
 
 ## 测试与状态
 
-相关回归见 [production/test_training_contracts.py](../../../tests/kar/production/test_training_contracts.py)、[core/test_frozen_inference.py](../../../tests/kar/core/test_frozen_inference.py)。本轮未 stamp/build、查询设备或加载权重。
+相关回归见 [m1/test_design_versions.py](../../../tests/kar/m1/test_design_versions.py)、[production/test_training_contracts.py](../../../tests/kar/production/test_training_contracts.py)、[core/test_frozen_inference.py](../../../tests/kar/core/test_frozen_inference.py)。本轮只生成并读取临时 CPU 合成权重验证旧版本拒绝；没有 stamp/build、GPU 查询或真实发布。

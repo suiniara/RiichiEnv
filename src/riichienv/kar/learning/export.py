@@ -9,25 +9,17 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from ..actions import action_spec, manifest_hash
+from ..actions import action_spec
 from ..audit import replay_game
 from ..calibration_roles import CALIBRATION_PARTITION_VERSION, CALIBRATION_SPLIT_SALT
-from ..contracts import (
-    MJSOUL_RULESET,
-    RESPONSE_MASK_VERSION,
-    SCHEMA_ID,
-    cohort_hash,
-    content_hash,
-    game_split,
-    matches_primary_cohort,
-)
+from ..contracts import cohort_hash, content_hash, game_split, matches_primary_cohort
 from ..decision import ReplayDecision
 from ..kan_transactions import KAN_TRANSACTION_VERSION
 from ..mjsoul import decode_record_bytes, load_protocol
 from ..response import resolve_discard_response
 from ..response_mask import public_rule_response_mask, validate_response_target
-from ..schema import TOKEN_BYTE_SIZE, schema_status
-from .config import FEATURE_VERSION, LOSS_VERSION
+from ..schema import TOKEN_BYTE_SIZE
+from ..versioning import artifact_contract, game_count_contract, validate_artifact_contract
 
 DATASET_VERSION = "kar_decision_sqlite_v1"
 ACTION_LABEL_VERSION = "explicit_and_unique_next_draw_pass_v1"
@@ -57,22 +49,13 @@ def _file_sha(path: Path) -> str:
 
 
 def learning_contract() -> dict[str, Any]:
-    registry = schema_status()
-    if registry["status"] != "PASS":
-        raise ValueError("Complete M0 schema is unavailable")
     return {
+        **artifact_contract(),
         "dataset_version": DATASET_VERSION,
-        "schema_id": SCHEMA_ID,
-        "schema_hash": registry["schema_hash"],
-        "ruleset_hash": MJSOUL_RULESET.ruleset_hash,
         "cohort_hash": cohort_hash(),
-        "action_manifest_hash": manifest_hash(),
-        "response_mask_version": RESPONSE_MASK_VERSION,
         "kan_transaction_version": KAN_TRANSACTION_VERSION,
         "calibration_partition_version": CALIBRATION_PARTITION_VERSION,
         "calibration_split_salt": CALIBRATION_SPLIT_SALT,
-        "feature_contract_version": FEATURE_VERSION,
-        "loss_contract_version": LOSS_VERSION,
         "action_label_version": ACTION_LABEL_VERSION,
         "rank_tiebreak": "initial_seat_order_east_south_west_north",
         "initial_seat_order": [0, 1, 2, 3],
@@ -222,6 +205,7 @@ def _selection(acceptance_dir: Path, limits: dict[str, int | None]) -> tuple[dic
         or accepted.get("training_allowed") is not True
     ):
         raise ValueError("M1 requires a source-bound PASS acceptance manifest")
+    validate_artifact_contract(accepted.get("source_scope", {}), context="M0 acceptance for dataset export")
     contract = learning_contract()
     if any(
         accepted["source_scope"].get(key) != contract[key]
@@ -290,6 +274,7 @@ def export_dataset(  # noqa: PLR0915
             "response.py",
             "response_mask.py",
             "rule_features.py",
+            "versioning.py",
             "native_replay.py",
             "kan_transactions.py",
         )
@@ -352,14 +337,19 @@ def export_dataset(  # noqa: PLR0915
         if not train["response_valid"] or not train["value_valid"]:
             raise ValueError("Three-head recipe requires positive fixed training rho_E/rho_V")
         manifest = {
+            **game_count_contract(
+                selection["available_split_counts"], {split: totals[split]["games"] for split in totals}
+            ),
             "status": "PASS",
             "scope": scope,
             "games": rows,
             "counts": totals,
             "rho_E": train["response_valid"] / train["examples"],
             "rho_V": train["value_valid"] / train["examples"],
-            "N_train_half_games": train["games"],
-            "is_probe_subset": train_games is not None,
+            "is_probe_subset": any(
+                totals[split]["games"] != selection["available_split_counts"][split]
+                for split in ("train", "validation")
+            ),
             "complete": True,
             "source_data_read_only": True,
         }

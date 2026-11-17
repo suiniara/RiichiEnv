@@ -1,4 +1,4 @@
-# KAR 实现覆盖对照（代码层，2026-11-16）
+# KAR 实现覆盖与本轮设计一致性验收（2026-11-17）
 
 逐模块职责、接口、数据合同、使用方式及测试位置见 [72个模块 README 总索引](kar-modules/README.md) 与 [learning 子包索引](kar-modules/learning/README.md)。
 
@@ -6,7 +6,9 @@
 
 宿主为 **RiichiEnv**；依据 `KAR-v1.2.2-DESIGN.md` 及已批准的 `kar-riichienv-v1` 完整 Schema、雀魂 mode12 主 cohort、`N_train_half_games` 模型阶梯适配。Kanachan 仅保留动作编号参考。
 
-下表沿用原 58 项编号，列出实现入口及回归源码。**已建立实现/接线不等于已通过运行验收，也不表示代码不可能再有缺陷。** 本轮只编辑代码、测试源码、文档并执行 Ruff / Ty / diff 静态检查；没有执行 pytest、模型、训练、预检、标定、仿真、对局或远端操作。旧版本的历史验收不自动升级为本次源码的验收。
+下表沿用原 58 项编号，记录实现入口，不是全项目运行通过表。**未在末尾本轮验收矩阵列明的完整路径，一律为 IMPLEMENTED / NOT EXECUTED。** 本轮实际运行了指定的 CPU 合同/模型/梯度/规则/策略测试；没有启动 M1/M2/M3、正式训练、GPU、全量重导出或覆盖历史产物。旧版本历史验收不自动升级。
+
+Schema 非别名映射、设计 §7.5/§17 冲突的用户裁定、版本前后值与失效边界见[设计一致性与迁移合同](kar-design-consistency.md)。本轮最终证据为 1348 passed、0 failed、0 errors、0 skipped，来自七组实际 JUnit；逐项测试名称保存在工作区证据包，不是从 commit message 推断。
 
 ## 数据、规则与输入（D01–D18）
 
@@ -95,8 +97,57 @@
 
 ## 不能由这张表替代的事项
 
-- 当前源码的实际测试执行、GPU/CPU 对照、全量数据重导出、完整标定、吞吐测量和 M3，均未在本轮运行。
+- 完整训练阶段、GPU/BF16 硬件对照、全量数据重导出、真实标定/吞吐测量和 M3，均未在本轮运行；局部 CPU 单元回归不能代替这些阶段。
 - 真实牌谱 Golden 不能由本轮合成回归源码替代；历史 M0 的证据范围和源码版本保持原记录。
 - 设计没有要求统一逐状态误差证书估计器。已实现调用方提供有效界时的消费与回退；没有界时维持经验/不可用状态，不填零、不自动 certified。
 - 构建/角色/标定/登记/基准合同不匹配时拒绝静默复用；代码补齐不会产生训练或评测许可。
-- 本页仅记录代码层覆盖；提交与发布状态以 Git 历史为准，不由本页授予运行许可。
+- 58 项表是代码层覆盖；只有下面明确列出且本轮实际运行通过的项目标记 PASS。提交与发布状态以 Git 为准，本页不授予阶段运行许可。
+
+## 本轮十五项设计一致性矩阵
+
+执行基线 HEAD：`e24c24bd4b0ace681a2feaa093eede94754aafa2`，包含本轮未提交工作树补丁。PASS 的范围限于表内 CPU 验收，不表示棋力、真实完整数据或云端性能通过。
+
+| # | 设计要求 | 实际执行证据 | 状态 |
+|---|---|---|---|
+| 1 | Small/Medium/Large 参数量 | [test_model](../tests/kar/m1/test_model.py)：实际构造并断言 5,239,435 / 14,790,795 / 26,536,587；另含 Tiny 对照 | PASS |
+| 2 | 五张独立 Tile Embedding | 同文件检查五张 39×d 表、独立参数地址、944 总行数 | PASS |
+| 3 | Numeric 40D 投影 | 同文件 hook 实际输入，核对 FP32 numeric/presence 拼接、40D、bias=False | PASS |
+| 4 | 三头输出形状 | 同文件实际 forward/backward：546 / 21 / 21×4、FP32 | PASS |
+| 5 | DECIDE / ACTION 隔离 | 同文件块 mask 真值、teacher ACTION 改变不影响策略输出 | PASS |
+| 6 | 候选 ACTION 分支隔离 | 同文件共享 KV 与 dense 一致；改变中间候选不改变其余候选输出 | PASS |
+| 7 | 三项 Loss / 安全哨兵 | [test_losses](../tests/kar/m1/test_losses.py)：实际 CE/梯度、非法索引拒绝、dummy 连图零梯度、固定 rho | PASS |
+| 8 | DDP / 梯度累积等价 | [test_training](../tests/kar/m1/test_training.py) 的两进程本机 Gloo 梯度对照 + test_losses 非均匀 microbatch 累积；不调用阶段训练 | PASS |
+| 9 | Genbutsu / Full Suji / Ryanmen Golden | [test_rule_features](../tests/kar/test_rule_features.py) 的 168 项确定性断言；不是全部真实牌谱 Golden 证书 | PASS |
+| 10 | 同分顺位 / numeric presence | test_rule_features 固定起家排序和庄家轮换对照；[test_schema](../tests/kar/test_schema.py) 区分 present-zero 与 unknown | PASS |
+| 11 | Response Mask 公开隔离 | [test_observation_response](../tests/kar/test_observation_response.py) 白名单/未来暗手扰动；[test_design_contracts](../tests/kar/test_design_contracts.py) 断言训练/推理同一个 mask 函数 | PASS |
+| 12 | 规则特征随机置空 | test_model 核对整样本 flags、numeric/presence 同步清空、stage 保留、off 模式、不可变及 seed/顺序复现 | PASS |
+| 13 | 受限 KL 概率质量 | [test_probability_policy](../tests/kar/core/test_probability_policy.py)：四种 tau 的 S 质量和 S 外逐动作概率保持 | PASS |
+| 14 | E1/E2 单侧界 | 同文件固定随机种子的 150 组有限集合回归及 runtime 消费/回退单元；不生成真实状态误差证书 | PASS |
+| 15 | 数据 / checkpoint 版本绑定 | [test_design_versions](../tests/kar/m1/test_design_versions.py)：57 项临时 SQLite、两类 checkpoint、发布的校验和有效旧合同拒绝 | PASS |
+
+### 实际测试组
+
+| 组 | 通过 | failed/errors/skipped |
+|---|---:|---|
+| 设计/Schema/计数/预算/登记/发布元数据 | 736 | 0/0/0 |
+| 合成 M0 producer 与单/多分片合同 | 39 | 0/0/0 |
+| 规则特征/Token/公开掩码/有界合法本局 | 400 | 0/0/0 |
+| 现有 Golden 目标文件 | 31 | 0/0/0 |
+| 模型/Loss/版本与合成序列化 | 93 | 0/0/0 |
+| 真实两进程 CPU Gloo | 1 | 0/0/0 |
+| KL/E1/E2/支持与静态校准单元 | 48 | 0/0/0 |
+| **合计（不重复计入复跑）** | **1348** | **0/0/0** |
+
+工作区证据目录：`kar-fix-reports/design-consistency-20261117`，含实际 argv/cwd、退出码、完整 stdout、JUnit、前后版本及逐项用例映射。源码里的 M0/M1/M2 标签或合成登记不表示运行了这些阶段；本轮没有生产更新授权，没有训练 launcher 调用。
+
+### 仍为 IMPLEMENTED / NOT EXECUTED
+
+| 范围 | 状态 | 原因 |
+|---|---|---|
+| 全量真实 M0 / 整个 Golden Registry 重新验收 | IMPLEMENTED / NOT EXECUTED | 本轮只执行列明的有限测试；历史证据不自动迁移 |
+| 当前合同的真实数据重导出和旧训练产物迁移 | IMPLEMENTED / NOT EXECUTED | 不覆盖旧 manifest、SQLite、权重或账本 |
+| 完整生产 optimizer-update / Epoch / 中断恢复 / M1 消融 | IMPLEMENTED / NOT EXECUTED | 梯度等价单元不代替阶段运行，且本轮禁止启动 |
+| M2 正式训练与 M3 成对评测 | IMPLEMENTED / NOT EXECUTED | 按用户要求停止 |
+| CUDA/BF16、云端吞吐与棋力验证 | NOT EXECUTED | 本轮仅 CPU；未使用 GPU 或付费资源 |
+
+设计 §7.5/14.2 与 §17 的选型计数文字仍矛盾；本轮用户明确选择 `N_train_half_games`。代码链条按此裁定已验证一致，但不宣称正式文件本身已被勘误。Schema 仍是显式宿主物化，不能据模型形状一致而将旧设计 checkpoint 当作兼容输入。

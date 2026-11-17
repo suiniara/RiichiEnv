@@ -8,7 +8,7 @@
 
 `ProductionTrainConfig` 记录 phase、实际 N_train/N_eligible、tier、planned_epochs、预算、seed、设备/精度、microbatch、特征模式和固定超参。M1 仅 Small 一轮，M2 为两轮/条件第三轮；有效 batch Small/Medium/Large 为128/256/512。
 
-`training_recipe_sha256(arguments)` 先于价格生成标准化配方身份；`to_record/from_record` 校验往返派生字段。不能为了让旧许可通过而丢字段。
+`training_recipe_sha256(arguments)` 先于价格生成标准化配方身份；`to_record/from_record` 校验往返派生字段。训练计划仍为 `budget_ladder_v1`，配置序列化另用 `explicit_train_split_scale_v2`，必须显式包含 `model_tier_basis=N_train_half_games`、规则置空版本及概率；不再以默认值补齐缺失的旧版本字段。两个 N 字段禁止 bool/负数混入，M2 不得因 eligible 总量较大就越过 train 门槛。
 
 ## 唯一登记
 
@@ -24,4 +24,4 @@
 
 ## 依赖、测试与状态
 
-配置本身不创建网络；运行前置核验可能读检查点/账本元数据。对应 [production/test_planning.py](../../../../tests/kar/production/test_planning.py)、[test_stage_prerequisites.py](../../../../tests/kar/production/test_stage_prerequisites.py)、[test_review_finance_and_resume.py](../../../../tests/kar/production/test_review_finance_and_resume.py)。本轮未生成可执行登记或运行训练。
+配置本身不创建网络；运行前置核验可能读检查点/账本元数据。对应 [production/test_planning.py](../../../../tests/kar/production/test_planning.py)、[test_stage_prerequisites.py](../../../../tests/kar/production/test_stage_prerequisites.py)、[test_review_finance_and_resume.py](../../../../tests/kar/production/test_review_finance_and_resume.py)。本轮只有临时合成登记/产物的单位回归，没有真实训练登记或阶段运行。

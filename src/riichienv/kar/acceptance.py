@@ -23,6 +23,7 @@ from .contracts import (
 from .corpus_audit import SEMANTIC_GAME_VERSION, _inputs, _write
 from .golden import golden_coverage
 from .schema import schema_status
+from .versioning import MODEL_TIER_BASIS, artifact_contract, validate_artifact_contract
 
 
 def _file_sha(path: Path) -> str:
@@ -180,7 +181,8 @@ def _finalize(  # noqa: PLR0915
     if not shards:
         raise ValueError("At least one completely audited shard is required")
     first = shards[0].scope
-    shared = (
+    validate_artifact_contract(first, context="M0 acceptance source")
+    shared = tuple(dict.fromkeys((*artifact_contract(),
         "schema_hash",
         "ruleset_hash",
         "cohort_hash",
@@ -188,7 +190,7 @@ def _finalize(  # noqa: PLR0915
         "protocol_sha256",
         "split_salt",
         "implementation_sha256",
-    )
+    )))
     if any(any(shard.scope.get(key) != first.get(key) for key in shared) for shard in shards):
         raise ValueError("Audit shards have incompatible contracts, protocol, split salt or implementation")
     if merged and any(shard.scope.get("normalized_game_digest_version") != SEMANTIC_GAME_VERSION for shard in shards):
@@ -352,7 +354,7 @@ def _finalize(  # noqa: PLR0915
         },
         "N_eligible_half_games": sum(map(len, split_games.values())),
         "N_train_half_games": n_train,
-        "model_tier_basis": "N_train_half_games",
+        "model_tier_basis": MODEL_TIER_BASIS,
         "provisional_model_tier": model_tier(n_train),
         "split_counts": {split: len(games) for split, games in split_games.items()},
         **response_support_evidence(support, salt),

@@ -9,6 +9,7 @@ from riichienv.kar.actions import manifest_hash
 from riichienv.kar.contracts import MJSOUL_RULESET, cohort_hash, content_hash, game_split
 from riichienv.kar.corpus_audit import SEMANTIC_GAME_VERSION, normalized_game_sha256
 from riichienv.kar.schema import schema_status
+from riichienv.kar.versioning import artifact_contract
 
 
 def _upgrade_fixture(corpus):
@@ -77,6 +78,7 @@ def _trusted_shards(tmp_path, count, *, semantic_alias=False):
             ids.append(identity)
         index += 1
     common = {
+        **artifact_contract(),
         "mode": "audit",
         "schema_hash": schema_status()["schema_hash"],
         "ruleset_hash": MJSOUL_RULESET.ruleset_hash,

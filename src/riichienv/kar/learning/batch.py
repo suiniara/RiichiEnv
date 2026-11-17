@@ -9,7 +9,7 @@ import torch
 from torch import Tensor
 
 from ..schema import TOKEN_BYTE_SIZE
-from .config import FEATURE_VERSION
+from ..versioning import RULE_FEATURE_MASK_VERSION
 
 TOKEN_DTYPE = np.dtype(
     [
@@ -115,7 +115,9 @@ def feature_mask_draw(
         raise ValueError("Mask probability must be in [0,1]")
     import json  # noqa: PLC0415
 
-    identity = json.dumps([FEATURE_VERSION, seed, epoch, game_id, decision_id, draw], separators=(",", ":")).encode()
+    identity = json.dumps(
+        [RULE_FEATURE_MASK_VERSION, seed, epoch, game_id, decision_id, draw], separators=(",", ":")
+    ).encode()
     uniform = int.from_bytes(hashlib.sha256(identity).digest()[:8], "big") / 2**64
     return uniform < probability
 

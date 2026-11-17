@@ -7,10 +7,19 @@ from typing import Any
 
 from ..budget import BudgetPlan
 from ..calibration_roles import CALIBRATION_SPLIT_SALT, calibration_is_fit
-from ..contracts import content_hash
+from ..contracts import content_hash, model_tier
+from ..versioning import MODEL_TIER_BASIS, RULE_FEATURE_MASK_VERSION, TRAIN_CONFIG_VERSION, TRAINING_PLAN_VERSION
 
-TRAINING_PLAN_VERSION = "budget_ladder_v1"
 EFFECTIVE_BATCH = {"small": 128, "medium": 256, "large": 512}
+
+
+def _config_versions() -> dict[str, str]:
+    return {
+        "training_config_version": TRAIN_CONFIG_VERSION,
+        "training_plan_version": TRAINING_PLAN_VERSION,
+        "rule_feature_mask_version": RULE_FEATURE_MASK_VERSION,
+        "model_tier_basis": MODEL_TIER_BASIS,
+    }
 
 
 @dataclass(frozen=True)
@@ -42,8 +51,16 @@ class ProductionTrainConfig:
     def __post_init__(self) -> None:
         if self.phase not in {"M1", "M2"} or self.budget.phase != self.phase or self.model_tier not in EFFECTIVE_BATCH:
             raise ValueError("Production training requires a registered phase,tier and independent budget")
-        if type(self.N_train_half_games) is not int or not 0 < self.N_train_half_games <= self.N_eligible_half_games:
+        if (
+            type(self.N_train_half_games) is not int
+            or type(self.N_eligible_half_games) is not int
+            or not 0 < self.N_train_half_games <= self.N_eligible_half_games
+        ):
             raise ValueError("Model selection uses complete train games, never raw/all-split file counts")
+        if self.phase == "M2" and tuple(EFFECTIVE_BATCH).index(self.model_tier) > tuple(EFFECTIVE_BATCH).index(
+            model_tier(self.N_train_half_games)
+        ):
+            raise ValueError("Model tier exceeds the confirmed train-split ladder")
         if self.phase == "M1" and (self.model_tier != "small" or self.planned_epochs != 1):
             raise ValueError("M1 is Small only, at most one complete epoch per feature mode")
         if self.phase == "M2" and self.planned_epochs not in {2, 3}:
@@ -70,14 +87,18 @@ class ProductionTrainConfig:
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> ProductionTrainConfig:
-        allowed = set(cls.__dataclass_fields__) | {"training_plan_version", "recipe_sha256"}
+        allowed = set(cls.__dataclass_fields__) | set(_config_versions()) | {
+            "recipe_sha256", "rule_feature_mask_probability"
+        }
         if set(record) - allowed:
             raise ValueError("Unknown training configuration field")
-        if record.get("training_plan_version", TRAINING_PLAN_VERSION) != TRAINING_PLAN_VERSION:
-            raise ValueError("Training plan version differs")
+        if any(record.get(key) != value for key, value in _config_versions().items()):
+            raise ValueError("Training plan/configuration/count-basis version differs")
         values = {key: value for key, value in record.items() if key in cls.__dataclass_fields__}
         values["budget"] = BudgetPlan.from_record(values["budget"])
         config = cls(**values)
+        if record.get("rule_feature_mask_probability") != config.feature_mask_probability:
+            raise ValueError("Rule feature mask probability alias differs")
         if "recipe_sha256" in record and record["recipe_sha256"] != config.recipe_sha256:
             raise ValueError("Training recipe digest differs")
         return config
@@ -86,13 +107,14 @@ class ProductionTrainConfig:
     def recipe_sha256(self) -> str:
         record = asdict(self)
         record.pop("budget")
-        return content_hash({"training_plan_version": TRAINING_PLAN_VERSION, **record})
+        return content_hash({**_config_versions(), **record})
 
     def to_record(self) -> dict[str, Any]:
         return {
             **asdict(self),
             "budget": self.budget.to_record(),
-            "training_plan_version": TRAINING_PLAN_VERSION,
+            **_config_versions(),
+            "rule_feature_mask_probability": self.feature_mask_probability,
             "recipe_sha256": self.recipe_sha256,
         }
 
@@ -112,7 +134,7 @@ def training_recipe_sha256(arguments: dict[str, Any]) -> str:
         else:
             raise ValueError("Missing training recipe field: " + item.name)
     record["effective_batch_size"] = EFFECTIVE_BATCH[record["model_tier"]]
-    return content_hash({"training_plan_version": TRAINING_PLAN_VERSION, **record})
+    return content_hash({**_config_versions(), **record})
 
 
 def main_model_registration(

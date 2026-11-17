@@ -18,6 +18,10 @@ def test_exact_parameter_counts_and_independent_embeddings(preset, expected):
     assert sum(table.num_embeddings for table in tables) == 944
     assert len({table.weight.data_ptr() for table in tables}) == len(tables)
     assert model.embedding.numeric.bias is None
+    assert model.embedding.numeric.in_features == 40
+    assert model.embedding.numeric.out_features == model.config.width
+    assert len(model.embedding.tiles) == 5
+    assert all(table.weight.shape == (39, model.config.width) for table in model.embedding.tiles)
 
 
 @pytest.mark.parameter_updates
@@ -35,6 +39,24 @@ def test_dense_head_shapes_and_backward(miniature, model_batch):
     assert all(
         parameter.grad is not None and torch.isfinite(parameter.grad).all() for parameter in miniature.parameters()
     )
+
+
+def test_numeric_projection_receives_fp32_value_presence_concatenation(miniature, model_batch):
+    seen = {}
+
+    def capture(_module, arguments):
+        seen["input"] = arguments[0].detach().clone()
+
+    handle = miniature.embedding.numeric.register_forward_pre_hook(capture)
+    try:
+        miniature(model_batch)
+    finally:
+        handle.remove()
+    expected = torch.cat(
+        [model_batch.fields["numeric"].float(), model_batch.fields["numeric_present"].float()], dim=-1
+    )
+    assert seen["input"].dtype == torch.float32 and seen["input"].shape[-1] == 40
+    torch.testing.assert_close(seen["input"], expected, atol=0, rtol=0)
 
 
 def test_teacher_action_never_changes_policy(miniature, make_sample):
@@ -115,14 +137,27 @@ def test_stale_or_cross_decision_cache_is_rejected(miniature, make_sample, chang
 def test_feature_mask_is_whole_sample_and_does_not_mutate_base(model_batch, miniature):
     parameters = sum(parameter.numel() for parameter in miniature.parameters())
     base = model_batch.fields
+    original = {key: base[key].clone() for key in ("flags", "stage", "numeric", "numeric_present")}
     on = rule_feature_view(model_batch, torch.tensor([True, False]))
     hands = base["kind"] == 4
+    states = base["kind"] == 2
+    assert torch.any(original["numeric_present"][0, states[0], 18:20])
+    assert torch.all(on.fields["numeric"][0, states[0], 18:20] == 0)
+    assert not torch.any(on.fields["numeric_present"][0, states[0], 18:20])
+    assert torch.equal(on.fields["numeric"][1], base["numeric"][1])
+    assert torch.equal(on.fields["numeric_present"][1], base["numeric_present"][1])
+    assert torch.equal(on.fields["numeric"][..., :18], base["numeric"][..., :18])
+    assert torch.equal(on.fields["flags"][~hands], base["flags"][~hands])
     assert torch.all(on.fields["flags"][0, hands[0], :8] == 0)
     assert torch.equal(on.fields["flags"][1], base["flags"][1])
     assert torch.equal(on.fields["stage"], base["stage"])
     off = rule_feature_view(model_batch, torch.tensor([False, False]), enabled=False)
     assert torch.all(off.fields["stage"][base["kind"] == 2] == 0)
     assert torch.all(base["stage"][base["kind"] == 2] > 0)
+    assert torch.all(off.fields["numeric"][states][:, 18:20] == 0)
+    assert not torch.any(off.fields["numeric_present"][states][:, 18:20])
+    for key, value in original.items():
+        assert torch.equal(base[key], value)
     assert sum(parameter.numel() for parameter in miniature.parameters()) == parameters
 
 
@@ -132,3 +167,19 @@ def test_feature_rng_depends_on_sample_not_rank_or_order():
     second = {identity: feature_mask_draw(17, 0, "game", identity) for identity in reversed(ids)}
     assert first == second and 20 < sum(first.values()) < 80
     assert first != {identity: feature_mask_draw(17, 1, "game", identity) for identity in ids}
+
+
+def test_changing_one_cached_action_branch_cannot_change_other_candidates(miniature, make_sample):
+    miniature.eval()
+    prefix = collate_inputs([make_sample(prefix_only=True)])
+    cache = miniature.encode_prefix(prefix)
+
+    def branch(choice):
+        sample = make_sample(action_choice=choice)
+        return {**sample, "tokens": sample["tokens"][-139:], "decide_index": 0, "action_index": 0}
+
+    baseline = miniature.score_actions(cache, collate_inputs([branch(0), branch(1), branch(2)]))
+    changed = miniature.score_actions(cache, collate_inputs([branch(0), branch(3), branch(2)]))
+    for before, after in zip(baseline, changed):
+        torch.testing.assert_close(before[[0, 2]], after[[0, 2]], atol=0, rtol=0)
+    assert not torch.equal(baseline[0][1], changed[0][1])

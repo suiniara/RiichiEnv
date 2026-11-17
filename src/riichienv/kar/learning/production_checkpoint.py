@@ -14,6 +14,7 @@ import numpy as np
 import torch
 
 from ..contracts import content_hash
+from ..versioning import validate_artifact_contract
 from .model import KARTransformer
 
 PRODUCTION_CHECKPOINT_VERSION = "kar_production_exact_resume_v1"
@@ -75,6 +76,7 @@ def save_production_checkpoint(
     runtime: dict[str, Any],
     step: int,
 ) -> dict[str, Any]:
+    validate_artifact_contract(contract, context="production checkpoint")
     if len(rank_rng) != runtime["world_size"]:
         raise ValueError("Every distributed rank needs its own RNG state")
     metadata = {
@@ -134,8 +136,10 @@ def save_production_checkpoint(
 
 
 def read_production_checkpoint(path: Path, *, contract: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
+    validate_artifact_contract(contract, context="requested production checkpoint")
     sidecar = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
     metadata = sidecar["metadata"]
+    validate_artifact_contract(metadata.get("release_contract", {}), context="stored production checkpoint")
     generation = _generation(path, sidecar["checkpoint_file"])
     if not generation.is_file() or generation.stat().st_size > 2 * 1024**3:
         raise ValueError("Missing/oversized checkpoint generation")

@@ -34,6 +34,7 @@ from .response import draw_response, resolve_discard_response
 from .response_mask import public_rule_response_mask, validate_response_target
 from .schema import schema_status
 from .settlement import verify_settlements
+from .versioning import MODEL_TIER_BASIS, artifact_contract
 
 
 def _check(name: str, status: str, **evidence: Any) -> dict[str, Any]:
@@ -496,6 +497,7 @@ def run_audit(  # noqa: PLR0915
         else "PASS"
     )
     return {
+        **artifact_contract(),
         "schema_id": SCHEMA_ID,
         "host": "RiichiEnv",
         "reference_engine_commit": ENGINE_COMMIT,
@@ -507,7 +509,7 @@ def run_audit(  # noqa: PLR0915
         "inventory_scope": "explicit_input_files_only_not_a_full_remote_disk_census",
         "N_eligible_half_games": len(eligible),
         "N_train_half_games": n_train,
-        "model_tier_basis": "N_train_half_games",
+        "model_tier_basis": MODEL_TIER_BASIS,
         "provisional_model_tier": model_tier(n_train),
         "split_salt": split_salt,
         "cohort_mode_ids": list(requested_modes),

@@ -11,6 +11,7 @@ from typing import Any
 
 from .contracts import content_hash
 from .runtime_contracts import runtime_contract
+from .versioning import validate_artifact_contract
 
 BUILD_IDENTITY_VERSION = "packaged_source_identity_v1"
 RELEASE_VERSION = "complete_kar_release_v1"
@@ -110,17 +111,29 @@ def complete_release_contract(
     policy: dict[str, Any] | None = None,
     paired_seed_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from .learning.training_config import ProductionTrainConfig  # noqa: PLC0415
+
+    validate_artifact_contract(data_manifest["scope"], context="release dataset")
+    config = ProductionTrainConfig.from_record(training)
+    if (
+        training["N_train_half_games"] != data_manifest.get("N_train_half_games")
+        or training["N_eligible_half_games"] != data_manifest.get("N_eligible_half_games")
+        or config.budget.to_record() != budget
+        or config.budget.forecast.recipe_sha256 != config.recipe_sha256
+    ):
+        raise ValueError("Release training/data/forecast scale or recipe differs")
     record = {
         "release_version": RELEASE_VERSION,
         **runtime_contract(),
         "implementation": implementation_release_identity(),
         "initial_seat_order": [0, 1, 2, 3],
         "rank_tiebreak": "initial_seat_order_east_south_west_north",
-        "response_mask_version": "public_rule_response_mask_v1",
-        "rule_feature_mask_version": "sample_mask_v1",
-        "loss_contract_version": "sentinel_safe_v1_2_1",
-        "training_plan_version": "budget_ladder_v1",
+        "rule_feature_mask_probability": training["feature_mask_probability"],
+        "use_rule_features": training["use_rule_features"],
         "training": training,
+        **{key: training[key] for key in (
+            "model_tier", "N_train_half_games", "N_eligible_half_games", "planned_epochs", "effective_batch_size"
+        )},
         "data_manifest_sha256": data_manifest["manifest_sha256"],
         "split_salt": data_manifest["scope"]["split_salt"],
         "rho_E": data_manifest["rho_E"],

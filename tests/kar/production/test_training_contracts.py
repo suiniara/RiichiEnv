@@ -30,6 +30,7 @@ from riichienv.kar.observation import ObserverLedger
 from riichienv.kar.readiness import CORE_REQUIREMENTS, FULL_REMAINING_REQUIREMENTS, feature_readiness
 from riichienv.kar.response_mask import public_rule_response_mask
 from riichienv.kar.tokenize import append_action, encode_prefix
+from riichienv.kar.versioning import artifact_contract
 
 # These tests are source only in the code-first phase. Running them requires the
 # user's separate explicit parameter-update test opt-in. They never authorize real data.
@@ -177,7 +178,7 @@ def test_checkpoint_pointer_keeps_last_committed_generation_and_rejects_runtime_
     device = torch.device("cpu")
     path = tmp_path / "checkpoint.pt"
     runtime = {"world_size": 1, "device": "cpu"}
-    contract = {"synthetic": True}
+    contract = {**artifact_contract(), "synthetic": True}
     before = model_weights_sha256(raw)
     first = save_production_checkpoint(
         path,

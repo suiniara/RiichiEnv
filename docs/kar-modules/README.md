@@ -2,7 +2,7 @@
 <!-- api: Response, Ruleset -->
 # KAR 模块 README 总索引
 
-源码：[kar/__init__.py](../../src/riichienv/kar/__init__.py)。本目录为 `src/riichienv/kar/` 的 **72 个 Python 模块**逐一提供说明；本页对应主包 `__init__.py`，[learning 索引](learning/README.md)对应其子包 `__init__.py`，其余文件各有独立目录与 `README.md`。JSON 资源另见[冻结资源说明](assets/README.md)。
+源码：[kar/__init__.py](../../src/riichienv/kar/__init__.py)。本目录为 `src/riichienv/kar/` 的 **73 个 Python 模块**逐一提供说明；本页对应主包 `__init__.py`，[learning 索引](learning/README.md)对应其子包 `__init__.py`，其余文件各有独立目录与 `README.md`。JSON 资源另见[冻结资源说明](assets/README.md)。
 
 KAR 以 **RiichiEnv** 为宿主。`from riichienv.kar import ...` 仅导出 `MJSOUL_RULESET`、`SCHEMA_ID`、`Response`、`Ruleset`，不自动加载 Torch、训练模型或启动对局。完整设计到实现的对应关系见[58项覆盖表](../kar-implementation-coverage.md)，端到端工作流见[生产代码说明](../kar-production-code.md)。
 
@@ -33,6 +33,7 @@ KAR 以 **RiichiEnv** 为宿主。`from riichienv.kar import ...` 仅导出 `MJS
 |---|---|---|
 | `__main__` | [入口](__main__/README.md) | 延迟导入 CLI 分发 |
 | `contracts` | [说明](contracts/README.md) | 规则、cohort、split、通用 hash |
+| `versioning` | [说明](versioning/README.md) | 设计引用、严格产物版本与半庄计数 |
 | `schema` | [说明](schema/README.md) | Token 注册表与二进制校验 |
 | `actions` | [说明](actions/README.md) | 原生动作与 546 ID 双向映射 |
 | `mjsoul` | [说明](mjsoul/README.md) | 协议加载、result-only 解码 |

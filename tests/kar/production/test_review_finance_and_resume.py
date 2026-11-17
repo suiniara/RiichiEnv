@@ -12,6 +12,7 @@ from riichienv.kar.learning.training_config import (
     main_model_registration,
     validate_main_model_registration,
 )
+from riichienv.kar.versioning import MODEL_TIER_BASIS, artifact_contract
 
 
 def plan(phase="M1", fixed=0.0, rate=3600.0):
@@ -109,7 +110,11 @@ def test_main_model_registration_binds_output_and_ledger(tmp_path, monkeypatch):
 
 
 def test_finished_checkpoint_publication_can_be_rebuilt_without_updates(tmp_path):
-    contract = {"synthetic": True}
+    contract = {
+        **artifact_contract(), "synthetic": True,
+        "training": {"model_tier": "small", "N_train_half_games": 900, "N_eligible_half_games": 990,
+                     "model_tier_basis": MODEL_TIER_BASIS},
+    }
     runtime = {"world_size": 1}
     state = {
         "finished": True,
@@ -144,5 +149,7 @@ def test_finished_checkpoint_publication_can_be_rebuilt_without_updates(tmp_path
     signed = publish_run_manifest(target, record)
     assert json.loads(target.read_text()) == signed and signed["recovered_completed_checkpoint"]
     assert signed["step"] == 7 and signed["final_weights_sha256"] == "b" * 64
+    assert signed["N_train_half_games"] == 900 and signed["N_eligible_half_games"] == 990
+    assert signed["model_tier_basis"] == MODEL_TIER_BASIS
     assert next(tmp_path.glob("run_manifest.previous-*.json")).read_bytes() == b"{partial publication"
     assert signed["run_manifest_sha256"] == content_hash(record)

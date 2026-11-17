@@ -477,3 +477,44 @@ def test_tokenizer_still_rejects_each_incomplete_prefix_flag(missing):
     assert encode_prefix(state, candidates).rows
     with pytest.raises(TokenizationUnavailableError, match="complete audited observer prefix"):
         encode_prefix(replace(state, **{missing: False}), candidates)
+
+
+@pytest.mark.parametrize("actor", range(4))
+def test_response_v2_reads_only_the_frozen_public_fact_whitelist(actor):
+    state = replace(_nagashi_snapshot(actor), observer_player_id=actor)
+    allowed_names = {
+        "observer_player_id", "discard_history", "current_rivers", "melds", "riichi_accepted",
+        "remaining_draws", "history_complete", "pending_kan_actor",
+    }
+
+    class PublicFactsOnly:
+        def __getattr__(self, name):
+            assert name in allowed_names, f"Response mask read non-whitelisted field: {name}"
+            return getattr(state, name)
+
+    expected = public_rule_response_mask(state, _nagashi_discard("2m"))
+    assert public_rule_response_mask(PublicFactsOnly(), _nagashi_discard("2m")) == expected
+    poisoned = replace(state, hand=(135,) * 13, scores=(1, 2, 3, 4), dora_indicators=(0,),
+                       events=('future/hidden/private-legals must never be parsed here',))
+    assert public_rule_response_mask(poisoned, _nagashi_discard("2m")) == expected
+
+
+def test_response_v2_freezes_abortive_draw_and_triple_ron_public_conditions():
+    state = ledger(round_events()).snapshot()
+    east = convert.mjai_to_tid("E")
+    winds = ((), (east,), (east,), (east,))
+    four_winds = replace(state, discard_history=winds, current_rivers=winds, remaining_draws=66)
+    assert public_rule_response_mask(four_winds, _nagashi_discard("E"))[Response.ABORT_FOUR_WINDS]
+    assert not public_rule_response_mask(four_winds, _nagashi_discard("S"))[Response.ABORT_FOUR_WINDS]
+    reached = replace(state, riichi_accepted=(False, True, True, True))
+    assert public_rule_response_mask(reached, _nagashi_discard("1m") + 1)[Response.ABORT_FOUR_RIICHI]
+    assert not public_rule_response_mask(reached, _nagashi_discard("1m"))[Response.ABORT_FOUR_RIICHI]
+    kans = tuple(PublicMeld("ankan", (convert.mjai_to_tid(wind),) * 4) for wind in ("E", "S", "W", "N"))
+    split_kans = replace(state, melds=((kans[0], kans[1]), (kans[2], kans[3]), (), ()))
+    single_owner = replace(state, melds=(kans, (), (), ()))
+    assert public_rule_response_mask(split_kans, _nagashi_discard("1m"))[Response.ABORT_FOUR_KANS]
+    assert not public_rule_response_mask(single_owner, _nagashi_discard("1m"))[Response.ABORT_FOUR_KANS]
+    normal = public_rule_response_mask(state, _nagashi_discard("1m"))
+    assert normal[Response.RON_MASK_7] and not normal[Response.ABORT_TRIPLE_RON]
+    alternate = public_rule_response_mask(state, _nagashi_discard("1m"), replace(MJSOUL_RULESET, sanchaho_is_draw=True))
+    assert alternate[Response.ABORT_TRIPLE_RON] and not alternate[Response.RON_MASK_7]

@@ -18,7 +18,7 @@
 
 ## 数据与合同
 
-活动 Schema 为 `kar-riichienv-v1`，canonical SHA-256 为 `fcc02a0bef0a7e95ca219c59ae199c4d1f5129372fac91323d3791bc30c31673`。`stage`、`flags`、`numeric` 不能当全局通用含义解释；例如 rank/gap 仅出现在规定的 ROUND_STATE 字段。候选容量、Embedding 行数和状态槽布局由完整注册表约束。
+活动 Schema 为 `kar-riichienv-v1`，canonical SHA-256 为 `fcc02a0bef0a7e95ca219c59ae199c4d1f5129372fac91323d3791bc30c31673`。设计引用 `kar-v1.2.2` 和 overlay SHA 不作为此 ID/hash 的别名；checkpoint 必须携带 [versioning](../versioning/README.md) 的显式映射与版本合同。`stage`、`flags`、`numeric` 不能当全局通用含义解释；例如 rank/gap 仅出现在规定的 ROUND_STATE 字段。候选容量、Embedding 行数和状态槽布局由完整注册表约束。
 
 ```python
 from riichienv.kar.schema import schema_status
@@ -32,4 +32,4 @@ status = schema_status()  # 只说明注册表可用性，不授予数据或模�
 
 ## 测试与状态
 
-对应 [test_schema.py](../../../tests/kar/test_schema.py)、[test_tokenize.py](../../../tests/kar/test_tokenize.py)、[m1/test_model.py](../../../tests/kar/m1/test_model.py)。本轮未执行示例或测试；Schema 可加载不等于模型和输入链已完成运行验收。
+对应 [test_schema.py](../../../tests/kar/test_schema.py)、[test_tokenize.py](../../../tests/kar/test_tokenize.py)、[m1/test_model.py](../../../tests/kar/m1/test_model.py)。本轮未执行真实数据重导出或阶段训练；CPU 验证结果见[实现覆盖报告](../../kar-implementation-coverage.md)；Schema 可加载仍不等于真实数据和阶段训练已经验收。
