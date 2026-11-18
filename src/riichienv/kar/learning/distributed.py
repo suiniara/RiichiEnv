@@ -80,6 +80,20 @@ class DistributedContext:
         dist.all_gather_object(values, value)
         return values
 
+    def gather_to_primary(self, value: Any) -> list[Any] | None:
+        if self.world_size == 1:
+            return [value]
+        values: list[Any] | None = [None] * self.world_size if self.primary else None
+        dist.gather_object(value, values, dst=0)
+        return values
+
+    def broadcast_from_primary(self, value: Any) -> Any:
+        if self.world_size == 1:
+            return value
+        values = [value if self.primary else None]
+        dist.broadcast_object_list(values, src=0)
+        return values[0]
+
     def global_count(self, local_count: int) -> int:
         count = torch.tensor([local_count], dtype=torch.int64, device=self._control.device)
         if self.world_size > 1:

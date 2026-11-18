@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from contextlib import nullcontext
+from time import perf_counter
 from typing import Any
 
 import torch
@@ -194,18 +194,11 @@ def evaluate_complete(  # noqa: PLR0915
         raise ValueError("Training selection/epoch gates may inspect validation only, never test")
     if not len(dataset):
         raise ValueError("A whole nonempty validation partition is required")
+    if precision not in {"fp32", "bf16"}:
+        raise ValueError("Validation precision must be fp32 or bf16")
+    if calibration is not None and precision != "fp32":
+        raise ValueError("Calibrated validation requires frozen FP32 inference, not BF16")
     before = model.training
-    if calibration is not None:
-        if support is None:
-            raise ValueError("Calibrated diagnostics require the bound support artifact")
-        from .inference import FrozenModelPredictor  # noqa: PLC0415
-
-        binding = FrozenModelPredictor(
-            model, dataset.manifest["manifest_sha256"], use_rule_features=use_rule_features
-        ).binding
-        calibration.validate(binding, support)
-        if calibration.inference_device_type != context.device.type:
-            raise ValueError("Calibrated evaluation requires its original inference backend")
     metrics = FullDiagnostics()
     selection: dict[str, Any] = {
         key: 0 for key in ("examples", "action", "response", "rank", "action_count", "response_count", "rank_count")
@@ -213,8 +206,21 @@ def evaluate_complete(  # noqa: PLR0915
     selection_games: set[str] = set()
     count = 0
     error = None
-    model.eval()
+    payload = None
     try:
+        model.eval()
+        if calibration is not None:
+            if support is None:
+                raise ValueError("Calibrated diagnostics require the bound support artifact")
+            from .inference import FrozenModelPredictor  # noqa: PLC0415
+
+            binding = FrozenModelPredictor(
+                model, dataset.manifest["manifest_sha256"], use_rule_features=use_rule_features
+            ).binding
+            calibration.validate(binding, support)
+            if calibration.inference_device_type != context.device.type:
+                raise ValueError("Calibrated evaluation requires its original inference backend")
+        forward_started = perf_counter()
         indices = list(range(context.rank, len(dataset), context.world_size))
         for start in range(0, len(indices), microbatch):
             batch = collate_examples([dataset[index] for index in indices[start : start + microbatch]]).to(
@@ -226,12 +232,7 @@ def evaluate_complete(  # noqa: PLR0915
                 enabled=use_rule_features,
             )
             viewed = TrainingBatch(inputs, batch.labels, batch.game_ids)
-            autocast = (
-                torch.autocast(device_type=context.device.type, dtype=torch.bfloat16)
-                if precision == "bf16"
-                else nullcontext()
-            )
-            with autocast:
+            with torch.autocast(device_type=context.device.type, dtype=torch.bfloat16, enabled=precision == "bf16"):
                 outputs = model(inputs)
             add_diagnostics(
                 metrics, outputs, viewed, calibration=calibration, support=support, public_fields=batch.inputs.fields
@@ -241,22 +242,43 @@ def evaluate_complete(  # noqa: PLR0915
                 selection[key] += partial[key]
             selection_games.update(partial["games"])
             count += batch.inputs.size
+        forward_seconds = perf_counter() - forward_started
+        aggregation_started = perf_counter()
+        payload = {
+            "examples": count,
+            "metrics": metrics.state_dict(),
+            "selection": selection,
+            "selection_games": sorted(selection_games),
+            "forward_seconds": forward_seconds,
+        }
     except Exception as caught:
         error = caught
     finally:
         model.train(before)
     context.coordinate(error, "complete validation forward")
-    gathered = context.gather(
-        {
-            "examples": count,
-            "metrics": metrics.state_dict(),
-            "selection": selection,
-            "selection_games": sorted(selection_games),
-        }
-    )
+    assert payload is not None
+    gathered = context.gather_to_primary(payload)
+    report, error = None, None
+    if context.primary:
+        try:
+            assert gathered is not None
+            report = _global_validation_report(dataset, gathered, aggregation_started,
+                                               bootstrap_replicates, calibrated=calibration is not None)
+        except Exception as caught:
+            error = caught
+    # A primary-only merge/report failure must reach all ranks before any
+    # worker attempts to receive a report that will never be broadcast.
+    context.coordinate(error, "complete validation global report")
+    return context.broadcast_from_primary(report)
+
+
+def _global_validation_report(
+    dataset: DecisionDataset, gathered: list[dict[str, Any]], aggregation_started: float,
+    bootstrap_replicates: int, *, calibrated: bool,
+) -> dict[str, Any]:
     merged = FullDiagnostics()
     total = 0
-    selected_sums: dict[str, Any] = {key: 0 for key in selection}
+    selected_sums = dict.fromkeys(gathered[0]["selection"], 0)
     selected_games: set[str] = set()
     for state in gathered:
         merged.merge(state["metrics"])
@@ -266,7 +288,12 @@ def evaluate_complete(  # noqa: PLR0915
         selected_games.update(state["selection_games"])
     if total != len(dataset):
         raise ValueError("Distributed validation omitted or duplicated decision rows")
-    details = merged.report(bootstrap_replicates=bootstrap_replicates)
+    timings = {
+        # Max rank wall-clock for the local eval loop (including its CPU diagnostics).
+        "forward": max(state["forward_seconds"] for state in gathered),
+        "aggregation": perf_counter() - aggregation_started,
+    }
+    details = merged.report(bootstrap_replicates=bootstrap_replicates, timings=timings)
     heads = merged.heads
     objective = (
         heads["action"].nll
@@ -304,5 +331,6 @@ def evaluate_complete(  # noqa: PLR0915
             },
         },
         "diagnostics": details,
-        "calibration_status": "heldout_artifact" if calibration is not None else "unfitted",
+        "timings_seconds": timings,
+        "calibration_status": "heldout_artifact" if calibrated else "unfitted",
     }

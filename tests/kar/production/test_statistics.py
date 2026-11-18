@@ -1,8 +1,9 @@
 import math
+import random
 
 import pytest
 
-from riichienv.kar.statistics import ClassificationMetrics, FullDiagnostics, GameClusters, ReliabilityBins
+from riichienv.kar.statistics import ClassificationMetrics, FullDiagnostics, GameClusters, ReliabilityBins, percentile
 
 
 def test_repeated_decisions_do_not_become_independent_games():
@@ -23,6 +24,48 @@ def test_cluster_resampling_keeps_whole_games_together():
     left = first.interval("value", seed=17, replicates=100)
     right = second.interval("value", seed=17, replicates=100)
     assert left == right and left["independent_games"] == 3
+
+
+def test_shared_resampling_matches_the_old_weighted_estimator_and_reduces_draws(monkeypatch, record_property):
+    clusters = GameClusters()
+    for index, name in enumerate(("d", "a", "b", "c"), 1):
+        if name != "d":
+            clusters.add(name, "left", index / 7, index)
+            clusters.add(name, "right", -index, index + 1)  # same game IDs, different weights
+        if name != "b":
+            clusters.add(name, "other", index / 3, 7)
+        clusters.add(name, "zero_weight_game", index, int(name == "a"))
+    keys = ("left", "right", "other", "zero_weight_game", "unobserved")
+    replicates, seed = 71, 29
+    original = random.Random
+    calls = 0
+
+    class Counted(original):
+        def randrange(self, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return super().randrange(*args, **kwargs)
+
+    # Independent transcription of the old, single-metric estimator.
+    expected = {}
+    for key in keys[:3]:
+        games = [values[key] for _, values in sorted(clusters.totals.items()) if key in values]
+        rng = Counted(seed)
+        draws = []
+        for _ in range(replicates):
+            chosen = [games[rng.randrange(len(games))] for _ in games]
+            draws.append(math.fsum(value[0] for value in chosen) / math.fsum(value[1] for value in chosen))
+        tail = (1 - 0.95) / 2
+        expected[key] = (percentile(draws, tail), percentile(draws, 1 - tail))
+    old_draws, calls = calls, 0
+    monkeypatch.setattr(random, "Random", Counted)
+    actual = clusters.intervals(keys, seed=seed, replicates=replicates)
+    assert all((actual[key]["lower"], actual[key]["upper"]) == expected[key] for key in keys[:3])
+    assert actual["zero_weight_game"]["independent_games"] == 1
+    assert actual["unobserved"]["mean"] is None
+    record_property("old_draws", old_draws)
+    record_property("shared_draws", calls)
+    assert (old_draws, calls) == (9 * replicates, 6 * replicates)
 
 
 def test_reliability_and_observed_branch_rank_metrics_are_explicit():

@@ -6,7 +6,7 @@
 
 ## 主要接口
 
-`evaluate_complete(model, dataset, context, microbatch=..., use_rule_features=..., ...)` 对非空 validation 的所有真实决策做 no_grad 前向；DDP 分片不重复、不遗漏，最后聚合总量/游戏 clusters。
+`evaluate_complete(model, dataset, context, microbatch=..., use_rule_features=..., ...)` 对非空 validation 的所有真实决策做 no_grad 前向；DDP 分片不重复、不遗漏。只向 primary 汇集局部统计并生成一份全局报表，协调异常后把同一报告广播给所有 rank。`timings_seconds` 分列最大 rank 的本地前向阶段、primary 汇总及 bootstrap。
 
 `add_diagnostics(...)` 从三头输出与独立标签累计完整统计；可用 `public_fields` 提供未遮蔽公开状态，使 feature-off 的当前 rank/威胁切片不丢失。`cal_fit_loss_summary(outputs, batch)` 单独计算用于模型选择的固定角色损失。
 
@@ -14,7 +14,7 @@
 
 完整 validation 包括 cal_fit 与 cal_check，继续报告自然分布诊断；返回的 `model_selection` **只含 cal_fit**，固定角色 salt，明确 `cal_check_used=false`。第三轮不能用外层全 validation 均值替代该子记录。
 
-选择目标使用 train 固定 rho 与训练 T=1 loss 合同，不按 validation 有效比例重算。无有效目标不填零。可选标定诊断使用绑定的 calibration/support 和其原始后端，不能改设备后冒充同一次标定。
+选择目标使用 train 固定 rho 与训练 T=1 loss 合同，不按 validation 有效比例重算。无有效目标不填零。标定诊断要求匹配的 calibration/support、原始后端及冻结 FP32；不会继承外层 autocast，拒绝显式 BF16。未校准验证仍可用已配置的 BF16。
 
 ## 模式与可观测结果
 

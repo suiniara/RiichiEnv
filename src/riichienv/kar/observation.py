@@ -91,7 +91,13 @@ class PublicSnapshot:
         )
 
 
-SELF_PASS_PROVENANCES = frozenset({"native_committed_pass", "inferred_unique_next_draw_pass"})
+PASS_NEXT_DRAW = "inferred_unique_next_draw_pass"
+PASS_KAN_REPLACEMENT = "inferred_unique_kan_replacement_pass"
+PASS_CALL_PRIORITY = "inferred_unique_call_priority_pass"
+PASS_TERMINAL_NO_RON = "inferred_unique_terminal_no_ron_pass"
+SELF_PASS_PROVENANCES = frozenset({
+    "native_committed_pass", PASS_NEXT_DRAW, PASS_KAN_REPLACEMENT, PASS_CALL_PRIORITY, PASS_TERMINAL_NO_RON,
+})
 
 
 @dataclass(frozen=True)
@@ -177,17 +183,23 @@ class ObserverLedger:
             raise ValueError("Foreign or unknown private Pass trigger")
         if not isinstance(provenance, str) or provenance not in SELF_PASS_PROVENANCES:
             raise ValueError("Private Pass requires confirmed, supported provenance")
-        inferred = provenance == "inferred_unique_next_draw_pass"
-        if inferred and trigger.trigger_type != "dahai":
-            raise ValueError("An unestablished/overridden call cannot be inferred as private Pass")
+        kan = trigger.trigger_type in {"ankan", "kakan"}
+        invalid = "An unestablished/overridden call cannot be inferred as private Pass"
+        if (provenance in {PASS_NEXT_DRAW, PASS_CALL_PRIORITY} and trigger.trigger_type != "dahai"
+                or provenance == PASS_KAN_REPLACEMENT and not kan):
+            raise ValueError(invalid)
         confirmed = self._pass_confirmations.get(trigger.trigger_event_id)
         if confirmed is None:
             if self._active_pass_trigger != trigger.trigger_event_id:
                 raise ValueError("Private Pass window ended without a legal closing event")
             return None
         closing = self._public_events[confirmed]
-        if inferred and (closing["type"] != "tsumo" or closing.get("actor") != (trigger.target + 1) % 4):
-            raise ValueError("An unestablished/overridden call cannot be inferred as private Pass")
+        kind = closing["type"]
+        if (provenance == PASS_NEXT_DRAW and (kind != "tsumo" or closing.get("actor") != (trigger.target + 1) % 4)
+                or provenance == PASS_KAN_REPLACEMENT and (kind != "tsumo" or closing.get("actor") != trigger.target)
+                or provenance == PASS_CALL_PRIORITY and kind not in {"chi", "pon", "kan", "daiminkan"}
+                or provenance == PASS_TERMINAL_NO_RON and kind not in ({"hora"} if kan else {"hora", "ryukyoku"})):
+            raise ValueError(invalid)
         return confirmed
 
     def self_pass_ready(self, trigger: SelfPassTrigger, *, provenance: str) -> bool:

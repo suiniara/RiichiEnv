@@ -36,7 +36,7 @@ uv run --no-sync python -m riichienv.kar.learning.export --acceptance ../kar-m0-
 - 同 game/observer 的历史只存一次；决策保存历史前缀长度、63 行状态/DECIDE、ACTION、完整候选、单独标签。
 - 每场只有完整重放、独立结算、输入与终局全部通过才事务提交；未完成数据不能加载训练。
 - `action_valid / response_applicable / response_observed / value_valid` 分开；0..3 rank 是数据层从最终 1..4 位明确转换。
-- 仅实际舍牌有 response/rank 监督。可信执行动作标为 explicit；NEXT_DRAW 完整闭合且截止前有实际回应选择时，可唯一证明的 PASS 标为 `inferred_unique_next_draw_pass`。被高优先级覆盖的私有意图不猜。
+- 仅实际舍牌有 response/rank 监督。显式动作与唯一可证的 Pass 只按实际结果生成；正常下家摸牌、抢杠后实际岭上摸牌、严格低优先级成立鸣牌和可证未 Ron 的终局分别记来源。被覆盖的私有意图不猜。各 split 另报非平凡机会及删失；动作 CE 学习保留行中的行为，不等于完整行为策略。
 - response public mask 从截止前 snapshot 重建，不读取实际响应反推；标签和来源身份不进入模型 Tensor。
 - rho_E/rho_V 固定从实际导出的 train 子清单计算，不用 validation/test 或每个 microbatch 的比例替代。
 

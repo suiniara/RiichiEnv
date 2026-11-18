@@ -12,7 +12,7 @@
 
 ## 数据合同
 
-Golden/语义别名排除、主 cohort、game split、protocol/raw/receipt/acceptance 身份在导出前检查。响应来自完整实际窗口，value 来自完整半庄；缺目标保留有效位，不能伪造 NEXT_DRAW 或按结果修改输入。
+Golden/语义别名排除、主 cohort、game split、protocol/raw/receipt/acceptance 身份在导出前检查。舍牌的辅助响应来自完整实际窗口，value 来自完整半庄；缺目标保留有效位。可证 Pass 只监督动作头，诊断分别记录冻结窗口与标签证据 event ID；窗口触发可早于实际选择 cutoff（例如上一杠 Dora 到达后开放抢杠）。每局报告及 `response_opportunities_by_split` 记录非平凡机会、显式、唯一推断、删失与阶段／关闭切片，不把删失补成行动行。
 
 导出 scope 使用 [versioning](../../versioning/README.md) 的统一合同，保留完整可用 split 数。manifest 分开保存切分前 `N_eligible_half_games`、实际导出的 `N_train_half_games`、`available_split_counts` 和 `exported_split_counts`，不得把探针子集冒充完整 cohort。主力门槛固定 `model_tier_basis=N_train_half_games`，实际 train rho 在完成导出后固定。完整清单接口不受诊断小批上限限制。角色 salt、杠事务、特征语义、随机置空、训练计划与损失版本均显式记录。
 

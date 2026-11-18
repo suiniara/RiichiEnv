@@ -71,6 +71,12 @@ class ReplayOpportunity:
 
 
 @dataclass(frozen=True)
+class ResponseEvidence:
+    window_trigger_event_id: int
+    label_evidence_event_id: int
+
+
+@dataclass(frozen=True)
 class ReplayDecision:
     snapshot: PublicSnapshot
     prefix: TokenSequence
@@ -78,3 +84,4 @@ class ReplayDecision:
     action_target_global: int
     trigger_event_id: int
     action_provenance: str = "explicit"
+    response_evidence: ResponseEvidence | None = None

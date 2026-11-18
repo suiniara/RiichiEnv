@@ -1,14 +1,14 @@
 # KAR-v1.2.2 / RiichiEnv V4 完整主设计
 
-**版本：** 算法 `KAR-v1.2.2` · 宿主合同 `RiichiEnv V4`（`kar_riichienv_contract_v4`） · 文档修订 `design-sync-2`。最后一项仅标识文档，不是新的算法、输入或产物版本。
+**版本：** 算法 `KAR-v1.2.2` · 宿主合同 `RiichiEnv V4`（`kar_riichienv_contract_v4`） · 文档修订 `design-sync-3`。最后一项仅标识文档，不是新的算法、输入或产物版本。
 
 **唯一正文：** `docs/KAR-v1.2.2-DESIGN.md`。对外分发时应从该正文制作逐字节快照，不另维护规范；相对链接以仓库 `docs/` 为基准。此前 `design-sync-1` 的分发文件只对应当时的 `f70684e`，不自动升级。
 
-**适用实现：** `suiniara/RiichiEnv` · `kar/riichienv-v1-20261117`。以 `f70684ef7aa69e56e6a530dcca13326fbf2c83b5` 为修订基线，包含其后的[离线决策时点](kar-decision-time-repair.md)和[振听／逐事件校准修订](kar-furiten-event-calibration-repair.md)。宿主、重放、合法动作及运行时均为 RiichiEnv；Kanachan 仅是 546 动作和 tile37 编号来源。RiichiEnv 上游参考提交为 `0ee1236a283b15508f3ac28407027f340b81e1de`。
+**适用实现：** `suiniara/RiichiEnv` · `kar/riichienv-v1-20261117`。本修订以 `4c09e9eb1f02fde3bb4ce0a2fe4d769b634e3610` 为基线，含[响应监督、冻结 FP32 和验证统计修订](kar-response-fp32-validation-repair.md)。宿主、重放、合法动作及运行时均为 RiichiEnv；Kanachan 仅是 546 动作和 tile37 编号来源。RiichiEnv 上游参考提交为 `0ee1236a283b15508f3ac28407027f340b81e1de`。
 
 **历史来源：** 外部附件 `KAR-v1.2.2-DESIGN(3).md` 的字节 SHA-256 为 `4349039c44175ece77f6dddad3a2106fbd3e0e0339935122df242175c83cbdba`。它保留历史身份，不作为 V4 实施规范。见[相对旧附件的差异与迁移说明](kar-design-v4-migration.md)。
 
-**证据范围：** [design-sync-1 校验](kar-design-v4-validation.md)和[分批 Pass／有效未支持质量报告](kar-pass-rho-math-repair.md)保留原范围。本修订的实际回归见[振听／逐事件校准报告](kar-furiten-event-calibration-repair.md)；设计本身不授予真实数据处理、参数更新、GPU、校准或 M3 许可。
+**证据范围：** [design-sync-1 校验](kar-design-v4-validation.md)、[分批 Pass／有效未支持质量报告](kar-pass-rho-math-repair.md)和[振听／逐事件校准报告](kar-furiten-event-calibration-repair.md)各保留原范围。此次实跑见[响应监督、冻结 FP32 与验证统计报告](kar-response-fp32-validation-repair.md)。设计不授予真实数据处理、参数更新、GPU、校准或 M3 许可。
 
 ## 0. 冻结结论与活动版本
 
@@ -23,9 +23,11 @@
 | Schema 映射 | `riichienv_complete_v1_from_kar_v1_2_2_v1`，legacy compatibility=`not_claimed` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | architecture | `kar_kl_response_value_v1` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | artifact | `kar_riichienv_contract_v4` | [versioning.py](../src/riichienv/kar/versioning.py) |
-| input pipeline | `semantic_public_clock_frozen_decisions_v4_furiten` | [versioning.py](../src/riichienv/kar/versioning.py) |
+| input pipeline | `semantic_public_clock_frozen_decisions_v5_response_pass` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | native replay | `prefix_flags_bridge_v3_native_furiten` | [native_replay.py](../src/riichienv/kar/native_replay.py) |
-| dataset / action labels | `kar_decision_sqlite_v1` / `explicit_and_unique_next_draw_pass_v2_furiten` | [learning/export.py](../src/riichienv/kar/learning/export.py) |
+| dataset / action labels | `kar_decision_sqlite_v1` / `explicit_and_unique_response_pass_v3` | [learning/export.py](../src/riichienv/kar/learning/export.py) |
+| response opportunity evidence | `frozen_response_opportunities_v1` | [response_supervision.py](../src/riichienv/kar/response_supervision.py) |
+| frozen model precision recipe | `fp32_no_autocast_v1` | [learning/config.py](../src/riichienv/kar/learning/config.py) |
 | public clock | `public_semantic_clock_v1` | [event_semantics.py](../src/riichienv/kar/event_semantics.py) |
 | terminal public resolution | `verified_abort_public_resolution_v1` | [event_semantics.py](../src/riichienv/kar/event_semantics.py) |
 | model computation identity | `kar_transformer_v3_semantic_inputs`，不改变参数形状 | [learning/config.py](../src/riichienv/kar/learning/config.py) |
@@ -62,7 +64,7 @@ MLE 不保证有限网络校准；观察条件关联不自动等于干预价值�
 
 $X=\operatorname{tokenize}(\mathcal H,O,\mathcal L)$；A 是实际完整动作；E 是该舍牌的最终即时响应；R 是半庄终局名次。真实响应和终局名次不进入 X。
 
-固定来源/cohort 的行为策略为 μ。总体交叉熵最优先验为 μ，但有限模型的实际校准先验 π0 与 μ 可不同；定义 `δπ(x)=TV(π0(·|x),μ(·|x))`。
+固定来源/cohort 的完整行为策略为 $\mu(A\mid X)$。若观察到完整的行为样本，给定 X 的总体动作交叉熵最优解是 $\mu$；实际公开牌谱有响应动作删失。令 $I=1$ 表示此机会有显式或唯一可证的动作而被保留，则现行普通 CE 对这些行学习的是 $P(A\mid X,I=1)$，一般不等于 $\mu$。补齐唯一可证 Pass 减少删失，不证明覆盖全部意图，仍有依赖 A 的保留机制；校准、任意重加权或重定义 $\mu$ 都不能辨认缺失的私有响应。本修订不引入删失或集合标签损失。对完整行为的误差仍定义 `δπ(x)=TV(π0(·|x),μ(·|x))`，不能拿保留子总体的误差替代它。
 
 对舍牌 a，定义 `pμ(e|x,a)=P(E(a)=e|X=x)`、`mμ(x,a,e)=E[U^{a,μ}|X=x,E(a)=e]`，因此：
 
@@ -235,9 +237,16 @@ P0 是舍牌者，P1/P2/P3 为下/对/上家，RON bit=1/2/4。响应是最终�
 
 ### 5.3 观察者私有 SELF_PASS
 
-只有执行包装器确认原子提交成功的 `native_committed_pass`，或实际观察到唯一正常下家摸牌、并已核实本家存在非平凡合法 Pass 的 `inferred_unique_next_draw_pass`，才写本家私有 marker。
+在线只在原子提交成功后写 `native_committed_pass`。离线须冻结该观察者的非平凡完整候选（Pass 不是唯一合法项）与触发身份，读到真实公开裁定后，才可能给出唯一标签：
 
-capture trigger 只是上下文，不是成功证据。失败/取消/未知意图、被更高优先级鸣牌覆盖的未成立选择都不能补造成 Pass；不读取 GameAction.user_input。
+| 公开裁定与排除条件 | 离线 provenance |
+|---|---|
+| 普通舍牌后确实由下家正常摸牌，任何非 Pass 会阻止该摸牌 | `inferred_unique_next_draw_pass` |
+| 暗／加杠原生预览只提供 Pass/Ron，宣告者实际完成岭上摸牌，排除 Ron | `inferred_unique_kan_replacement_pass` |
+| 成立鸣牌的优先级严格低于该观察者的**全部**其他候选，例如 Chi 成立排除另一家的 Pon | `inferred_unique_call_priority_pass` |
+| 其他候选只有 Ron，经已证无荣和的终局，或雀魂不抢截的完整多荣和赢家组中不含该观察者 | `inferred_unique_terminal_no_ron_pass` |
+
+若较低或同优先级的私有动作仍可能得到相同公开结果（例如高优先级 Pon 覆盖了另一家的 Chi），该机会**删失**，不补成行动行或私有 marker。未观测到的意图、缺失关闭或不适用裁定同样不猜；不读取 `GameAction.user_input`。捕获触发身份本身不是提交证据。每局及导出 split 分别统计非平凡机会总数、显式、唯一推断及删失，按响应阶段与关闭结果交叉分组；这些计数不作为训练权重。
 
 marker 锚定公共关闭事件之后、复用该事件位置，不增加公共 event ID 或时钟，不改其他观察者。未被抢的杠用实际公开 replacement draw 关闭私有窗口，transport ACK 和 Dora 均不可代替它；已成立抢杠由公开和牌裁定关闭。普通舍牌以实际关闭事件为锚。旧 snapshot/prefix 冻结不回写。source/provenance 是审计元数据，不作为 E/R 或未来信息输入。
 
@@ -428,6 +437,8 @@ $$E2=M[\widehat\Delta-\sum_a|d_a|b_a-3\sum_a(q_0(a)-q_\tau(a))_+\rho_a]-3\delta_
 
 完整 validation 按固定 game hash 分成 cal_fit/cal_check；test 不调参。冻结网络，仅 cal_fit 的固定温度网格选 TA、TE、TR；分别最小化合法动作、masked response、真实 E 分支 rank NLL。cal_check 只评估预登记判据，不能看完后调阈值。
 
+冻结模型合同要求 FP32 参数及浮点缓冲，在校准收集、冻结 prefix/候选及已校准 validation 的完整前向边界关闭 autocast，不靠输出 `.float()` 补精度。推理 recipe 显式绑定 `fp32_no_autocast_v1`。原生模型缓存不允许跨 autocast 开关／dtype 使用。未校准的训练验证可用相同精度的 BF16；已校准验证拒绝请求 BF16。若以后提供冻结 BF16，应单独绑定 recipe／cache／calibration／release 并在同一路径重做校准。
+
 温度总体 NLL 与平均 forward KL 差一个未知条件熵，Pinsker/Jensen 仅给同一分布上的平均 TV 关系；有限验证 NLL 不是逐状态证书，不能忽略条件熵把原始 NLL 当真实 KL 数值。
 
 ### 11.2 动作门控
@@ -535,6 +546,8 @@ Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sam
 
 报告自然频率action/response/rank NLL、Brier、top-label与每类可靠性、有效样本和独立game数；强制动作与多合法动作分开，立直/副露/顺位切片，响应按RON/CHI/PON/DAIMINKAN/terminal族与21分支，rank按真实E分支。效用分桶与独立game聚类区间不当作uniform错误界。报告所有failed/unavailable，不只总体平均。
 
+完整验证分片覆盖所有合格行。只有 primary 汇总各 rank 的统计并构造全局报表；先协调错误，再广播同一结果。聚类 bootstrap 只在有相同有序合格 game ID 集的指标间复用固定种子抽样；每指标保留自己的游戏权重、分母与分位数，逐轮分配索引而不是缓存整张抽样矩阵。分别报告最大 rank 的本地 `forward` 墙钟（含该循环的数据准备与累加）、primary `aggregation` 和 `bootstrap` 时间；不缩小验证集。
+
 同checkpoint比较τ∞先验与验证冻结finite策略，固定规则/对手版本/配置、座位轮换、成对初始牌山seed；策略采样RNG独立记录，轨迹分叉后不声称相同反事实。M3为10,000 paired seed blocks、共20,000半庄、四个初始座位平衡；按整场/paired block聚类区间，报告顺位/一四位率/点数/和放铳/覆盖/延迟/费用。未获可重复验证收益保留prior-only，不靠扩模型试错。
 
 ## 17. 阶段顺序与运行许可
@@ -579,6 +592,8 @@ Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sam
 后续冻结机会和原生振听修复改变了部分合法候选及训练行：从原始、可核验记录使用重新构建的原生扩展重新重放、审计和生成派生 SQLite、索引／选集、指纹及训练配方。错误 Pass 删除后其后的私有历史、行序号或有效样本计数也可能改变；不能只改 manifest 或因为支付一致而沿用。旧输入的缓存、精确续训 checkpoint 和发布都不能当作当前合同。
 
 逐事件校准 v6 不能迁移 v5 的真实类别切片；需要在匹配当前数据、模型、mask 的冻结 logits 和独立 `cal_check` 上按新预登记语义重算。绑定旧输入的 logit archive 不能直接重算来代替输入重建。统计合并状态、训练支持产物、有限策略选择和发布按相应当前绑定重新生成或验证，不重贴阈值或 hash。实施未覆盖原始或既有训练产物，详见[本次迁移报告](kar-furiten-event-calibration-repair.md)。
+
+以 `4c09e9e` 为基线的响应监督修订还会补入非平凡 Pass、改变可证私有历史，并记录不可辨认机会；旧 audit、接受快照、训练 SQLite、索引／样本序、计数与绑定指纹应由可信原始结果重建。固定 rho 的计算与使用方式不变；新导出如因补行改变 train 样本数，其 manifest 比例由实际训练集重新计算，而非在训练中动态再估。冻结 FP32 recipe hash 也已变化，旧缓存和旧绑定的静态 logits／校准／有限策略及发布证据不能重贴。新验收不覆盖原始数据或旧训练产物。
 
 ## 20. 风险与声明边界
 

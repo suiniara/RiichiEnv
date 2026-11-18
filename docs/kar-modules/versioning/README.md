@@ -6,7 +6,7 @@
 
 ## 职责与接口
 
-`artifact_contract()` 返回数据、运行时、检查点和发布共用的显式身份。活动格式为 `kar_riichienv_contract_v4`、输入 `semantic_public_clock_frozen_decisions_v4_furiten`；显式绑定 `native_replay_version`、公开时钟、终局公开事实与 one-vs-rest 分支质量。保留完整 host Schema、N_train 口径和 Response Mask v3。旧语义或缺字段的产物明确拒绝，不因参数形状相同而兼容。完整表见[主设计](../../KAR-v1.2.2-DESIGN.md)。
+`artifact_contract()` 返回数据、运行时、检查点和发布共用的显式身份。活动格式为 `kar_riichienv_contract_v4`、输入 `semantic_public_clock_frozen_decisions_v5_response_pass`；显式绑定 `native_replay_version`、公开时钟、终局公开事实与 one-vs-rest 分支质量。保留完整 host Schema、N_train 口径和 Response Mask v3。旧语义或缺字段的产物明确拒绝，不因参数形状相同而兼容。完整表见[主设计](../../KAR-v1.2.2-DESIGN.md)。
 
 `validate_artifact_contract(record, context=...)` 对每个必需字段检查精确值；缺失不填当前默认值，旧记录必须明确拒绝。
 

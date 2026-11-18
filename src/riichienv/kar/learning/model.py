@@ -145,6 +145,10 @@ class ModelOutputs:
     action_present: Tensor
 
 
+def _active_autocast_dtype(device: torch.device) -> torch.dtype | None:
+    return torch.get_autocast_dtype(device.type) if torch.is_autocast_enabled(device.type) else None
+
+
 @dataclass(frozen=True)
 class PrefixCache:
     owner: int
@@ -157,6 +161,7 @@ class PrefixCache:
     policy_logits: Tensor
     device: torch.device
     dtype: torch.dtype
+    autocast_dtype: torch.dtype | None
     candidates: Tensor
     input_pipeline_version: str
     model_contract_sha256: str
@@ -262,6 +267,7 @@ class KARTransformer(nn.Module):
             policy,
             hidden.device,
             hidden.dtype,
+            _active_autocast_dtype(hidden.device),
             candidates,
             INPUT_PIPELINE_VERSION,
             self.config.contract_hash,
@@ -289,6 +295,8 @@ class KARTransformer(nn.Module):
         parameter = next(self.parameters())
         if parameter.device != cache.device or parameter.dtype != cache.dtype:
             raise ValueError("Model device or dtype changed after prefix encoding")
+        if not hasattr(cache, "autocast_dtype") or cache.autocast_dtype != _active_autocast_dtype(parameter.device):
+            raise ValueError("Prefix cache autocast precision differs from the candidate suffix")
         if (
             actions.fields["kind"].shape != (actions.size, 1)
             or not torch.all(actions.fields["kind"] == 10)

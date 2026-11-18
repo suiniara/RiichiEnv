@@ -25,6 +25,8 @@
 
 `FullDiagnostics.add_gate` 记录 M 的 0.01 分桶、0..32 完整支持数及切片，不只保存均值。`ResponseMassHistogram` 在公开 mask/softmax 后统计，保留 support basis、具体支持位、状态、观测数和 101 个桶。有效 `unsupported_mass_histogram` 与 `train_only_unsupported_mass_histogram` 独立；无证据/观测时为 `unavailable`。`state_dict/merge` 供 DDP 聚合，拒绝旧格式或不同支持位的同口径统计，不能平均各 rank 的均值代替总量合并。
 
+相同有序合格游戏集的指标共享 seeded bootstrap 索引；权重不同仍独立计算分母，样本矩阵不常驻内存。`FullDiagnostics.report` 可向调用方 `timings` 记录 bootstrap 耗时，计时不写入冻结校准报告内容。
+
 延迟的 p50/p95 报告明确的直方图区间，不是精确点分位数；单局精确列表分位数与可合并区间不能混叫同一种统计。
 
 ## 接线与状态

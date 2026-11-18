@@ -18,11 +18,12 @@ from ..kan_transactions import KAN_TRANSACTION_VERSION
 from ..mjsoul import decode_record_bytes, load_protocol
 from ..response import resolve_discard_response
 from ..response_mask import public_rule_response_mask, validate_response_target
+from ..response_supervision import RESPONSE_SUPERVISION_VERSION, OpportunityCounts
 from ..schema import TOKEN_BYTE_SIZE
 from ..versioning import artifact_contract, game_count_contract, validate_artifact_contract
 
 DATASET_VERSION = "kar_decision_sqlite_v1"
-ACTION_LABEL_VERSION = "explicit_and_unique_next_draw_pass_v2_furiten"
+ACTION_LABEL_VERSION = "explicit_and_unique_response_pass_v3"
 SQL_SCHEMA = """
 CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE games (game_id TEXT PRIMARY KEY, split TEXT NOT NULL, source_sha256 TEXT NOT NULL,
@@ -57,6 +58,7 @@ def learning_contract() -> dict[str, Any]:
         "calibration_partition_version": CALIBRATION_PARTITION_VERSION,
         "calibration_split_salt": CALIBRATION_SPLIT_SALT,
         "action_label_version": ACTION_LABEL_VERSION,
+        "response_supervision_version": RESPONSE_SUPERVISION_VERSION,
         "rank_tiebreak": "initial_seat_order_east_south_west_north",
         "initial_seat_order": [0, 1, 2, 3],
     }
@@ -75,12 +77,35 @@ class GameWriter:
         self.responses: dict[int, Any] = {}
         self.examples = self.response_count = self.value_count = 0
         self.provenance: Counter[str] = Counter()
+        self.response_labels: Counter[str] = Counter()
+
+    def _decision_diagnostics(self, event: ReplayDecision) -> dict[str, int]:
+        snapshot, trigger, evidence = event.snapshot, event.trigger_event_id, event.response_evidence
+        response = snapshot.decision_phase in {"discard_response", "kan_response"}
+        cutoff, length = snapshot.cutoff_event_id, len(self.game.events)
+        if not 0 <= trigger < length or response != (evidence is not None):
+            raise ValueError("Decision lacks its source or response window evidence")
+        if evidence is None:
+            if cutoff > trigger:
+                raise ValueError("Decision cutoff is after its source action")
+            return {}
+        opening, closing = evidence.window_trigger_event_id, evidence.label_evidence_event_id
+        explicit = event.action_provenance == "explicit"
+        expected_kinds = {"dahai"} if snapshot.decision_phase == "discard_response" else {"ankan", "kakan"}
+        if (not 0 <= opening <= cutoff <= closing < length or opening >= closing
+                or self.game.events[opening]["type"] not in expected_kinds
+                or self.round_at[opening] != self.round_at[closing]
+                or trigger != (closing if explicit else opening)
+                or not explicit and event.action_target_global != 221):
+            raise ValueError("Response label is not bound to its frozen opening and public result")
+        if len(event.prefix.candidates) > 1:
+            self.response_labels["explicit" if explicit else "uniquely_inferred"] += 1
+        return {"response_window_trigger_event_id": opening, "response_label_evidence_event_id": closing}
 
     def __call__(self, event: ReplayDecision) -> None:
         snapshot, prefix = event.snapshot, event.prefix
         actor, trigger = snapshot.observer_player_id, event.trigger_event_id
-        if not 0 <= trigger < len(self.game.events) or snapshot.cutoff_event_id > trigger:
-            raise ValueError("Decision cutoff is after its source action")
+        response_evidence = self._decision_diagnostics(event)
         round_instance = self.round_at[trigger]
         ordinal = self.ordinals[round_instance, actor]
         self.ordinals[round_instance, actor] += 1
@@ -109,6 +134,7 @@ class GameWriter:
             target = -1 if target is None else int(target)
             resolution_ids = list(resolution.response_resolution_event_ids)
         diagnostic = {
+            **response_evidence,
             "score_before_action": snapshot.scores[actor],
             "response_resolution_event_ids": resolution_ids,
             "round_return_valid": False,
@@ -146,6 +172,10 @@ class GameWriter:
     def finish(self, replay: dict[str, Any], split: str) -> dict[str, Any]:
         if replay["status"] != "PASS" or not replay.get("final_ranks"):
             raise ValueError(f"Game failed complete export replay: {replay.get('errors')}")
+        counters = replay["response_opportunities"]
+        if (counters["version"] != RESPONSE_SUPERVISION_VERSION
+                or any(counters[key] != self.response_labels[key] for key in ("explicit", "uniquely_inferred"))):
+            raise ValueError("Response opportunity evidence differs from emitted action supervision")
         ranks = replay["final_ranks"]
         for actor, rank in enumerate(ranks):
             if isinstance(rank, bool) or rank not in range(1, 5):
@@ -191,6 +221,7 @@ class GameWriter:
             "response_valid": self.response_count,
             "value_valid": self.value_count,
             "action_provenance_counts": dict(self.provenance),
+            "response_opportunities": counters,
             "replay_sha256": content_hash(replay),
             "unlabelled_response_intents": "overridden_or_unobserved_private_claims_not_guessed",
         }
@@ -272,6 +303,7 @@ def export_dataset(  # noqa: PLR0915
             "schema.py",
             "tokenize.py",
             "response.py",
+            "response_supervision.py",
             "response_mask.py",
             "rule_features.py",
             "versioning.py",
@@ -328,9 +360,12 @@ def export_dataset(  # noqa: PLR0915
             split: {"games": 0, "examples": 0, "response_valid": 0, "value_valid": 0}
             for split in ("train", "validation", "test")
         }
+        supervision = {split: OpportunityCounts() for split in totals}
         for row in rows:
-            total = totals[row["split"]]
+            split = row["split"]
+            total = totals[split]
             total["games"] += 1
+            supervision[split].merge(row["response_opportunities"])
             for key in ("examples", "response_valid", "value_valid"):
                 total[key] += row[key]
         train = totals["train"]
@@ -344,6 +379,7 @@ def export_dataset(  # noqa: PLR0915
             "scope": scope,
             "games": rows,
             "counts": totals,
+            "response_opportunities_by_split": {split: value.report() for split, value in supervision.items()},
             "rho_E": train["response_valid"] / train["examples"],
             "rho_V": train["value_valid"] / train["examples"],
             "is_probe_subset": any(

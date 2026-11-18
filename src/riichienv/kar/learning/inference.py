@@ -5,13 +5,11 @@ from collections.abc import Mapping, Sequence
 
 import torch
 
-from ..contracts import content_hash
 from ..observation import PublicSnapshot
 from ..runtime_contracts import RuntimeBinding
 from ..tokenize import TokenSequence, append_action, encode_prefix
-from ..versioning import RULE_FEATURE_MASK_VERSION
 from .batch import collate_inputs, rule_feature_view
-from .config import FEATURE_VERSION
+from .config import frozen_inference_recipe_sha256
 from .model import KARTransformer, PrefixCache
 
 
@@ -30,19 +28,12 @@ def model_weights_sha256(model: KARTransformer) -> str:
 
 class FrozenModelPredictor:
     def __init__(self, model: KARTransformer, train_manifest_sha256: str, *, use_rule_features: bool = True):
-        if type(use_rule_features) is not bool:
-            raise ValueError("Inference feature mode must be explicit boolean metadata")
+        recipe = frozen_inference_recipe_sha256(model.config, use_rule_features=use_rule_features)
+        if any(value.is_floating_point() and value.dtype != torch.float32
+               for value in (*model.parameters(), *model.buffers())):
+            raise ValueError("Frozen FP32 inference requires FP32 model parameters and floating buffers")
         self.model = model.eval()
         self.use_rule_features = use_rule_features
-        recipe = content_hash(
-            {
-                "model_config_hash": model.config.contract_hash,
-                "feature_version": FEATURE_VERSION,
-                "rule_feature_mask_version": RULE_FEATURE_MASK_VERSION,
-                "use_rule_features": use_rule_features,
-                "inference_feature_dropout": 0,
-            }
-        )
         self.binding = RuntimeBinding.current(
             model_weights_sha256(model), train_manifest_sha256, inference_recipe_sha256=recipe
         )
@@ -82,7 +73,8 @@ class FrozenModelPredictor:
         batch = rule_feature_view(
             batch, torch.zeros(1, dtype=torch.bool, device=device), enabled=self.use_rule_features
         )
-        self._cache = self.model.encode_prefix(batch)
+        with torch.autocast(device_type=device.type, enabled=False):
+            self._cache = self.model.encode_prefix(batch)
         self._context = (context, hashlib.sha256(snapshot.to_bytes()).hexdigest(), candidates)
         self.prefix_calls += 1
         return self._cache.policy_logits[0].cpu().tolist()
@@ -113,8 +105,10 @@ class FrozenModelPredictor:
                     "decision_row_id": context,
                 }
             )
-        batch = collate_inputs(rows).to(next(self.model.parameters()).device)
-        responses, ranks = self.model.score_actions(self._cache, batch)
+        device = next(self.model.parameters()).device
+        batch = collate_inputs(rows).to(device)
+        with torch.autocast(device_type=device.type, enabled=False):
+            responses, ranks = self.model.score_actions(self._cache, batch)
         self.candidate_calls += 1
         self.candidates_scored += len(rows)
         return {

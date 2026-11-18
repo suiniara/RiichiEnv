@@ -16,7 +16,7 @@ from .native_replay import NATIVE_REPLAY_VERSION
 from .schema import schema_status
 
 ARTIFACT_CONTRACT_VERSION = "kar_riichienv_contract_v4"
-INPUT_PIPELINE_VERSION = "semantic_public_clock_frozen_decisions_v4_furiten"
+INPUT_PIPELINE_VERSION = "semantic_public_clock_frozen_decisions_v5_response_pass"
 SCHEMA_MAPPING_VERSION = "riichienv_complete_v1_from_kar_v1_2_2_v1"
 ARCHITECTURE_ID = "kar_kl_response_value_v1"
 FEATURE_CONTRACT_VERSION = "visible_rule_features_v1_2_2"

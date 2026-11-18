@@ -84,17 +84,40 @@ def test_independent_cal_check_is_never_used_for_epoch_loss_selection():
 
     from riichienv.kar.learning.dataset import collate_examples  # noqa: PLC0415
     from riichienv.kar.learning.evaluation import cal_fit_loss_summary  # noqa: PLC0415
+    from riichienv.kar.learning.losses import loss_sums  # noqa: PLC0415
     from riichienv.kar.learning.model import ModelOutputs  # noqa: PLC0415
 
     dataset = SyntheticDataset()
     fit = next(f"role-fit-{index}" for index in range(100) if calibration_is_fit(f"role-fit-{index}"))
     check = next(f"role-check-{index}" for index in range(100) if not calibration_is_fit(f"role-check-{index}"))
     rows = [{**dataset[0], "game_id": fit}, {**dataset[1], "game_id": check}]
+    rank_logits = torch.tensor([4.0, 1.0, -0.5, -2.0]).expand(2, 21, 4).clone()
     outputs = ModelOutputs(
-        torch.zeros((2, 546)), torch.zeros((2, 21)), torch.zeros((2, 21, 4)), torch.ones(2, dtype=torch.bool)
+        torch.zeros((2, 546)), torch.zeros((2, 21)), rank_logits, torch.ones(2, dtype=torch.bool),
     )
-    before = cal_fit_loss_summary(outputs, collate_examples(rows))
-    rows[1] = {**rows[1], "final_rank_target": 3}
-    after = cal_fit_loss_summary(outputs, collate_examples(rows))
-    assert before == after and before["examples"] == 1 and before["games"] == [fit]
+    batch = collate_examples(rows)
+    before = cal_fit_loss_summary(outputs, batch)
+    assert before["examples"] == 1 and before["games"] == [fit] and before["rank_count"] == 1
+
+    def change_label(index):
+        changed = list(rows)
+        changed[index] = {**changed[index], "final_rank": 3}
+        collated = collate_examples(changed)
+        assert int(collated.labels.final_rank_target[index]) == 3
+        return collated
+
+    def change_logits(index):
+        changed = outputs.rank_logits.clone()
+        changed[index] = changed[index].flip(-1)
+        return replace(outputs, rank_logits=changed)
+
+    # If both rows were used, changing either input would affect the loss.
+    total = loss_sums(outputs, batch.labels, batch.inputs.legal_mask).value
+    check_changed = change_label(1)
+    assert loss_sums(outputs, check_changed.labels, batch.inputs.legal_mask).value > total
+    assert loss_sums(change_logits(1), batch.labels, batch.inputs.legal_mask).value > total
+    assert cal_fit_loss_summary(outputs, check_changed) == before
+    assert cal_fit_loss_summary(change_logits(1), batch) == before
+    assert cal_fit_loss_summary(outputs, change_label(0))["rank"] > before["rank"]
+    assert cal_fit_loss_summary(change_logits(0), batch)["rank"] > before["rank"]
     assert CALIBRATION_SPLIT_SALT == "kar-cal-fit-check-v1"

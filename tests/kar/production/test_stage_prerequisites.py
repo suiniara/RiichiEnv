@@ -5,7 +5,7 @@ import pytest
 
 from riichienv.kar.budget import BudgetLedger, BudgetPlan, CostForecast
 from riichienv.kar.contracts import content_hash
-from riichienv.kar.learning.config import FEATURE_VERSION, ModelConfig
+from riichienv.kar.learning.config import ModelConfig, frozen_inference_recipe_sha256
 from riichienv.kar.learning.prerequisites import m2_prerequisites, verify_prerequisites
 from riichienv.kar.learning.training_config import (
     ProductionTrainConfig,
@@ -14,7 +14,7 @@ from riichienv.kar.learning.training_config import (
 )
 from riichienv.kar.runtime_contracts import RuntimeBinding
 from riichienv.kar.selection_quality import TAU_SELECTION_VERSION, TauSelectionPolicy, paired_tau_evidence
-from riichienv.kar.versioning import RULE_FEATURE_MASK_VERSION, artifact_contract
+from riichienv.kar.versioning import artifact_contract
 
 
 def sign(body, key):
@@ -97,14 +97,8 @@ def m2_config(tier="small", games=900):
 
 def growth_fixture(path, results, config):
     policy = TauSelectionPolicy(bootstrap_replicates=20)
-    recipe = content_hash(
-        {
-            "model_config_hash": ModelConfig.from_preset("small").contract_hash,
-            "feature_version": FEATURE_VERSION,
-            "rule_feature_mask_version": RULE_FEATURE_MASK_VERSION,
-            "use_rule_features": config.use_rule_features,
-            "inference_feature_dropout": 0,
-        }
+    recipe = frozen_inference_recipe_sha256(
+        ModelConfig.from_preset("small"), use_rule_features=config.use_rule_features,
     )
     arm = results["feature-on" if config.use_rule_features else "feature-off"]
     binding = RuntimeBinding.current(arm["final_weights_sha256"], "c" * 64, inference_recipe_sha256=recipe)

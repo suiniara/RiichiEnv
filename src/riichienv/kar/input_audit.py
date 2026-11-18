@@ -4,7 +4,7 @@ import hashlib
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from .decision import ReplayDecision
+from .decision import ReplayDecision, ResponseEvidence
 from .observation import PublicSnapshot
 from .schema import ACTIVE_SCHEMA_ID, schema_status
 from .tokenize import TokenHistoryCache, TokenizationUnavailableError, append_action, encode_prefix
@@ -24,7 +24,8 @@ class InputAudit:
         self.phases: dict[str, int] = {}
 
     def inspect(
-        self, snapshot: PublicSnapshot, candidates: Sequence[int], target: int, *, provenance: str = "explicit"
+        self, snapshot: PublicSnapshot, candidates: Sequence[int], target: int, *, provenance: str = "explicit",
+        response_evidence: ResponseEvidence | None = None,
     ) -> None:
         try:
             prefix = encode_prefix(snapshot, candidates, history_cache=self.caches[snapshot.observer_player_id])
@@ -47,7 +48,11 @@ class InputAudit:
         if self.on_decision is not None:
             if self.trigger_event_id is None:
                 raise ValueError("Training export requires an explicit source trigger event")
-            self.on_decision(ReplayDecision(snapshot, prefix, conditional, target, self.trigger_event_id, provenance))
+            source = (response_evidence.window_trigger_event_id
+                      if response_evidence is not None and provenance != "explicit" else self.trigger_event_id)
+            self.on_decision(
+                ReplayDecision(snapshot, prefix, conditional, target, source, provenance, response_evidence)
+            )
 
     def report(self) -> dict[str, Any]:
         registry = schema_status()

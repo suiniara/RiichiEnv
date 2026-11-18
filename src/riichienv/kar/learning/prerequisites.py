@@ -11,8 +11,8 @@ from ..contracts import content_hash
 from ..release import implementation_release_identity
 from ..runtime_contracts import RuntimeBinding
 from ..selection_quality import TAU_SELECTION_VERSION, TauSelectionPolicy, validate_finite_tau_selection
-from ..versioning import RULE_FEATURE_MASK_VERSION, validate_artifact_contract
-from .config import FEATURE_VERSION, ModelConfig
+from ..versioning import validate_artifact_contract
+from .config import ModelConfig, frozen_inference_recipe_sha256
 
 if TYPE_CHECKING:
     from .training_config import ProductionTrainConfig
@@ -120,14 +120,8 @@ def m2_prerequisites(  # noqa: PLR0915
             ):
                 raise ValueError("Finite validation evidence failed its preregistered repeatability gate")
         arm = report["results"]["feature-on" if config.use_rule_features else "feature-off"]
-        recipe = content_hash(
-            {
-                "model_config_hash": ModelConfig.from_preset("small").contract_hash,
-                "feature_version": FEATURE_VERSION,
-                "rule_feature_mask_version": RULE_FEATURE_MASK_VERSION,
-                "use_rule_features": config.use_rule_features,
-                "inference_feature_dropout": 0,
-            }
+        recipe = frozen_inference_recipe_sha256(
+            ModelConfig.from_preset("small"), use_rule_features=config.use_rule_features,
         )
         binding = RuntimeBinding.current(arm["final_weights_sha256"], dataset_sha256, inference_recipe_sha256=recipe)
         if choice.get("binding_sha256") != binding.digest:

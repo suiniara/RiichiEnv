@@ -4,6 +4,7 @@ import math
 import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any
 
 from .contracts import Response
@@ -95,38 +96,52 @@ class GameClusters:
                 total[1] += weight
 
     def interval(self, key: str, *, seed: int = 17, replicates: int = 2000, confidence: float = 0.95) -> dict[str, Any]:
+        return self.intervals((key,), seed=seed, replicates=replicates, confidence=confidence)[key]
+
+    def intervals(
+        self, keys: Sequence[str], *, seed: int = 17, replicates: int = 2000, confidence: float = 0.95,
+    ) -> dict[str, dict[str, Any]]:
+        """Share seeded draws only for the identical ordered eligible game IDs.
+
+        Independent weights are still used for each metric. Retain one index
+        vector per replicate, not a games × replicates sampling matrix.
+        """
         if replicates < 1 or not 0 < confidence < 1:
             raise ValueError("Invalid cluster-bootstrap recipe")
-        games = [value[key] for _, value in sorted(self.totals.items()) if key in value and value[key][1] > 0]
-        total = math.fsum(value[0] for value in games)
-        weight = math.fsum(value[1] for value in games)
-        point = total / weight if weight else None
-        if len(games) < 2:
-            return {
-                "mean": point,
-                "lower": None,
-                "upper": None,
-                "independent_games": len(games),
-                "status": "insufficient_independent_games",
-            }
-        rng = random.Random(seed)
-        samples = []
-        for _ in range(replicates):
-            chosen = [games[rng.randrange(len(games))] for _ in games]
-            denominator = math.fsum(value[1] for value in chosen)
-            samples.append(math.fsum(value[0] for value in chosen) / denominator)
+        eligible: dict[str, dict[str, list[float]]] = {key: {} for key in keys}
+        for game, metrics in sorted(self.totals.items()):
+            for key, counts in metrics.items():
+                if key in eligible and counts[1] > 0:
+                    eligible[key][game] = counts
+        reports: dict[str, dict[str, Any]] = {}
+        groups: dict[tuple[str, ...], dict[tuple[float, ...], dict[str, tuple[float, ...]]]] = {}
+        for key, games in eligible.items():
+            sums = tuple(counts[0] for counts in games.values())
+            weights = tuple(counts[1] for counts in games.values())
+            reports[key] = {"mean": math.fsum(sums) / math.fsum(weights) if weights else None,
+                            "lower": None, "upper": None, "independent_games": len(games),
+                            "status": "insufficient_independent_games"}
+            if len(games) >= 2:
+                groups.setdefault(tuple(games), {}).setdefault(weights, {})[key] = sums
         tail = (1 - confidence) / 2
-        return {
-            "mean": point,
-            "lower": percentile(samples, tail),
-            "upper": percentile(samples, 1 - tail),
-            "independent_games": len(games),
-            "bootstrap_replicates": replicates,
-            "seed": seed,
-            "confidence": confidence,
-            "resampling_unit": "whole_game_or_paired_seed_block",
-            "status": "empirical_interval_not_error_certificate",
-        }
+        for games, series in groups.items():
+            rng = random.Random(seed)
+            n = len(games)
+            samples: dict[str, list[float]] = {key: [] for weights in series.values() for key in weights}
+            for _ in range(replicates):
+                draw = [rng.randrange(n) for _ in games]
+                for weights, values in series.items():
+                    denominator = math.fsum(weights[index] for index in draw)
+                    for key, sums in values.items():
+                        samples[key].append(math.fsum(sums[index] for index in draw) / denominator)
+            for key, values in samples.items():
+                reports[key].update(
+                    lower=percentile(values, tail), upper=percentile(values, 1 - tail),
+                    bootstrap_replicates=replicates, seed=seed, confidence=confidence,
+                    resampling_unit="whole_game_or_paired_seed_block",
+                    status="empirical_interval_not_error_certificate",
+                )
+        return reports
 
 
 @dataclass
@@ -624,7 +639,24 @@ class FullDiagnostics:
                 self.gate_slices[name] = _new_gate()
             _merge_gate(self.gate_slices[name], gate)
 
-    def report(self, *, bootstrap_seed: int = 17, bootstrap_replicates: int = 2000) -> dict[str, Any]:
+    def report(
+        self, *, bootstrap_seed: int = 17, bootstrap_replicates: int = 2000,
+        timings: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        response_metrics = ("nll", "brier")
+        rank_metrics = (*response_metrics, "predicted_utility", "actual_utility", "utility_error")
+        start = perf_counter()
+        intervals = self.clusters.intervals(
+            [
+                *(f"utility_error_bin_{index}" for index in range(len(self.utility_bins))),
+                *(f"{head}_{metric}" for head in self.heads for metric in response_metrics),
+                *(f"response_event_{event}_{metric}" for event in range(21) for metric in response_metrics),
+                *(f"rank_event_{event}_{metric}" for event in range(21) for metric in rank_metrics),
+            ],
+            seed=bootstrap_seed, replicates=bootstrap_replicates,
+        )
+        if timings is not None:
+            timings["bootstrap"] = perf_counter() - start
         calibration = []
         for index, row in enumerate(self.utility_bins):
             count = row["count"]
@@ -634,9 +666,7 @@ class FullDiagnostics:
                     "count": count,
                     "predicted_mean": row["predicted"] / count if count else None,
                     "actual_mean": row["observed"] / count if count else None,
-                    "cluster_error_interval": self.clusters.interval(
-                        f"utility_error_bin_{index}", seed=bootstrap_seed, replicates=bootstrap_replicates
-                    ),
+                    "cluster_error_interval": intervals[f"utility_error_bin_{index}"],
                 }
             )
         families: dict[str, list[int]] = {}
@@ -679,30 +709,14 @@ class FullDiagnostics:
             "by_slice": {
                 name: {key: value.report() for key, value in heads.items()} for name, heads in self.slices.items()
             },
-            "game_clustered_intervals": {
-                head: self.clusters.interval(head + "_nll", seed=bootstrap_seed, replicates=bootstrap_replicates)
-                for head in self.heads
-            },
-            "game_clustered_brier_intervals": {
-                head: self.clusters.interval(head + "_brier", seed=bootstrap_seed, replicates=bootstrap_replicates)
-                for head in self.heads
-            },
+            "game_clustered_intervals": {head: intervals[head + "_nll"] for head in self.heads},
+            "game_clustered_brier_intervals": {head: intervals[head + "_brier"] for head in self.heads},
             "response_classification_by_true_event_intervals": {
-                str(event): {
-                    metric: self.clusters.interval(
-                        f"response_event_{event}_{metric}", seed=bootstrap_seed, replicates=bootstrap_replicates
-                    )
-                    for metric in ("nll", "brier")
-                }
+                str(event): {metric: intervals[f"response_event_{event}_{metric}"] for metric in response_metrics}
                 for event in range(21)
             },
             "rank_branch_intervals": {
-                str(event): {
-                    metric: self.clusters.interval(
-                        f"rank_event_{event}_{metric}", seed=bootstrap_seed, replicates=bootstrap_replicates
-                    )
-                    for metric in ("nll", "brier", "predicted_utility", "actual_utility", "utility_error")
-                }
+                str(event): {metric: intervals[f"rank_event_{event}_{metric}"] for metric in rank_metrics}
                 for event in range(21)
             },
             "branch_calibration_claimed": False,

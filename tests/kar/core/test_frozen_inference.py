@@ -64,6 +64,54 @@ def test_frozen_raw_policy_and_all_candidate_scores_match_dense_without_updates(
     assert all(parameter.grad is None for parameter in predictor.model.parameters())
 
 
+def test_frozen_fp32_ignores_ambient_autocast_for_prefix_and_suffix(frozen_predictor, public_view, record_property):
+    view, ids = public_view
+    predictor = frozen_predictor
+    selected = tuple(action for action in ids if action < 148)
+    expected_policy = predictor.policy(view, ids, "fp32-reference")
+    expected = predictor.candidates(view, ids, selected, "fp32-reference")
+    recipe = predictor.binding.inference_recipe_sha256
+    weight_sha = model_weights_sha256(predictor.model)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        suffix_in_bf16 = predictor.candidates(view, ids, selected, "fp32-reference")
+        actual_policy = predictor.policy(view, ids, "ambient-bf16-prefix")
+        same_outer = predictor.candidates(view, ids, selected, "ambient-bf16-prefix")
+        assert torch.is_autocast_enabled("cpu")
+    suffix_in_fp32 = predictor.candidates(view, ids, selected, "ambient-bf16-prefix")
+    record_property("max_policy_delta", max(abs(left - right) for left, right in zip(actual_policy, expected_policy)))
+    for label, scores in (("bf16_outer_suffix", suffix_in_bf16), ("bf16_outer_both", same_outer),
+                          ("fp32_outer_suffix", suffix_in_fp32)):
+        for head, name in enumerate(("response", "rank")):
+            delta = max(float((torch.tensor(scores[action][head]) - torch.tensor(expected[action][head])).abs().max())
+                        for action in selected)
+            record_property(f"{label}/{name}", delta)
+    assert actual_policy == expected_policy and suffix_in_bf16 == same_outer == suffix_in_fp32 == expected
+    assert predictor.binding.inference_recipe_sha256 == recipe
+    assert model_weights_sha256(predictor.model) == weight_sha
+
+
+@pytest.mark.parametrize("prefix_bf16", [True, False])
+def test_raw_kv_cache_rejects_cross_precision_suffix_even_with_same_model_dtype(
+    frozen_predictor, public_view, prefix_bf16,
+):
+    snapshot, ids = public_view
+    prefix = encode_prefix(snapshot, ids)
+    action = next(action for action in ids if action < 148)
+    row = {"candidates": ids, "decision_row_id": "raw-autocast-cache"}
+    before = collate_inputs([{**row, "tokens": prefix.to_bytes()[108:], "decide_index": prefix.decide_index}])
+    suffix = collate_inputs([{**row, "tokens": append_action(prefix, action).to_bytes()[-139:],
+                             "decide_index": 0, "action_index": 0}])
+    model = frozen_predictor.model
+    with torch.autocast("cpu", dtype=torch.bfloat16, enabled=prefix_bf16):
+        cache = model.encode_prefix(before)
+        response, rank = model.score_actions(cache, suffix)
+    assert torch.isfinite(response).all() and torch.isfinite(rank).all()
+    with torch.autocast("cpu", dtype=torch.bfloat16, enabled=not prefix_bf16), pytest.raises(
+        ValueError, match="cache autocast precision differs",
+    ):
+        model.score_actions(cache, suffix)
+
+
 def test_all_sixty_two_state_slots_are_permutation_equivariant(frozen_predictor, public_view):
     snapshot, ids = public_view
     prefix = encode_prefix(snapshot, ids)

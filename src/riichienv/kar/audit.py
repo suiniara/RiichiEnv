@@ -25,14 +25,15 @@ from .contracts import (
     matches_primary_cohort,
     model_tier,
 )
-from .decision import ReplayDecision, ReplayOpportunity
+from .decision import ReplayDecision, ReplayOpportunity, ResponseEvidence
 from .golden import golden_coverage
 from .input_audit import InputAudit
 from .kan_transactions import COMMITTED_KAN_KINDS
 from .native_replay import NativeReplayBridge
-from .observation import ObserverLedger, PublicSnapshot, SelfPassTrigger, extract_rule_features
+from .observation import ObserverLedger, PublicSnapshot, extract_rule_features
 from .response import draw_response, resolve_discard_response
 from .response_mask import public_rule_response_mask, validate_response_target
+from .response_supervision import PASS_ID, OpportunityCounts, ResponseWindow, unique_pass_provenance
 from .schema import schema_status
 from .settlement import verify_settlements
 from .versioning import MODEL_TIER_BASIS, artifact_contract
@@ -106,12 +107,36 @@ def _freeze_kan_window(
             for seat, actions in preview.items() if actions}
 
 
+def _finish_response(
+    window: ResponseWindow, closure: str, index: int, inputs: InputAudit,
+    ledgers: list[ObserverLedger], counts: OpportunityCounts,
+) -> None:
+    evidence = ResponseEvidence(window.trigger_event_id, index)
+    for seat, offer in window.offers.items():
+        choice = offer.choice
+        if len(choice.candidates) <= 1:
+            continue
+        if seat in window.explicit:
+            status = "explicit"
+        elif provenance := unique_pass_provenance(choice.candidates, closure):
+            # Score the frozen prefix before inserting the private marker into
+            # the live ledger. This cannot affect any earlier opportunity.
+            inputs.inspect(choice.snapshot, choice.candidates, PASS_ID, provenance=provenance,
+                           response_evidence=evidence)
+            ledgers[seat].record_self_pass(offer.trigger, provenance=provenance)
+            status = "uniquely_inferred"
+        else:
+            status = "censored"
+        counts.observe(window.phase, closure, status)
+
+
 def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | None = None) -> dict[str, Any]:  # noqa: PLR0915
     env = MJSOUL_RULESET.create_env(seed=0)
     ledgers = [ObserverLedger(seat, (0, 1, 2, 3)) for seat in range(4)]
     own: ReplayOpportunity | None = None
     declaring = False
-    responses: dict[int, ReplayOpportunity] = {}
+    responses: ResponseWindow | None = None
+    opportunities = OpportunityCounts()
     # Kakan flushes earlier queued indicators before its rob window opens.
     # A robbable ankan does not: that flush happens only after the window.
     kakan_opening: tuple[int, dict[int, list[Action]]] | None = None
@@ -127,18 +152,17 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
     final_server_scores: list[int] | None = None
     pending_discard: tuple[PublicSnapshot, int] | None = None
     next_draw_player: int | None = None
-    pending_self_passes: list[SelfPassTrigger] = []
     for index, event in enumerate(events):
         inputs.trigger_event_id = index
         typ = event["type"]
         if typ in {"start_kyoku", "tsumo"}:
             pending_discard = None
-        if typ == "start_kyoku":
-            own, declaring, kakan_opening = None, False, None
-            responses.clear()
         preview: dict[int, list[Action]] | None = None
-        pass_label = False
         try:
+            if typ == "start_kyoku":
+                if responses is not None or kakan_opening is not None:
+                    raise ValueError("New round before the preceding response window closed")
+                own, declaring = None, False
             if declaring and typ not in {"dora", "dahai"}:
                 raise ValueError("Riichi declaration must resolve as its own discard")
             if typ == "start_kyoku":
@@ -173,6 +197,8 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
                 discard_count += 1
                 pending_discard = snapshot, target
                 next_draw_player = (actor + 1) % 4
+                if responses is not None or kakan_opening is not None:
+                    raise ValueError("New discard before the preceding response window closed")
                 resolution = resolve_discard_response(events, index)
                 if resolution.response_observed:
                     assert resolution.response_target is not None
@@ -180,15 +206,20 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
                     validate_response_target(allowed, resolution.response_target)
                     categories.add(resolution.response_target)
                     full_windows += 1
-                    pass_label = resolution.response_target == 0
                 else:
                     errors.append({"event_id": index, "reason": resolution.error})
             elif typ == "hora":
                 actor = event["actor"]
-                choice = own if actor == event["target"] else responses.get(actor)
-                if choice is None or choice.snapshot.observer_player_id != actor:
-                    raise ValueError("Observed win is absent from the pre-resolution native legal actions")
-                inputs.inspect(choice.snapshot, choice.candidates, choice.win_target(event))
+                if actor == event["target"]:
+                    choice = _require_own(own, actor)
+                    inputs.inspect(choice.snapshot, choice.candidates, choice.win_target(event))
+                else:
+                    if responses is None:
+                        raise ValueError("Observed win is absent from the pre-resolution native legal actions")
+                    choice = responses.select_explicit(actor, ron=True).choice
+                    inputs.inspect(choice.snapshot, choice.candidates, choice.win_target(event),
+                                   response_evidence=ResponseEvidence(responses.trigger_event_id, index))
+                    responses.mark_explicit(actor, ron=True)
                 own = None  # Keep responders frozen for other winners in this same window.
             elif typ == "ryukyoku":
                 reason = event.get("reason")
@@ -208,16 +239,18 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
                 actor = event["actor"]
                 if typ in {"ankan", "kakan"}:
                     choice = _require_own(own, actor)
-                else:
-                    responder = responses.get(actor)
-                    if responder is None or responder.snapshot.decision_phase != "discard_response":
-                        raise ValueError(f"Observed {typ} has no matching frozen native legal action")
-                    choice = responder
-                target, selected = choice.select(event)
-                inputs.inspect(choice.snapshot, choice.candidates, target)
-                own = None
-                if typ in {"ankan", "kakan"}:
+                    target, selected = choice.select(event)
+                    inputs.inspect(choice.snapshot, choice.candidates, target)
                     preview = bridge.preview_kan(actor, selected)
+                else:
+                    if responses is None or responses.phase != "discard_response":
+                        raise ValueError(f"Observed {typ} has no matching frozen native legal action")
+                    choice = responses.select_explicit(actor, ron=False).choice
+                    target, _ = choice.select(event)
+                    inputs.inspect(choice.snapshot, choice.candidates, target,
+                                   response_evidence=ResponseEvidence(responses.trigger_event_id, index))
+                    responses.mark_explicit(actor, ron=False)
+                own = None
                 next_draw_player = actor if typ in {"daiminkan", "kan", "ankan", "kakan"} else None
 
             # Always apply public results in source order to the current state.
@@ -228,44 +261,37 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
             bridge.after_apply(event)
             for ledger in ledgers:
                 ledger.apply_event(event)
-            if typ == "tsumo":
-                for trigger in pending_self_passes:
-                    ledgers[trigger.observer_player_id].record_self_pass(
-                        trigger, provenance="inferred_unique_next_draw_pass"
-                    )
-                pending_self_passes.clear()
-                responses.clear()
-                kakan_opening = None
+            if responses is not None:
+                closure = responses.closure(event, all_ron_accepted=not MJSOUL_RULESET.sanchaho_is_draw)
+                if closure is not None:
+                    _finish_response(responses, closure, index, inputs, ledgers, opportunities)
+                    responses = None
             if typ in {"tsumo", "chi", "pon"}:
                 actor = event["actor"]
-                responses.clear()
+                if kakan_opening is not None:
+                    raise ValueError("Draw/call before the frozen robbing window could open")
                 observation = env.get_observations([actor])[actor]
                 own = ReplayOpportunity.observe(ledgers[actor], observation)
             elif typ == "dahai":
                 seats = sorted(env.active_players) if env.phase == Phase.WaitResponse else []
                 observations = env.get_observations(seats) if seats else {}
-                responses = {seat: ReplayOpportunity.observe(ledgers[seat], observations[seat]) for seat in seats}
-                if pass_label:
-                    for seat, choice in responses.items():
-                        if 221 in choice.candidates and len(choice.candidates) > 1:
-                            # The later draw is only the label; its private marker
-                            # is materialized when that draw is actually processed.
-                            inputs.inspect(choice.snapshot, choice.candidates, 221,
-                                           provenance="inferred_unique_next_draw_pass")
-                            pending_self_passes.append(ledgers[seat].pass_trigger())
+                responses = ResponseWindow.open(ledgers, {
+                    seat: ReplayOpportunity.observe(ledgers[seat], observations[seat]) for seat in seats
+                })
             elif preview is not None:
-                responses.clear()
+                if responses is not None:
+                    raise ValueError("Kan declaration overlaps an earlier response window")
                 view = ledgers[event["actor"]].snapshot()
                 committed = sum(meld.kind in COMMITTED_KAN_KINDS for player in view.melds for meld in player)
                 earlier_dora = committed + 1 - len(view.dora_indicators) if typ == "kakan" else 0
                 if earlier_dora > 0:
                     kakan_opening = earlier_dora, preview
                 else:
-                    responses = _freeze_kan_window(ledgers, preview)
+                    responses = ResponseWindow.open(ledgers, _freeze_kan_window(ledgers, preview))
             elif typ == "dora" and kakan_opening is not None:
                 remaining, offers = kakan_opening
                 if remaining == 1:
-                    responses = _freeze_kan_window(ledgers, offers)
+                    responses = ResponseWindow.open(ledgers, _freeze_kan_window(ledgers, offers))
                     kakan_opening = None
                 else:
                     kakan_opening = remaining - 1, offers
@@ -285,6 +311,8 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
         except Exception as exc:
             errors.append({"event_id": index, "event_type": typ, "reason": type(exc).__name__, "detail": str(exc)})
             break
+    if responses is not None:
+        _finish_response(responses, "unresolved", applied, inputs, ledgers, opportunities)
     complete = bool(events and events[0]["type"] == "start_game" and events[-1]["type"] == "end_game")
     independent: dict[str, Any] = {
         "status": "BLOCKED",
@@ -317,6 +345,7 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
         "events_applied": applied,
         "discard_decisions_checked": discard_count,
         "complete_response_windows": full_windows,
+        "response_opportunities": opportunities.report(),
         "response_categories_observed": sorted(categories),
         "complete_game_boundaries": complete,
         "server_final_scores": final_server_scores,

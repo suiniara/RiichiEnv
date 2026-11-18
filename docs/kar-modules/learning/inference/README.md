@@ -12,7 +12,7 @@
 
 ## 模型与缓存合同
 
-两条路径 no_grad、推理随机规则置空为零；特征模式不改变模型尺寸。温度、公开 response mask、支持罚项、KL 与采样都在 [runtime](../../runtime/README.md)协调，这里不偷偷 softmax 或用真实 E/R 标签挑分支。
+两条路径 `no_grad`、显式关闭完整模型调用的 autocast、要求 FP32 参数/浮点缓冲；推理 recipe 绑定 `fp32_no_autocast_v1`。推理随机规则置空为零；特征模式不改变模型尺寸。原生 K/V 另记录 autocast 模式，不能跨精度给后缀使用。温度、公开响应 mask、支持罚项、KL 与采样由 [runtime](../../runtime/README.md) 协调，不用真实 E/R 标签挑分支。
 
 上下文同时绑定 context ID、snapshot 字节身份和完整合法集合。参数/缓冲版本、配置、特征模式、训练模式改变会清缓存并拒绝；不能跨观察者/决策或加载权重后复用旧 prefix。
 

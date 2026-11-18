@@ -129,6 +129,7 @@ def audit_corpus(  # noqa: PLR0915
             "observation.py",
             "payments.py",
             "response.py",
+            "response_supervision.py",
             "response_mask.py",
             "rule_features.py",
             "versioning.py",
