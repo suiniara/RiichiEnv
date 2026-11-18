@@ -904,10 +904,7 @@ impl GameState {
                         roned = true;
                     }
                     if !roned {
-                        self.players[pid as usize].missed_agari_doujun = true;
-                        if self.players[pid as usize].riichi_declared {
-                            self.players[pid as usize].missed_agari_riichi = true;
-                        }
+                        self.players[pid as usize].record_declined_ron();
                     }
                 }
             }
@@ -1379,47 +1376,40 @@ impl GameState {
             self._push_mjai_event(Value::Object(ev));
         }
 
-        // A player's own discard ends temporary furiten, including after a call.
-        // Other players' calls and discards must not clear this player's furiten.
-        self.players[pid as usize].missed_agari_doujun = false;
         self.players[pid as usize].nagashi_eligible &= crate::types::is_terminal_tile(tile);
-
-        self.current_claims.clear();
-        self.active_players.clear();
-        let mut has_claims = false;
-        let mut claim_active = Vec::new();
-
-        // Loop players for claim actions
-        let np = NP;
-        for i in 0..np as u8 {
-            if i == pid {
-                continue;
-            }
-            let (legals, missed_agari) = self._get_claim_actions_for_player(i, pid, tile);
-            if missed_agari {
-                self.players[i as usize].missed_agari_doujun = true;
-            }
-            if !legals.is_empty() {
-                has_claims = true;
-                claim_active.push(i);
-                self.current_claims.insert(i, legals);
-            }
-        }
-
-        if has_claims {
+        self.populate_discard_claims(pid, tile);
+        if !self.active_players.is_empty() {
             self.phase = Phase::WaitResponse;
-            self.active_players = claim_active;
         } else {
             if let Some(_rp) = self.riichi_pending_acceptance {
                 self._accept_riichi();
             }
             if !self.check_abortive_draw() {
                 self.turn_count += 1;
-                self.current_player = (pid + 1) % np as u8;
+                self.current_player = (pid + 1) % NP as u8;
                 self._deal_next();
-                if self.turn_count >= np as u32 {
+                if self.turn_count >= NP as u32 {
                     self.is_first_turn = false;
                 }
+            }
+        }
+    }
+
+    fn populate_discard_claims(&mut self, discarder: u8, tile: u8) {
+        // Only the player's own discard ends same-turn furiten, including after a call.
+        self.players[discarder as usize].missed_agari_doujun = false;
+        self.current_claims.clear();
+        self.active_players.clear();
+        for seat in (0..NP as u8).filter(|&seat| seat != discarder) {
+            let (actions, no_yaku_win_shape) =
+                self._get_claim_actions_for_player(seat, discarder, tile);
+            if no_yaku_win_shape {
+                // This is not a declined Ron: no Ron was offered in this window.
+                self.players[seat as usize].missed_agari_doujun = true;
+            }
+            if !actions.is_empty() {
+                self.active_players.push(seat);
+                self.current_claims.insert(seat, actions);
             }
         }
     }

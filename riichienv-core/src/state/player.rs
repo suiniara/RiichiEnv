@@ -63,6 +63,12 @@ impl PlayerState {
         }
     }
 
+    /// A legal ron was offered and the window advanced without it.
+    pub fn record_declined_ron(&mut self) {
+        self.missed_agari_doujun = true;
+        self.missed_agari_riichi |= self.riichi_declared;
+    }
+
     pub fn reset_round(&mut self) {
         self.hand.clear();
         self.melds.clear();

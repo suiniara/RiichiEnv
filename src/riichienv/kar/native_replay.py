@@ -8,7 +8,7 @@ from riichienv import Action, ActionType, RiichiEnv, convert
 from .kan_transactions import COMMITTED_KAN_KINDS, pending_kan_commits
 from .observation import PublicSnapshot
 
-NATIVE_REPLAY_VERSION = "prefix_flags_bridge_v2"
+NATIVE_REPLAY_VERSION = "prefix_flags_bridge_v3_native_furiten"
 
 
 class NativeReplayInterfaceError(RuntimeError):
@@ -52,26 +52,27 @@ class NativeReplayBridge:
             "missed_agari_riichi",
             "is_rinshan_flag",
             "preview_kan_responses",
+            # Also rejects an older extension that discards the no-yaku result
+            # in its MJAI Dahai handler, before any sample can be exported.
+            "_record_replay_kan_ron_declines",
         )
         missing = [name for name in required if not hasattr(env, name)]
         if missing:
-            raise NativeReplayInterfaceError("Native replay context interfaces are missing: " + ", ".join(missing))
+            raise NativeReplayInterfaceError(
+                "Native replay context interfaces are missing; rebuild the RiichiEnv extension: " + ", ".join(missing)
+            )
         self.env = env
         if len(env.riichi_declared) != 4:
             raise NativeReplayContextError("NativeReplayBridge requires a four-player environment")
         self._ippatsu = list(env.ippatsu_cycle)
         self._double = list(env.double_riichi_declared)
-        self._missed = list(env.missed_agari_doujun)
-        self._missed_riichi = list(env.missed_agari_riichi)
-        for flags in (self._ippatsu, self._double, self._missed, self._missed_riichi):
-            if len(flags) != 4 or any(not isinstance(value, bool) for value in flags):
+        for flags in (self._ippatsu, self._double, env.missed_agari_doujun, env.missed_agari_riichi):
+            if len(flags) != 4 or any(type(value) is not bool for value in flags):
                 raise NativeReplayInterfaceError("Native context flags must contain four booleans")
         self._rinshan = env.is_rinshan_flag
-        self._accepted = [False] * 4
         self._pending_double: dict[int, bool] = {}
         self._interrupted = False
         self._replacement_actor: int | None = None
-        self._ron_offers: set[int] | None = None
         self._offer_kind: str | None = None
         self._kan_responses: dict[int, list[Action]] | None = None
         self._preview_identity: tuple[int, ActionType, str, tuple[str, ...]] | None = None
@@ -103,36 +104,37 @@ class NativeReplayBridge:
         assert result is not None
         return result
 
-    def _sync(self) -> None:
+    def _sync_context(self) -> None:
+        # Furiten lives exclusively in native state. MJAI Dahai can set it
+        # even with no Ron offer; writing cached flags here would erase it.
         self.env.ippatsu_cycle = self._ippatsu.copy()
         self.env.double_riichi_declared = self._double.copy()
-        self.env.missed_agari_doujun = self._missed.copy()
-        self.env.missed_agari_riichi = self._missed_riichi.copy()
         self.env.is_rinshan_flag = self._rinshan
 
     def _reset(self) -> None:
         self._ippatsu = [False] * 4
         self._double = [False] * 4
-        self._missed = [False] * 4
-        self._missed_riichi = [False] * 4
-        self._accepted = [False] * 4
         self._pending_double.clear()
         self._interrupted = False
         self._replacement_actor = None
-        self._ron_offers = None
         self._offer_kind = None
         self._kan_responses = None
         self._preview_identity = None
         self._rinshan = False
 
-    def _close_without_ron(self) -> None:
-        if self._ron_offers is not None:
-            for player in self._ron_offers:
-                self._missed[player] = True
-                if self._accepted[player]:
-                    self._missed_riichi[player] = True
-        self._ron_offers = None
+    def _commit_kan_responses(self, actor: int) -> None:
+        if self._replacement_actor != actor or self._offer_kind != "kan" or self._kan_responses is None:
+            raise NativeReplayContextError("Kan commitment lacks its prefix response window")
+        declined = sorted(
+            seat for seat, actions in self._kan_responses.items()
+            if any(action.action_type == ActionType.RON for action in actions)
+        )
+        if declined:
+            self.env._record_replay_kan_ron_declines(actor, declined)
         self._offer_kind = None
+        self._kan_responses = None
+        self._preview_identity = None
+        self._interrupt()
 
     def _interrupt(self) -> None:
         self._ippatsu = [False] * 4
@@ -161,7 +163,6 @@ class NativeReplayBridge:
         if len(pending_actors) != 1:
             raise NativeReplayContextError("Observer snapshots disagree on the public pending kan")
         pending_actor = pending_actors.pop()
-        self._accepted = list(snapshots[0].riichi_accepted)
         typ = event["type"]
         if typ in {"start_game", "start_kyoku"}:
             self._reset()
@@ -170,7 +171,7 @@ class NativeReplayBridge:
             snapshot = snapshots[actor]
             if not snapshot.history_complete:
                 raise NativeReplayContextError("Complete public history is required to infer double riichi")
-            if actor in self._pending_double or self._accepted[actor]:
+            if actor in self._pending_double or snapshot.riichi_accepted[actor]:
                 raise NativeReplayContextError("Duplicate riichi declaration")
             self._pending_double[actor] = (
                 not snapshot.discard_history[actor] and not self._interrupted and not any(snapshot.melds)
@@ -181,18 +182,16 @@ class NativeReplayBridge:
                 raise NativeReplayContextError("Riichi acceptance lacks its prefix declaration")
             self._double[actor] = self._pending_double.pop(actor)
             self._ippatsu[actor] = True
-            self._accepted[actor] = True
         elif typ == "dahai":
             actor = _seat(event["actor"])
-            if self._ron_offers is not None:
+            if self._offer_kind is not None:
                 raise NativeReplayContextError("Previous response window has not resolved")
             self._ippatsu[actor] = False
-            self._missed[actor] = False
             self._rinshan = False
         elif typ in {"chi", "pon", "kan", "daiminkan"}:
             if self._offer_kind == "kan" or pending_actor is not None:
                 raise NativeReplayContextError("A kan robbery window cannot resolve as an ordinary call")
-            self._close_without_ron()
+            self._offer_kind = None
             self._interrupt()
             self._replacement_actor = _seat(event["actor"]) if typ in {"kan", "daiminkan"} else None
             self._kan_responses = None
@@ -211,53 +210,35 @@ class NativeReplayBridge:
                 indicators=len(snapshots[0].dora_indicators),
             )
             if commits:
-                if self._replacement_actor != pending_actor or self._offer_kind != "kan":
-                    raise NativeReplayContextError("Kan commitment lacks its prefix response window")
-                self._close_without_ron()
-                self._interrupt()
-                self._kan_responses = None
-                self._preview_identity = None
+                assert pending_actor is not None
+                self._commit_kan_responses(pending_actor)
             elif pending_actor is None and self._offer_kind == "kan":
                 raise NativeReplayContextError("Kan response window and observer commitment state disagree")
             if typ == "tsumo":
                 actor = _seat(event["actor"])
-                self._close_without_ron()
+                self._offer_kind = None
                 if self._replacement_actor is not None and self._replacement_actor != actor:
                     raise NativeReplayContextError("Replacement draw belongs to another player")
                 self._rinshan = self._replacement_actor == actor
                 self._replacement_actor = None
         elif typ in {"hora", "ryukyoku"}:
-            self._ron_offers = None
             self._offer_kind = None
         elif typ in {"end_kyoku", "end_game"}:
-            self._ron_offers = None
             self._offer_kind = None
             self._kan_responses = None
             self._preview_identity = None
             self._replacement_actor = None
-        self._sync()
+        self._sync_context()
         self._prepared = _event_key(event)
 
     def after_apply(self, event: Mapping[str, Any]) -> None:
         if self._prepared != _event_key(event):
             raise NativeReplayContextError("after_apply must match the prepared public event")
         typ = event["type"]
-        self._sync()
+        self._sync_context()
         if typ == "dahai":
-            actor = _seat(event["actor"])
-            self._ron_offers = {
-                player
-                for player in range(4)
-                if player != actor
-                and any(action.action_type == ActionType.RON for action in self.env._get_legal_actions(player))
-            }
             self._offer_kind = "discard"
         elif typ in {"ankan", "kakan"}:
             assert self._kan_responses is not None
-            self._ron_offers = {
-                player
-                for player, actions in self._kan_responses.items()
-                if any(action.action_type == ActionType.RON for action in actions)
-            }
             self._offer_kind = "kan"
         self._prepared = None

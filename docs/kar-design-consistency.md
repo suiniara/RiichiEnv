@@ -1,6 +1,6 @@
 # KAR / RiichiEnv 设计一致性与迁移合同
 
-**唯一活动主设计：** [KAR-v1.2.2-DESIGN.md](KAR-v1.2.2-DESIGN.md)。已把宿主协议、公共时钟、N_train选型、输入/规则/质量版本及分支回退直接合入正文。此页是映射与来源说明，不是第二份主设计。
+**唯一活动主设计：** [KAR-v1.2.2 / RiichiEnv V4](KAR-v1.2.2-DESIGN.md)。[迁移说明](kar-design-v4-migration.md)和[文档校验](kar-design-v4-validation.md)记录 `f70684e` 对应的 `design-sync-1`，不是现行版本表。后续振听与校准兼容边界见[最新修复报告](kar-furiten-event-calibration-repair.md)。
 
 ## 1. 完整宿主 Schema 与来源
 
@@ -16,14 +16,10 @@
 
 N_eligible是审计后切分前完整池；available_split_counts是池的整场split；exported_split_counts是当前实际导出量；N_train是当前实际导出的train完整半庄。<30000 Small，30000..49999 Medium，≥50000 Large；实测预算不足依次降档或停止。正式M2不能用probe子集冒充全量train/validation。
 
-## 3. 本次活动合同
+## 3. V4 的静态合同
 
-artifact v4，input=`semantic_public_clock_terminal_reveal_v2`，公共时钟=`public_semantic_clock_v1`，终局公开=`verified_abort_public_resolution_v1`，mask=`public_rule_response_mask_v3_abort_last_draw`，branch quality=`preregistered_response_branch_quality_v1`。完整版本表以主文档§0及 `versioning.artifact_contract()` 为准。
+完整活动版本与源定义仅见[主设计](KAR-v1.2.2-DESIGN.md) §0；迁移依赖见 §19。不得补字段、重签旧 hash 或沿用旧通过数来冒充迁移。旧报告 [V4 输入与分支质量](kar-semantic-branch-repair.md)及[分批 Pass / 有效未支持质量](kar-pass-rho-math-repair.md)各自记录其原验收范围。
 
-保留 LEGAL_SET 五表均值、私有确认SELF_PASS、三头FP32线性投影、雀魂流局满贯及三态特征依赖修正。时钟只由规范语义事件决定，source record/native批次只作审计信息。mask只排除公开规则不可能；统计质量独立进入有效价值支持，不混入mask。
+## 4. 当前证据边界
 
-旧数据/缓存/checkpoint/支持/校准/发布缺任一新合同字段或版本不一致都拒绝；不能补字段、重签旧hash、沿用旧PASS冒充迁移。真实重建需求见[本轮报告](kar-semantic-branch-repair.md)，未自动执行。
-
-## 4. 证据与历史
-
-本轮结果见[当前修复与验收报告](kar-semantic-branch-repair.md)。既有a869一致性轮1348项、输入链轮372项、9a4缓存精度轮45项均是各自源码的历史证据，不是V4验收。过去实际执行过的更新/梯度诊断不改口为“从未训练”；本轮禁止反向/更新及阶段任务，按新守卫和日志单独报告。
+[历史文档校验](kar-design-v4-validation.md)只验证当时正文、源码对应关系和分发快照，不重新验证旧运行报告。新修订的实际运行与未执行项见[本轮修复报告](kar-furiten-event-calibration-repair.md)。过去执行过的更新和梯度诊断仍以其历史报告为准。

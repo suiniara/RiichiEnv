@@ -19,7 +19,7 @@
 
 决策行不是独立样本：同一半庄重复一千条仍只有一个 game cluster，不能产生虚假的窄区间。分类均值保持自然有效样本频率，不因罕见类重采样而冒充自然概率。零样本指标是 None/证据不足，不是完美的零损失。
 
-rank 诊断使用实际观察到的响应分支；预测分支概率、真实名次与效用分开记录。输出经验 epsilon_m 代理、可靠性和 CI，但 `branch_calibration_claimed=false`，不自动声称逐状态校准或安全证书。
+`response_event_calibration` 在公开允许且响应可用的行上做逐事件 Bernoulli NLL/Brier/ECE；分布式合并总量与可靠性桶，对正例 game ID 取并集。`response_classification_by_true_event_intervals` 仅为真实类别下的多分类诊断，不是逐事件概率准入。Rank 仍用真实观察到的响应分支，名次分布与效用分开记录。`branch_calibration_claimed=false` 意味着报告不自动声明逐状态校准或安全证书。
 
 ## 分布与合并
 

@@ -10,9 +10,10 @@ from .kan_transactions import KAN_TRANSACTION_VERSION
 from .versioning import ARCHITECTURE_ID, artifact_contract
 
 UTILITY_VERSION = "average_rank_utility_v1"
-POLICY_VERSION = "restricted_kl_runtime_v2_branch_quality"
+POLICY_VERSION = "restricted_kl_runtime_v3_event_ovr"
 SUPPORT_VERSION = "train_independent_games_v2_branch_quality"
-CALIBRATION_VERSION = "heldout_temperatures_log_gate_v5_value_mass"
+CALIBRATION_VERSION = "heldout_temperatures_log_gate_v6_event_ovr"
+CALIBRATED_POLICY_IDENTITY_VERSION = "calibrated_policy_identity_v3_event_ovr"
 BOUND_VERSION = "one_sided_v1_2_1"
 UTILITIES = (1.5, 0.5, -0.5, -1.5)
 STATIC_RECIPE_SHA256 = content_hash({"predictor_kind": "static_logits", "version": 1})

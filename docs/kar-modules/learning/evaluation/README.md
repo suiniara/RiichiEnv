@@ -20,7 +20,7 @@
 
 返回全量计数、三头条件 NLL、完整 reliability/branch/utility/CI/gate 分布、角色化 model_selection 及标定状态；关闭随机特征置空。forward 结束（包括失败）恢复模型原训练模式。
 
-`response_valid` 行的 `unsupported_mass_histogram` 用冻结温度、公开 mask 与运行时相同的标量概率计算，再按 `EventSupport.value_supported(...)` 求和。没有绑定的校准时为 `unavailable`；有 train support 可单独记录 `train_only_unsupported_mass_histogram`，不能把它当最终 $\rho_U$。报告及分布式合并状态使用 `whole_game_cluster_statistics_v3_value_mass`，拒绝旧格式。
+`response_valid` 行的 `unsupported_mass_histogram` 用冻结温度、公开 mask 与运行时相同的标量概率计算，再按 `EventSupport.value_supported(...)` 求和。逐事件 `response_event_calibration` 在公开允许该事件的行上记录正负例、正例独立游戏数和概率指标；不在 evaluation 重新判定准入。没有绑定的校准时有效未支持质量为 `unavailable`；可单列 `train_only_unsupported_mass_histogram`。报告及分布式合并状态使用 `whole_game_cluster_statistics_v4_event_ovr`，拒绝旧格式。
 
 数据必须是 validation；test 不能传给训练选择接口。全量报告只证明该调用实际覆盖的已核验数据，不把 probe subset 冒充正式全数据。
 

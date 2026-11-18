@@ -8,8 +8,8 @@ from typing import Any
 
 from .contracts import content_hash
 
-QUALITY_VERSION = "preregistered_calibration_quality_v2_branches"
-BRANCH_QUALITY_VERSION = "preregistered_response_branch_quality_v1"
+QUALITY_VERSION = "preregistered_calibration_quality_v3_event_ovr"
+BRANCH_QUALITY_VERSION = "preregistered_response_branch_quality_v2_ovr"
 HEADS = ("action", "response", "rank")
 BRANCH_HEADS = ("response", "rank")
 BRANCH_FALLBACK = "keep_masked_probability_unsupported_utility_minus_1_5"
@@ -59,9 +59,19 @@ class BranchQualityPolicy:
             "criteria": [asdict(value) for value in self.criteria],
             "source_reference": self.source_reference,
             "partition": "cal_check",
-            "metric_population": "conditional_on_observed_response_event",
-            "ece_definition": "ten_bin_multiclass_top_label_confidence",
-            "counting_unit": "distinct_complete_validation_game_id",
+            "metric_population": {
+                "response": "response_valid_and_publicly_allowed_event_including_negatives",
+                "rank": "value_valid_conditional_on_observed_response_event",
+            },
+            "nll_brier_definition": {"response": "bernoulli_event_probability", "rank": "multiclass"},
+            "ece_definition": {
+                "response": "ten_bin_event_probability_vs_observed_frequency",
+                "rank": "ten_bin_multiclass_top_label_confidence",
+            },
+            "counting_unit": {
+                "response": "distinct_complete_validation_game_id_with_positive_event_evidence",
+                "rank": "distinct_complete_validation_game_id_with_rank_on_true_event",
+            },
             "required_heads_for_value_support": list(BRANCH_HEADS),
             "missing_criterion_or_evidence": "unavailable",
             "fallback": BRANCH_FALLBACK,
@@ -164,16 +174,20 @@ def evaluate_branch_quality(metrics: Mapping[str, Any], policy: BranchQualityPol
         for head in BRANCH_HEADS:
             criterion = criteria.get((head, event))
             values = measured.get(head, {}).get(str(event), {})
+            count = values.get("count")
+            positives = values.get("positive_count") if head == "response" else count
+            games = values.get("positive_independent_games" if head == "response" else "independent_games")
             missing, failed = [], []
             if criterion is None:
                 missing.append("preregistered_branch_criterion_missing")
             else:
-                games = values.get("independent_games")
-                count = values.get("count")
                 if type(games) is not int or games < criterion.minimum_independent_games:
-                    missing.append("independent_validation_games")
-                if type(count) is not int or count < 1 or (type(games) is int and games > count):
-                    missing.append("observations")
+                    missing.append("positive_independent_validation_games" if head == "response"
+                                   else "independent_validation_games")
+                if type(count) is not int or type(positives) is not int or not 1 <= positives <= count:
+                    missing.append("positive_observations" if head == "response" else "observations")
+                elif type(games) is int and games > positives:
+                    missing.append("inconsistent_game_count")
                 for metric in ("nll", "brier", "ece"):
                     value = values.get(metric)
                     if value is None:
@@ -184,8 +198,9 @@ def evaluate_branch_quality(metrics: Mapping[str, Any], policy: BranchQualityPol
             heads[head] = {
                 "status": "unavailable" if missing else "failed" if failed else "passed",
                 "reasons": sorted(set(missing + failed)),
-                "independent_games": values.get("independent_games"),
-                "observations": values.get("count"),
+                "observations": count,
+                **({"positive_observations": positives, "positive_independent_games": games}
+                   if head == "response" else {"independent_games": games}),
             }
         states = [value["status"] for value in heads.values()]
         branches[str(event)] = {

@@ -1,8 +1,7 @@
-use crate::action::Phase;
+use crate::action::{ActionType, Phase};
 use crate::parser::mjai_to_tid;
 use crate::replay::{Action as LogAction, MjaiEvent};
 use crate::state::GameState;
-use crate::state::legal_actions::GameStateLegalActions;
 use crate::types::{INITIAL_HAND_SIZE, Meld, MeldType, TILES_4P, Wind};
 
 fn parse_mjai_tile(s: &str) -> u8 {
@@ -14,8 +13,36 @@ pub trait GameStateEventHandler {
     fn apply_log_action(&mut self, action: &LogAction);
 }
 
+impl GameState {
+    fn record_mjai_discard_ron_declines(&mut self) {
+        // These public successors are only possible once the discard's Ron
+        // offers have all gone unused. This does not infer a chosen Pass action.
+        // The successor moves out of WaitResponse; retained raw claims are not
+        // treated as a second window (and the kan preview clears its clone).
+        if self.phase == Phase::WaitResponse {
+            for (&seat, actions) in &self.current_claims {
+                if actions
+                    .iter()
+                    .any(|action| action.action_type == ActionType::Ron)
+                {
+                    self.players[seat as usize].record_declined_ron();
+                }
+            }
+        }
+    }
+}
+
 impl GameStateEventHandler for GameState {
     fn apply_mjai_event(&mut self, event: MjaiEvent) {
+        if matches!(
+            &event,
+            MjaiEvent::Tsumo { .. }
+                | MjaiEvent::Pon { .. }
+                | MjaiEvent::Chi { .. }
+                | MjaiEvent::Kan { .. }
+        ) {
+            self.record_mjai_discard_ron_declines();
+        }
         if matches!(
             &event,
             MjaiEvent::Pon { .. }
@@ -151,28 +178,13 @@ impl GameStateEventHandler for GameState {
                     self.players[actor].riichi_stage = false;
                 }
 
-                // Populate current_claims for reaction phase (chi/pon/ron)
-                let np = self.players.len() as u8;
-                self.current_claims.clear();
-                self.active_players.clear();
-                let mut claim_active = Vec::new();
-                for i in 0..np {
-                    if i == actor as u8 {
-                        continue;
-                    }
-                    let (legals, _missed) =
-                        self._get_claim_actions_for_player(i, actor as u8, tile);
-                    if !legals.is_empty() {
-                        claim_active.push(i);
-                        self.current_claims.insert(i, legals);
-                    }
-                }
-                if !claim_active.is_empty() {
+                self.players[actor].ippatsu_cycle = false;
+                self.is_rinshan_flag = false;
+                self.populate_discard_claims(actor as u8, tile);
+                if !self.active_players.is_empty() {
                     self.phase = Phase::WaitResponse;
-                    self.active_players = claim_active;
                 } else {
                     self.phase = Phase::WaitAct;
-                    self.active_players.clear();
                     self.current_player = u8::MAX;
                 }
                 self.needs_tsumo = true;

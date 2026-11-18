@@ -8,13 +8,14 @@ from riichienv.kar.authorization import UpdateAuthorization
 from riichienv.kar.budget import BudgetPlan, CostForecast
 from riichienv.kar.contracts import content_hash
 from riichienv.kar.learning.distributed import DistributedContext, DistributedStageError
+from riichienv.kar.learning.export import learning_contract
 from riichienv.kar.learning.inference import model_weights_sha256
 from riichienv.kar.learning.model import ModelOutputs
 from riichienv.kar.learning.sampling import GlobalEpochSampler
-from riichienv.kar.learning.trainer import production_update, train_production
+from riichienv.kar.learning.trainer import _dataset_contract, production_update, train_production
 from riichienv.kar.learning.training_config import ProductionTrainConfig, training_recipe_sha256
-
-pytestmark = pytest.mark.parameter_updates
+from riichienv.kar.release import complete_release_contract
+from riichienv.kar.versioning import game_count_contract
 
 
 class FullSyntheticDataset(SyntheticDataset):
@@ -22,23 +23,20 @@ class FullSyntheticDataset(SyntheticDataset):
         super().__init__()
         self.split = split
         self.indices = [(f"synthetic-row-{index}", 9) for index in range(3)]
+        available = {"train": 3, "validation": 3, "test": 0}
+        self.manifest.update(game_count_contract(available))
         self.manifest.update(
-            N_train_half_games=3,
             is_probe_subset=True,
-            counts={"train": {"games": 3}, "validation": {"games": 3}},
+            counts={role: {"games": count} for role, count in available.items()},
             scope={
+                **learning_contract(),
                 "split_salt": "synthetic-production-contract-test",
-                "available_split_counts": {"train": 3, "validation": 3, "test": 0},
+                "available_split_counts": available,
             },
         )
 
 
-def test_full_epoch_runs_all_validation_and_has_no_diagnostic_update_cap(tmp_path, monkeypatch):
-    from riichienv.kar.learning import trainer  # noqa: PLC0415
-
-    for name in ("RANK", "WORLD_SIZE", "LOCAL_RANK", "MASTER_ADDR", "MASTER_PORT"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(trainer, "DecisionDataset", FullSyntheticDataset)
+def _full_config(reference):
     values = {
         "phase": "M1",
         "model_tier": "small",
@@ -52,10 +50,38 @@ def test_full_epoch_runs_all_validation_and_has_no_diagnostic_update_cap(tmp_pat
         "checkpoint_updates": 1,
     }
     recipe = training_recipe_sha256(values)
-    estimate = CostForecast(
-        "M1", 9, 100.0, 0.0, 0.0, "synthetic full-epoch fixture,not a measured production forecast", recipe
+    forecast = CostForecast("M1", 9, 100.0, 0.0, 0.0, reference, recipe)
+    return ProductionTrainConfig(**values, budget=BudgetPlan("M1", 100.0, 0.0, forecast))
+
+
+def test_full_synthetic_fixture_satisfies_current_production_contract(tmp_path):
+    """Catch manifest drift even when every parameter-update test is skipped."""
+    train = FullSyntheticDataset(tmp_path, "train")
+    validation = FullSyntheticDataset(tmp_path, "validation")
+    settings = _full_config("synthetic metadata regression, not a measured forecast")
+    assert train.manifest == validation.manifest
+    manifest = train.manifest
+    sizes = {"train": len(train), "validation": len(validation), "test": 0}
+    assert manifest["available_split_counts"] == manifest["exported_split_counts"] == sizes
+    assert manifest["scope"]["available_split_counts"] == sizes
+    assert {role: values["games"] for role, values in manifest["counts"].items()} == sizes
+    assert all(manifest["scope"].get(key) == value for key, value in learning_contract().items())
+    _dataset_contract(train, validation, settings)
+    release = complete_release_contract(
+        training=settings.to_record(), data_manifest=manifest, budget=settings.budget.to_record(),
     )
-    settings = ProductionTrainConfig(**values, budget=BudgetPlan("M1", 100.0, 0.0, estimate))
+    assert release["N_eligible_half_games"] == 6 and release["N_train_half_games"] == 3
+
+
+@pytest.mark.parameter_updates
+def test_full_epoch_runs_all_validation_and_has_no_diagnostic_update_cap(tmp_path, monkeypatch):
+    from riichienv.kar.learning import trainer  # noqa: PLC0415
+
+    for name in ("RANK", "WORLD_SIZE", "LOCAL_RANK", "MASTER_ADDR", "MASTER_PORT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(trainer, "DecisionDataset", FullSyntheticDataset)
+    settings = _full_config("synthetic full-epoch fixture, not a measured production forecast")
+    recipe = settings.recipe_sha256
     doc = dict(_authorization().document)
     doc["allowed_operations"] = ["train_production", "production_update"]
     doc["allowed_recipe_sha256"] = [recipe]
@@ -69,6 +95,7 @@ def test_full_epoch_runs_all_validation_and_has_no_diagnostic_update_cap(tmp_pat
     assert (tmp_path / "run" / "checkpoint.json").exists()
 
 
+@pytest.mark.parameter_updates
 def test_nonfinite_forward_never_advances_optimizer_scheduler_or_weights(monkeypatch):
     for name in ("RANK", "WORLD_SIZE", "LOCAL_RANK"):
         monkeypatch.delenv(name, raising=False)
@@ -95,6 +122,7 @@ def test_nonfinite_forward_never_advances_optimizer_scheduler_or_weights(monkeyp
         context.close()
 
 
+@pytest.mark.parameter_updates
 def test_completed_checkpoint_recovers_publication_without_another_optimizer_update(tmp_path, monkeypatch):
     from riichienv.kar.learning import trainer  # noqa: PLC0415
     from riichienv.kar.learning.run_publication import publish_run_manifest  # noqa: PLC0415
@@ -102,21 +130,8 @@ def test_completed_checkpoint_recovers_publication_without_another_optimizer_upd
     for name in ("RANK", "WORLD_SIZE", "LOCAL_RANK", "MASTER_ADDR", "MASTER_PORT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(trainer, "DecisionDataset", FullSyntheticDataset)
-    values = {
-        "phase": "M1",
-        "model_tier": "small",
-        "N_train_half_games": 3,
-        "N_eligible_half_games": 6,
-        "planned_epochs": 1,
-        "device": "cpu",
-        "precision": "fp32",
-        "cpu_threads": 1,
-        "microbatch_size": 1,
-        "checkpoint_updates": 1,
-    }
-    recipe = training_recipe_sha256(values)
-    forecast = CostForecast("M1", 9, 100.0, 0.0, 0.0, "synthetic publication interruption fixture", recipe)
-    settings = ProductionTrainConfig(**values, budget=BudgetPlan("M1", 100.0, 0.0, forecast))
+    settings = _full_config("synthetic publication interruption fixture")
+    recipe = settings.recipe_sha256
     doc = dict(_authorization().document)
     doc.pop("authorization_sha256")
     doc["allowed_operations"] = ["train_production", "production_update"]

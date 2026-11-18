@@ -5,13 +5,20 @@ from dataclasses import replace
 
 import pytest
 
-from riichienv.kar.calibration import CalibrationArtifact, CalibrationRow, calibrate_static_rows, calibration_split
+from riichienv.kar.calibration import (
+    CalibrationArtifact,
+    CalibrationRow,
+    calibrate_static_rows,
+    calibration_metrics,
+    calibration_split,
+)
 from riichienv.kar.calibration_quality import (
     BranchQualityCriterion,
     BranchQualityPolicy,
     CalibrationQualityPolicy,
+    evaluate_branch_quality,
 )
-from riichienv.kar.contracts import content_hash
+from riichienv.kar.contracts import Response, content_hash
 from riichienv.kar.policy import PolicyOptions
 from riichienv.kar.probability import masked_softmax
 from riichienv.kar.runtime import RuntimePolicy
@@ -128,6 +135,46 @@ def test_branch_evidence_counts_distinct_validation_games_not_rows(
     assert artifact.value_branch_statuses[0] == expected
     assert artifact.value_branch_statuses[8] == expected
     assert artifact.value_branch_statuses[1] == "unavailable"  # no criterion or evidence, never implicit pass
+
+
+def test_response_event_calibration_uses_allowed_negatives_and_only_positive_games_for_evidence():
+    common, chi = int(Response.NEXT_DRAW), int(Response.CHI_P1)
+    allowed = tuple(event in (common, chi) for event in range(21))
+    policy = BranchQualityPolicy((BranchQualityCriterion("response", chi, 1.0, 1.0, 1.0, 2),),
+                                 "synthetic positive-game minimum")
+
+    def row(game, index, event):
+        return CalibrationRow(game, f"{game}/{index}", (4, 8), (0.0,) * 546, 4,
+                              response_logits=(0.0,) * 21, response_allowed=allowed,
+                              response_target=event, response_valid=True)
+
+    # Positive rows repeat one game. Other *eligible* games provide negatives,
+    # but cannot manufacture independent positive evidence for a rare branch.
+    positives = [row("positive-game", index, chi) for index in range(2)]
+    negatives = [row(f"negative-{index}", index, common) for index in range(3)]
+    masked = replace(row("mask-forbids-chi", 0, common), response_allowed=(True,) + (False,) * 20)
+    unknown = replace(row("unobserved", 0, common), response_valid=False, response_target=-1)
+    report = calibration_metrics([*positives, *negatives, masked, unknown], (1.0,) * 3, None)
+    response = report["branch_metrics"]["response"]
+    assert response[str(chi)] == {
+        "count": 5, "positive_count": 2, "positive_independent_games": 1,
+        "nll": pytest.approx(math.log(2)), "brier": pytest.approx(0.25), "ece": pytest.approx(0.1),
+    }
+    assert response[str(common)]["count"] == 6
+    assert response["2"]["count"] == 0 and response["2"]["ece"] is None
+    result = evaluate_branch_quality(report, policy)["branches"][str(chi)]["heads"]["response"]
+    assert result["status"] == "unavailable" and result["reasons"] == ["positive_independent_validation_games"]
+    assert result["positive_observations"] == 2 and result["observations"] == 5
+
+
+def test_response_binary_nll_keeps_tiny_complement_in_log_space():
+    row = CalibrationRow("rare-negative", "rare-negative/decision", (4, 8), (0.0,) * 546, 4,
+                         response_logits=(1000.0, 0.0) + (2000.0,) * 19,
+                         response_allowed=(True, True) + (False,) * 19, response_target=1, response_valid=True)
+    response = calibration_metrics([row], (1.0,) * 3, None)["branch_metrics"]["response"]
+    assert response["0"]["nll"] == response["1"]["nll"] == 1000.0
+    assert response["0"]["brier"] == response["1"]["brier"] == 1.0
+    assert response["0"]["ece"] == response["1"]["ece"] == 1.0
 
 
 @pytest.mark.parametrize("state", ["passed", "failed", "unavailable"])

@@ -1,43 +1,47 @@
-# KAR-v1.2.2：RiichiEnv 宿主完整主设计
+# KAR-v1.2.2 / RiichiEnv V4 完整主设计
 
-**宿主修订：** V4，2026-11-18（分批 Pass、质量支持统计与误差界修订）。本文是本仓库唯一活动主设计，完整取代附件中的旧实施正文。
+**版本：** 算法 `KAR-v1.2.2` · 宿主合同 `RiichiEnv V4`（`kar_riichienv_contract_v4`） · 文档修订 `design-sync-2`。最后一项仅标识文档，不是新的算法、输入或产物版本。
 
-**目标仓库：** `suiniara/RiichiEnv`；宿主、重放、原生合法动作及运行时均为 RiichiEnv。Kanachan 仅为 546 动作与 tile37 编号的来源参考，不是目标工程或运行依赖。
+**唯一正文：** `docs/KAR-v1.2.2-DESIGN.md`。对外分发时应从该正文制作逐字节快照，不另维护规范；相对链接以仓库 `docs/` 为基准。此前 `design-sync-1` 的分发文件只对应当时的 `f70684e`，不自动升级。
 
-**来源基线：** 原始附件 `KAR-v1.2.2-DESIGN(2).md` 的 SHA-256 为 `4349039c44175ece77f6dddad3a2106fbd3e0e0339935122df242175c83cbdba`。RiichiEnv 上游参考提交为 `0ee1236a283b15508f3ac28407027f340b81e1de`；本轮从 `c095084b07e5eb8d43c0de79a2af1b53bd6d130f` 的仓库主设计继续修订。
+**适用实现：** `suiniara/RiichiEnv` · `kar/riichienv-v1-20261117`。以 `f70684ef7aa69e56e6a530dcca13326fbf2c83b5` 为修订基线，包含其后的[离线决策时点](kar-decision-time-repair.md)和[振听／逐事件校准修订](kar-furiten-event-calibration-repair.md)。宿主、重放、合法动作及运行时均为 RiichiEnv；Kanachan 仅是 546 动作和 tile37 编号来源。RiichiEnv 上游参考提交为 `0ee1236a283b15508f3ac28407027f340b81e1de`。
 
-**状态：** 本文是规范合同。实现入口见第 21 节；是否实际通过以[当前修复与验收报告](kar-pass-rho-math-repair.md)为准。代码存在、历史测试通过、M0 数据资格、预算就绪与用户授权互不替代。本文不授予训练、校准、GPU 或对局评测许可。
+**历史来源：** 外部附件 `KAR-v1.2.2-DESIGN(3).md` 的字节 SHA-256 为 `4349039c44175ece77f6dddad3a2106fbd3e0e0339935122df242175c83cbdba`。它保留历史身份，不作为 V4 实施规范。见[相对旧附件的差异与迁移说明](kar-design-v4-migration.md)。
+
+**证据范围：** [design-sync-1 校验](kar-design-v4-validation.md)和[分批 Pass／有效未支持质量报告](kar-pass-rho-math-repair.md)保留原范围。本修订的实际回归见[振听／逐事件校准报告](kar-furiten-event-calibration-repair.md)；设计本身不授予真实数据处理、参数更新、GPU、校准或 M3 许可。
 
 ## 0. 冻结结论与活动版本
 
 保持结构化观察、完整 LEGAL_SET、因子化 ACTION、546/21/21×4 三头、自然分布监督、既定损失、受限 KL 公式及随机采样。只对通过动作支持门控的舍牌重排；集合外各动作概率及集合内总概率质量不变。
 
-| 合同 | 活动身份 |
-|---|---|
-| 完整宿主 Schema | `kar-riichienv-v1` |
-| 完整 canonical Schema SHA-256 | `fcc02a0bef0a7e95ca219c59ae199c4d1f5129372fac91323d3791bc30c31673` |
-| 设计引用 Schema | `kar-v1.2.2`，不是活动 Schema 的别名 |
-| 设计 overlay 字节 SHA-256 | `90286d088014eb72e9f99f1b3c35d0a7553bcf5fec99e8aeb3ba5f02a010716a`，不是完整 Schema hash |
-| Schema 映射 | `riichienv_complete_v1_from_kar_v1_2_2_v1`，legacy compatibility=`not_claimed` |
-| architecture | `kar_kl_response_value_v1` |
-| artifact | `kar_riichienv_contract_v4` |
-| input pipeline | `semantic_public_clock_terminal_reveal_v2` |
-| public clock | `public_semantic_clock_v1` |
-| terminal public resolution | `verified_abort_public_resolution_v1` |
-| model computation identity | `kar_transformer_v3_semantic_inputs`，不改变参数形状 |
-| feature semantics / stochastic mask | `visible_rule_features_v1_2_2` / `sample_mask_v1` |
-| response mask | `public_rule_response_mask_v3_abort_last_draw`，包含已有雀魂流局满贯修正 |
-| calibration quality / branch quality | `preregistered_calibration_quality_v2_branches` / `preregistered_response_branch_quality_v1` |
-| event support | `train_independent_games_v2_branch_quality` |
-| calibration | `heldout_temperatures_log_gate_v5_value_mass` |
-| diagnostics report / merge state | `whole_game_cluster_statistics_v3_value_mass` |
-| live projection | `native_public_resolution_projection_v5_pass_receipts` |
-| runtime policy | `restricted_kl_runtime_v2_branch_quality`，KL 数学不变 |
-| training configuration | `explicit_train_split_scale_v4_semantics` |
-| training plan / loss / decision bound | `budget_ladder_v1` / `sentinel_safe_v1_2_1` / `one_sided_v1_2_1` |
-| model tier basis | `N_train_half_games` |
+| 合同 | 活动身份 | 源定义 |
+|---|---|---|
+| 完整宿主 Schema（`schema_id`） | `kar-riichienv-v1` | [contracts.py](../src/riichienv/kar/contracts.py) |
+| 完整 canonical Schema SHA-256（`schema_hash`） | `fcc02a0bef0a7e95ca219c59ae199c4d1f5129372fac91323d3791bc30c31673` | [schema.py](../src/riichienv/kar/schema.py) |
+| 设计来源引用（`reference_design_schema_id`） | `kar-v1.2.2`，不是活动 Schema 的别名 | [contracts.py](../src/riichienv/kar/contracts.py) |
+| 历史 overlay 字节 SHA-256（`reference_overlay_sha256`） | `90286d088014eb72e9f99f1b3c35d0a7553bcf5fec99e8aeb3ba5f02a010716a`，不是完整 Schema hash | [contracts.py](../src/riichienv/kar/contracts.py) |
+| Schema 映射 | `riichienv_complete_v1_from_kar_v1_2_2_v1`，legacy compatibility=`not_claimed` | [versioning.py](../src/riichienv/kar/versioning.py) |
+| architecture | `kar_kl_response_value_v1` | [versioning.py](../src/riichienv/kar/versioning.py) |
+| artifact | `kar_riichienv_contract_v4` | [versioning.py](../src/riichienv/kar/versioning.py) |
+| input pipeline | `semantic_public_clock_frozen_decisions_v4_furiten` | [versioning.py](../src/riichienv/kar/versioning.py) |
+| native replay | `prefix_flags_bridge_v3_native_furiten` | [native_replay.py](../src/riichienv/kar/native_replay.py) |
+| dataset / action labels | `kar_decision_sqlite_v1` / `explicit_and_unique_next_draw_pass_v2_furiten` | [learning/export.py](../src/riichienv/kar/learning/export.py) |
+| public clock | `public_semantic_clock_v1` | [event_semantics.py](../src/riichienv/kar/event_semantics.py) |
+| terminal public resolution | `verified_abort_public_resolution_v1` | [event_semantics.py](../src/riichienv/kar/event_semantics.py) |
+| model computation identity | `kar_transformer_v3_semantic_inputs`，不改变参数形状 | [learning/config.py](../src/riichienv/kar/learning/config.py) |
+| feature semantics / stochastic mask | `visible_rule_features_v1_2_2` / `sample_mask_v1` | [versioning.py](../src/riichienv/kar/versioning.py) |
+| response mask | `public_rule_response_mask_v3_abort_last_draw`，包含已有雀魂流局满贯修正 | [contracts.py](../src/riichienv/kar/contracts.py) |
+| calibration quality / branch quality | `preregistered_calibration_quality_v3_event_ovr` / `preregistered_response_branch_quality_v2_ovr` | [calibration_quality.py](../src/riichienv/kar/calibration_quality.py) |
+| event support | `train_independent_games_v2_branch_quality`（train 计数定义不变） | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
+| calibration | `heldout_temperatures_log_gate_v6_event_ovr` | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
+| diagnostics report / merge state | `whole_game_cluster_statistics_v4_event_ovr` | [statistics.py](../src/riichienv/kar/statistics.py) |
+| live projection | `native_public_resolution_projection_v5_pass_receipts` | [live_events.py](../src/riichienv/kar/live_events.py) |
+| runtime / finite policy identity | `restricted_kl_runtime_v3_event_ovr` / `calibrated_policy_identity_v3_event_ovr`，KL 数学不变 | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
+| training configuration | `explicit_train_split_scale_v5_decision_time`，配方绑定当前输入版本 | [versioning.py](../src/riichienv/kar/versioning.py) |
+| training plan / loss / decision bound | `budget_ladder_v1` / `sentinel_safe_v1_2_1` / `one_sided_v1_2_1` | [versioning.py](../src/riichienv/kar/versioning.py) / [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
+| model tier basis | `N_train_half_games` | [versioning.py](../src/riichienv/kar/versioning.py) |
 
-完整宿主 kind、字段、139 字节 little-endian Token、944 Embedding 行及 62 状态槽已经物化，不再要求缺失的 Kanachan 父注册表才能实施。旧设计 overlay 只作来源引用；不得改活动 ID 或把部分 overlay 当完整 hash。
+完整宿主 kind、字段、139 字节 little-endian Token、944 Embedding 行及 62 状态槽已物化。`schema_hash` 对活动 [Schema JSON](../src/riichienv/kar/token_schema.riichienv.v1.json) 的规范化内容计算；`reference_overlay_sha256` 对历史 overlay 的原始文件字节计算，两者不可互换。不要求合并缺失的 Kanachan 父注册表，不把设计引用改写为活动 ID。
 
 ### 0.1 不声称什么
 
@@ -45,7 +49,7 @@ MLE 不保证有限网络校准；观察条件关联不自动等于干预价值�
 
 ## 1. 目标、定义域与效用
 
-给定观察者在 cutoff 当时可见的历史 H、状态 O 与完整合法集合 C，模型估计行为先验、候选舍牌的即时响应分布，以及给定响应的终局名次分布。
+给定观察者在 cutoff 当时可见的历史序列 $\mathcal H$、状态 $O$ 与完整合法集合 $\mathcal L$，模型估计行为先验、候选舍牌的即时响应分布，以及给定响应的终局名次分布。本文用 `H` 表示历史 Token 行数（不含 BOS），用 `C` 表示公共语义时钟；合法动作集合只记作 $\mathcal L$。
 
 - 策略覆盖完整全局动作 0..545。
 - 响应和条件名次仅对舍牌 0..147 有定义。
@@ -56,7 +60,7 @@ MLE 不保证有限网络校准；观察条件关联不自动等于干预价值�
 
 ## 2. 随机变量与因果边界
 
-`X=tokenize(H,O,C)`；A 是实际完整动作；E 是该舍牌的最终即时响应；R 是半庄终局名次。真实响应和终局名次不进入 X。
+$X=\operatorname{tokenize}(\mathcal H,O,\mathcal L)$；A 是实际完整动作；E 是该舍牌的最终即时响应；R 是半庄终局名次。真实响应和终局名次不进入 X。
 
 固定来源/cohort 的行为策略为 μ。总体交叉熵最优先验为 μ，但有限模型的实际校准先验 π0 与 μ 可不同；定义 `δπ(x)=TV(π0(·|x),μ(·|x))`。
 
@@ -68,7 +72,7 @@ $$Q^\mu(x,a)=\sum_e p^\mu(e\mid x,a)m^\mu(x,a,e).$$
 
 ## 3. 三头概率模型
 
-$$\pi_\theta(A\mid X)=\operatorname{Softmax}_{C(X)}f_A(h_{DECIDE}).$$
+$$\pi_\theta(A\mid X)=\operatorname{Softmax}_{\mathcal L(X)}f_A(h_{DECIDE}).$$
 
 $$p_\theta^{pub}(E\mid X,A)=\operatorname{Softmax}(\operatorname{mask}_{M^{pub}}f_E(h_{ACTION})).$$
 
@@ -80,7 +84,7 @@ $$v_\theta(R\mid X,A,e)=\operatorname{Softmax}_{r=1..4}f_V(h_{ACTION})[e,r].$$
 
 ### 4.1 行布局与 Tensor
 
-前缀为 `[BOS][历史 H 行][当前状态 S 62 槽][DECIDE]`，共 H+64 行。追加一个真实或假设 ACTION 后为 H+65。H 是实际历史 Token 行数，不是公共事件时钟。
+前缀为 `[BOS][历史 H 行][当前状态 S 62 槽][DECIDE]`，共 H+64 行；追加一个真实或假设 ACTION 后为 H+65 行。`H` 只决定行数、数组索引和长度，不决定 RoPE 位置；位置用公共语义时钟 `C`，见 §6.1。
 
 | 字段 | 形状/取值 |
 |---|---|
@@ -164,7 +168,7 @@ ROUND_STATE 1、PLAYER_STATE 4、HAND_COUNT 34、MELD_STATE 16、DORA_STATE 5、
 
 $$e(a)=E_{id}[a]+E_{type}[t]+E_{tile}[p]+E_{tsumogiri}[m]+E_{riichi}[r].$$
 
-LEGAL_SET(kind8) 在既有字段向量之上加入 `mean_{a∈C} e(a)`，复用 ACTION 五张表，无新参数。完整候选唯一、非空、≤32；按全局 ID 规范排序后求和，过滤 padding=546，不合并摸切/手切/立直变体。保留 numeric[16]=|C|/32。dense 和 encode_prefix 共用输入实现，单 ACTION 后缀不重复池化集合；缓存精确绑定候选集合。
+LEGAL_SET（kind 8）在既有字段向量之上加入 $|\mathcal L|^{-1}\sum_{a\in\mathcal L}e(a)$，复用 ACTION 五张表，无新参数。完整候选按全局 ID 去重、排序，非空且最多 32 项；过滤 padding=546，不合并摸切/手切/立直变体。保留 $\mathrm{numeric}[16]=|\mathcal L|/32$。dense 和 `encode_prefix` 共用输入实现，单 ACTION 后缀不重复池化集合；缓存精确绑定候选集合。
 
 ### 4.6 确定性可见特征与三态
 
@@ -172,13 +176,13 @@ HAND_COUNT.flags[0..2] 是对 P1/P2/P3 的 Genbutsu，3..5 是 full-suji exclusi
 
 - Genbutsu 仅来自目标玩家自己的公开舍牌历史，被叫走的舍牌仍保留；暗杠/加杠不算舍牌，不推测临时振听。
 - Full-suji 必须覆盖所有另一侧等待牌；4/5/6 只满足一侧为 False。它不排除单骑/双碰/边张/嵌张/七对子。
-- `known_counts` 依赖 physical_ledger_complete 和 visibility_complete，不依赖 history_complete；舍牌历史相关特征独立依赖历史完整性。不能因物理账本缺口清空完整舍牌历史。
-- 物理并集含自己的暗手、当前河、已成立 meld、公开指示牌。叫走牌从河移入 meld 只计一次，加杠提交才新增第四张；缺信息为 Unknown，不填 False。
+- [`PublicSnapshot.known_counts()`](../src/riichienv/kar/observation.py) 是决策特征的当前物理区计数，只计自己的暗手（含已进入暗手的当前摸牌）、当前河、已成立副露、公开指示牌四类，并按 base34 合并赤五和普通五。河中叫走牌只在副露区计一次；加杠提交后才新增第四张。该方法要求 `physical_ledger_complete` 与 `visibility_complete` 同时为真，否则返回 `None`（Unknown），不依赖 `history_complete`。舍牌历史相关特征仍独立依赖历史完整性。
+- **终局公开不扩张计数 API。** 赢家或宣告者的终局公开手牌进入 `PUBLIC_HAND_REVEAL` 历史 Token，不作为第五类区传给计数。底层 `known_count_base34()` 可收显式 `other_public_reveals`，但快照方法没有传入它。[`encode_prefix()`](../src/riichienv/kar/tokenize.py) 只允许 `own_act`、`discard_response`、`kan_response`，`closed` 阶段没有决策前缀。即使某个终局快照能返回四区计数，也不是全公开牌查询。旧附件 §4.8.4 的任意 cutoff 广义计数范围不属于此 V4 API。
 - Dora 只由 cutoff 前明确公开的指示牌计算，不使用未公开里宝牌。
 
 冻结 Ryanmen 查表：
 
-| 目标 | 两张搭子 P(v) | 另一等待 C(v) |
+| 目标 | 两张搭子 P(v) | 另一等待 Opp(v) |
 |---:|---|---|
 |1|(2,3)|4|
 |2|(3,4)|5|
@@ -190,7 +194,7 @@ HAND_COUNT.flags[0..2] 是对 P1/P2/P3 的 Genbutsu，3..5 是 full-suji exclusi
 |8|(6,7)|5|
 |9|(7,8)|6|
 
-不跨花色、不循环。目标3的(1,2)和目标7的(8,9)是边张，不列入 Ryanmen。目标 t 四张可见，或每个 P(v) 至少一种搭子牌四张可见，才将 flags[6] 置 True。Full-suji 为 `C(v)⊆目标玩家舍牌历史`。这些标志不是绝对安全证书。
+不跨花色、不循环。目标3的(1,2)和目标7的(8,9)是边张，不列入 Ryanmen。目标 t 四张可见，或每个 P(v) 至少一种搭子牌四张可见，才将 flags[6] 置 True。Full-suji 为 `Opp(v)⊆目标玩家舍牌历史`。这些标志不是绝对安全证书。
 
 ## 5. 完整动作、响应与监督边界
 
@@ -239,6 +243,14 @@ marker 锚定公共关闭事件之后、复用该事件位置，不增加公共 
 
 成功提交的 receipt 可以随第一段事件或单独在空回调到达。投影按该 receipt 所属 ledger 的合法关闭锚逐条消费：已知且仍开放则保留，已写入或此前已幂等处理才移除。未知/错误 owner、触发、来源以及已经失去合法关闭锚的窗口必须报合同错误，不当作等待；一条记录失败不能清空其他有效待办。整批与合法分批在相同最终 cutoff 的历史、positions 和完整前缀应逐字节一致。
 
+### 5.4 决策冻结、同巡振听与导出
+
+回放在摸牌或吃碰取得动作权、或响应窗口真正打开时冻结本家观察、完整动作候选和历史。随后才公开的延迟 Dora、`reach_accepted` 等仍按真实顺序入账，只影响后续决策；监督来源事件不反写当前前缀。抢杠使用声明前原生预览；加杠窗口打开前已公开的上一个杠指示牌可见，本次窗口之后的指示牌不可见。
+
+四人原生在线和 MJAI `dahai` 共用开窗规则。和牌形无役且当前没有荣和时，也可置该玩家的同巡振听；此时没有可谢绝的 RON，不能仅凭这个标志导出 Pass。同巡标志只在该玩家自己的舍牌（含鸣牌后的舍牌）或新局清除，不因他家鸣牌、摸牌或舍牌清除。实际有 RON 的窗若由正常摸牌或成立鸣牌关闭，原生重放把未和者记为同巡振听；已立直的未和者保留立直振听。抢杠未和只在原生预览的真 RON 窗提交时登记，桥接层不缓存或回写整份振听状态。有合法终局荣和时不按一次普通见逃关闭。
+
+这些规则改变的是本家原生合法候选与可证行为，不泄露到他家公开 response mask。旧回放可能含多出的 RON、错误的 `inferred_unique_next_draw_pass` 训练行及污染后续前缀的 `SELF_PASS`；未检测出独立结算差异不能证明候选正确。
+
 ## 6. 规范化公共事件时钟与 Attention
 
 ### 6.1 语义边界
@@ -255,15 +267,15 @@ marker 锚定公共关闭事件之后、复用该事件位置，不增加公共 
 6. SELF_PASS 不推进时钟，使用已观察关闭事件的锚。不同来源若本家私有事实不同，不强行要求相同历史，也不伪造离线无法知道的 Pass。
 7. 同一公共cutoff有多个已证非平凡Pass监督样本时，按稳定初始座位顺序输出，不遍历原生hash-map顺序；每个观察者的输入不变，样本ID/聚合哈希/串行与两进程重放也必须确定一致。
 
-令最后公共语义位置为 C：BOS=0；所有 S 与 DECIDE=C+1；ACTION=C+2。H 可因单事件展开、同时和牌或私有 marker 与 C 不同，不再把 H 当时钟。
+`C` 是当前 cutoff 的最后公共语义位置，不是事件流下标，也不是历史 Token 行数。位置为 **BOS=0、所有状态槽与 DECIDE=C+1、ACTION=C+2**。历史中一个事件可展开多行、多个事件可共用一个 tick，本家私有 marker 也可增加 H 而不增加 C。见 [`TokenHistoryCache`、`encode_prefix()` 和 `append_action()`](../src/riichienv/kar/tokenize.py)。
 
 `PublicSnapshot.public_clock_version` 必须显式为当前版本；缺失/旧时钟拒绝 Tokenize 和 runtime。旧历史/模型 K/V 必须重建，不能补一个常数、丢掉 positions、放宽误差或仅改版本标签。
 
 ### 6.2 块注意力
 
-| Query / Key | H（含 BOS） | S | D | A |
+| Query / Key | 历史块（BOS 与历史） | S | D | A |
 |---|---|---|---|---|
-|H|因果|禁止|禁止|禁止|
+|历史块|因果|禁止|禁止|禁止|
 |S|允许|双向|禁止|禁止|
 |D|允许|允许|自身|禁止|
 |A|允许|允许|允许|自身|
@@ -291,9 +303,16 @@ $$P=L(4d^2+3df+2d)+1636d+651.$$
 
 ### 7.1 统一半庄统计
 
-`N_eligible_half_games` 是过滤后、整场 split 前的完整合格池，仅作审计规模；`available_split_counts` 是该池切分后数量；`exported_split_counts` 是当前实际导出量；`N_train_half_games` 是当前导出 train 完整半庄数。
+[`game_count_contract()`](../src/riichienv/kar/versioning.py) 按完整半庄 `game_id` 计数，区分审计池、整场切分和实际导出：
 
-**模型规模唯一按 N_train_half_games 选型。** 本条已直接解决原正文第7.5/14.2和第17节冲突，不再并列两种口径。
+| 字段 | 含义 |
+|---|---|
+| `N_eligible_half_games` | 过滤后、切分前的完整合格池总数，等于 `available_split_counts` 各 split 之和。 |
+| `available_split_counts` | 对整个合格池按 game_id 切分后，train/validation/test 的各自可用数。 |
+| `exported_split_counts` | 当前产物实际导出的 train/validation/test 数；任一 split 不超过对应可用数。 |
+| `N_train_half_games` | `exported_split_counts["train"]`，不是合格池、可用 train 或决策行总数。 |
+
+**模型规模只按 `N_train_half_games` 选型**，门槛来自 [`model_tier()`](../src/riichienv/kar/contracts.py)。旧附件 §7.5、§14.2 与 §17 的口径冲突以此消解。
 
 | N_train 完整半庄 | 数据允许最大主力 preset | effective batch |
 |---:|---|---:|
@@ -324,11 +343,11 @@ M1 固定 Small。正式 M2 必须覆盖全部 available train/validation，prob
 
 ## 9. 损失与训练数学
 
-固定训练 manifest 的真实比例 `ρE=P_D(response_valid)`、`ρV=P_D(value_valid)`，不按 microbatch 或 validation 重算。
+[`Labels`、`loss_sums()`、`LossSums.objective()`](../src/riichienv/kar/learning/losses.py) 使用固定训练 manifest 比例 `ρE=P_D(response_valid)`、`ρV=P_D(value_valid)`，要求 $0<\rho_V\le\rho_E\le1$，不按 microbatch 或 validation 重算。令 $B$ 为决策样本总数（不是各头有效标签数）；$I_i^A$、$I_i^E$、$I_i^V$ 分别表示 `action_valid`、`response_valid`、`value_valid`，其中 `response_valid = action_valid & response_applicable & response_observed`。以下只对对应有效行求和：
 
-$$L_A=-\frac1B\sum_i\log\pi_\theta(A_i\mid X_i,C_i).$$
-$$L_E=-\frac1{B\rho_E}\sum_i r_i\log p_\theta^{pub}(E_i\mid X_i,A_i).$$
-$$L_V=-\frac1{B\rho_V}\sum_i v_i\log v_\theta(R_i\mid X_i,A_i,E_i).$$
+$$L_A=-\frac1B\sum_{i:I_i^A=1}\log\pi_\theta(A_i\mid X_i,\mathcal L_i).$$
+$$L_E=-\frac1{B\rho_E}\sum_{i:I_i^E=1}\log p_\theta^{pub}(E_i\mid X_i,A_i).$$
+$$L_V=-\frac1{B\rho_V}\sum_{i:I_i^V=1}\log v_\theta(R_i\mid X_i,A_i,E_i).$$
 $$L=L_A+0.25L_E+0.1L_V.$$
 
 Response train temperature=1；校准后推理使用 TE，但 allowed mask 同一函数。Value 只取实际发生 E 的 rank CE，真实 rank1..4 在数据层明确转0..3。保持自然分布，不做类重加权、Focal、RWR/Profile S、CQL/TD 或额外 BC 阶段。
@@ -372,9 +391,9 @@ $$-b_a-3\rho_a\le\widetilde Q-Q^\mu\le b_a.$$
 
 ### 10.3 受限闭式更新
 
-KL 方向固定 `KL(π||π0)`。一般目标为 `maxπ Eπ Q̂ - τ KL(π||π0)`，解为先验乘 exp(Q̂/τ) 后归一化。
+实际重排使用 $\widetilde Q$，不是第 3 节的名义 $\widehat Q$。KL 方向固定为 $D_{\mathrm{KL}}(q\Vert q_0)$；在固定 $S$ 上最大化 $\mathbb E_q[\widetilde Q]-\tau D_{\mathrm{KL}}(q\Vert q_0)$。见 [`restricted_kl()`](../src/riichienv/kar/policy.py)。
 
-首版只定义 `S={a∈C:0≤a≤147,logπ0(a)≥ℓmin}`，M=π0(S)，q0=π0(·|S)。若 |S|<2 或 M=0 直接先验；否则：
+先按 $S=\{a\in\mathcal L:0\le a\le147,\ \log\pi_0(a)\ge\ell_{\min}\}$ 选完整舍牌，$M=\pi_0(S)$，$q_0=\pi_0(\cdot\mid S)$。若 $|S|<2$ 或 $M=0$ 直接使用先验；否则：
 
 $$q_\tau=\operatorname{Softmax}_{a\in S}(\log q_0(a)+\widetilde Q_a/\tau),$$
 $$\pi_\tau(a)=\begin{cases}M q_\tau(a),&a\in S,\\\pi_0(a),&a\notin S.\end{cases}$$
@@ -413,7 +432,7 @@ $$E2=M[\widehat\Delta-\sum_a|d_a|b_a-3\sum_a(q_0(a)-q_\tau(a))_+\rho_a]-3\delta_
 
 ### 11.2 动作门控
 
-只用 cal_fit 中真实动作为舍牌、完整 C_D 至少两项且 action_valid 的样本；概率分母是完整合法 C，不是舍牌子集。将真实动作 logπ0 升序，取0-based `n//100`，`>=` 保留 ties，不插值；n<100 取最小值，不外推99%保证。log阈值权威，避免 exp 下溢。无样本/非法概率则 gate unavailable、禁用重排。
+只用 cal_fit 中真实动作为舍牌、合法舍牌子集 $\mathcal L_D$ 至少两项且 `action_valid` 的样本；概率分母是完整合法集合 $\mathcal L$，不是舍牌子集。将真实动作 logπ0 升序，取 0-based `n//100`，`>=` 保留 ties，不插值；n<100 取最小值，不外推 99% 保证。log 阈值权威，避免 exp 下溢。无样本/非法概率则 gate unavailable、禁用重排。
 
 cal_check 报告保留率、|S|<2比例、M与支持数分布、当前顺位/立直/副露威胁切片；99%是拟合经验约束，不是因果覆盖率。
 
@@ -426,13 +445,15 @@ cal_check 报告保留率、|S|<2比例、M与支持数分布、当前顺位/立
 - head 为 response 或 rank；event_id 为0..20。
 - 每项必须给 max_nll、max_brier、max_ece、minimum_independent_games。
 - 整组给非空 source_reference；序列化包括版本、指标总体、cal_check分区、计数单位、缺项语义、回退行为与完整内容 hash；登记内容进入计划/校准/有限策略身份。
-- 指标总体是“真实响应等于 e 的 cal_check 行”：response 为该子集的21类多分类 NLL/Brier/top-label ECE；rank 为该子集的4类指标。ECE 固定10等宽 confidence bins。独立游戏按真实 game_id 去重，100行同一游戏仍为1。
+- **Response：** 对每个事件 $e$，总体是 `cal_check` 中 `response_valid` 且公开 mask 允许 $e$ 的**全部**行。取冻结温度与公开 mask 后的 $p_e$，以 $y_e=1[E=e]$ 为真实值，包含正例和负例，计算二元 NLL $-y_e\log p_e-(1-y_e)\log(1-p_e)$、Brier $(p_e-y_e)^2$，以及按 $p_e$ 的 10 个等宽桶比较均值与真实频率的 ECE。分别报告合格总行数、实际正例行数、至少含一个实际正例的独立完整游戏数；只有最后一项能满足本头的最小独立游戏门槛。未知响应、或公开不允许 $e$ 的行不算负例。
+- **Rank：** 只用 `value_valid` 且真实 $E=e$ 的行；保留 4 类 NLL/Brier 和 10-bin top-label ECE，独立游戏按真分支有名次行的 game_id 去重。100 行同一游戏仍为 1。总体 response 多分类指标仍照常报告；`response_classification_by_true_event` 的 21 类分类诊断（包括 `top_label_ece`）不作为 response 逐事件准入。
+- 反例：同样的预测 $(.9,.1)$ 给 1000 行，其中 900 是 NEXT_DRAW、100 是 CHI_P1。总体 ECE 和两个事件的 one-vs-rest ECE 约为 0；按真实类别分组的 top-label ECE 分别为 .1 和 .9。用**仅合成测试**的 `max_ece=.2` 时旧口径错误拒绝 CHI；这不是生产阈值，也不涉及训练损失错误。
 - 某 e 的 response 与 rank 两个判据都 passed，才算该分支质量 passed。每头缺正式判据、缺指标或独立游戏不足为 unavailable；证据足够但超限为 failed。合并时任一已证失败令分支 failed（仍保留另一头的 unavailable），无失败但有缺项才为 unavailable，不让已知失败被缺项掩盖。
 - **没有正式默认阈值或默认最小验证游戏数。** 审查反例和单元测试数字不是正式生产标准。未登记就是 unavailable，不以总体平均放行罕见分支。
 
-`EventSupport.supported` 只表达 train游戏数≥500，不能独自授权价值。最终：
+[`EventSupport.supported`](../src/riichienv/kar/support.py) 只表达每个响应类别在 train 中覆盖至少 500 个去重的完整半庄。定义 $E_{\mathrm{train}}=\{e:N_{\mathrm{train},e}\ge500\}$；`value_supported()` 另检查冻结 `cal_check` 分支状态，只有该响应的预登记 response、rank 两项均通过才纳入有效支持：
 
-$$e\in E_{sup}\iff N_{train,e}\ge500\ \land\ quality_{response,e}=passed\ \land\ quality_{rank,e}=passed.$$
+$$e\in E_{sup}\iff e\in E_{\mathrm{train}}\ \land\ \mathrm{quality}_{\mathrm{response},e}=\mathrm{passed}\ \land\ \mathrm{quality}_{\mathrm{rank},e}=\mathrm{passed}.$$
 
 规则不可能、训练支持不足、质量 failed、质量 unavailable 分别报告，不混入公开规则 mask。无任何有效价值分支时 runtime 使用同一先验，原因 `no_quality_qualified_response_branches`，不做候选前向；仍有合格分支时对其他分支保留 masked 概率、取−1.5并计入 rho_U。有限生产发布同样要求至少一个训练支持且质量合格分支，以及既有总体质量和独立验证策略选型通过。
 
@@ -455,14 +476,21 @@ mask 的1仅表示未被公开事实证明不可能；未知保守允许。实�
 
 冻结顺序：仅用 cal_fit 选择温度/log 门控；计算基础总体与逐分支指标及独立游戏数；按预登记标准从 cal_check 定出分支三态；再与 train 筛查求交得到同一个 $E_{sup}$。随后用冻结 $T_E$、同一公开 mask 和 `response_valid` 样本重算两分区的质量直方图，最后定稿并计算摘要。cal_fit 的质量分布是描述性结果，不作质量放行；两份派生统计均不参与温度、门控或质量判定。
 
-- `unsupported_mass_histogram` 仅指有效价值口径的 $\rho_U=\sum_{e\notin E_{sup}}\hat p_e$。冻结校准且有绑定支持时，evaluation 使用同一有效支持位、同一 masked 概率归一化和分桶定义；无冻结证据时标 `unavailable`，不把 train-only 数字当作 $\rho_U$。若已有冻结分支状态但没有任何 passed 且 train-supported 的分支，全部已允许概率均未支持；runtime 仍回退先验且零候选前向。
-- `train_only_unsupported_mass_histogram` 仅反映 train 计数不足的概率质量，是独立诊断，不用于悲观价值或证书。两个字段明确保存 support basis、支持位、观测数、状态和桶计数，宽度 0.01；1.0 使用桶 100。规则剔除类概率为 0，既不算有效亦不算 train-only 未支持质量。无观测不是实测 0。
-- 报告/聚合状态与校准产物版本受校验，旧 train-only 桶不能读作当前有效质量。从经核验的冻结 logit archive（若存在且获授权）真实重算，不能给旧 JSON 加字段或重签来迁移。
+两种指标都基于同一公开 mask 及温度处理后的 $\hat p$，但取不同补集：
+
+| 报告字段 | 口径 | 用途与不可用情形 |
+|---|---|---|
+| `unsupported_mass_histogram` | 有效 $\rho_U=\sum_{e\notin E_{sup}}\hat p_e$ | 同第 10.2 节与 runtime。evaluation 使用绑定的冻结校准与事件支持；没有该证据时标 `unavailable`。如果冻结证据存在但没有任何合格分支，全部已允许概率均未支持，runtime 仍回退先验且没有候选前向。 |
+| `train_only_unsupported_mass_histogram` | 仅计数 $\rho_U^{\mathrm{train}}=\sum_{e\notin E_{\mathrm{train}}}\hat p_e$ | 独立的 train 计数诊断，不用于悲观价值或证书。不能拿它替代有效 $\rho_U$；计数已达标但任一分支质量未通过时，两种指标可不同。 |
+
+两个字段各自保存 support basis、支持位、观测数、状态和桶计数，宽度 0.01；1.0 使用桶 100。公开 mask 剔除的类别概率为 0，不贡献任何一种未支持概率质量。无观测不是实测 0。见 [`ResponseMassHistogram`](../src/riichienv/kar/statistics.py) 与 [evaluation](../src/riichienv/kar/learning/evaluation.py)。
+
+报告和校准产物均检查版本绑定；旧 train-only 桶不能读作当前有效质量。从经核验的冻结 logit archive（若存在且获授权）真实重算，不能给旧 JSON 加字段或重签来迁移。
 
 ## 12. 决策执行合同
 
-1. 校验完整可见前缀、时钟版本、完整合法 C、模型/数据/recipe绑定。
-2. 前缀一次前向得到546 logits，合法 C 上 TA 先验；构造 S、M。
+1. 校验完整可见前缀、时钟版本、完整合法集合 $\mathcal L$、模型/数据/recipe 绑定。
+2. 前缀一次前向得到 546 logits，在 $\mathcal L$ 上取经 $T_A$ 校准的先验；构造 S、M。
 3. prior-only/τ∞、缺有效门控、总体质量失败、无有效价值分支、S不足或M=0时直接相同先验。
 4. 有限合格路径对全部 S 构造独立单 ACTION 后缀，共享同一前缀 K/V，无Top-K。
 5. 每候选先公开mask，再TE响应Softmax；TR名次Softmax给分支效用；按Esup计算保守Q和rho，不对可靠分支重新归一化。
@@ -534,7 +562,7 @@ Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sam
 - Ryanmen九点查表、3/7边张排除、full-suji双侧要求、被叫走历史与物理并集去重、起家顺tie-break、真实零/缺失presence、kind-specific字段、whole-sample随机置空及参数量不变。
 - 数据/SQLite/checkpoint/calibration/support/发布所有新字段的缺失/旧值拒绝，即使校验和有效也不能静默补字段迁移。
 
-每轮只对实际执行项目宣称PASS；skip不计PASS，标注缺私有资产/旧版本需重建/禁止更新等原因。旧2673/40或其他历史计数不移植到新源码。
+这些是设计要求，不是本次运行结果。各历史通过数只归属各自的提交和验证范围，不能迁入[本次文档校验](kar-design-v4-validation.md)。
 
 ## 19. 旧产物拒绝与真实重建
 
@@ -544,9 +572,13 @@ Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sam
 - 所有旧历史缓存/KV重新生成；同Schema或同shape不证明输入语义一致。
 - 旧权重即使state_dict可加载，也不是当前精确训练/校准/评测产物；标准source/native与版本加载检查拒绝，任何迁移须显式实现、单独授权与真实验收。
 - 旧支持需在当前合格train选择重新统计；旧校准需固定新输入/模型、正式预登记overall与branch判据后重新计算；finite策略选型/吞吐与发布随之重建。
-- 本轮可用新合成产物测试这些入口和拒绝，不能给真实旧产物补字段、改标签或换hash冒充新产物。缺正式分支判据时prior-only或unsupported，不声称已校准。
+- 真实旧产物不得补字段、改标签或换 hash 冒充新产物。缺正式分支判据时使用 prior-only 或 unsupported，不声称已校准。
 
-相对 `c095084`，本轮保留 V4 输入、Schema、mask、train 计数阈值及分支质量判据。修正已确认 Pass 的分批交付不改变合法关闭锚或 Token 编码，但旧分批轨迹若丢了 receipt，只能用原始、可信的已提交 receipt 重新投影；不能从纯公共 trace 逆猜私有 Pass。当前校准 v5 不接受 v4 的旧质量直方图，即使指标与模板字段看起来相近。绑定完整 runtime 合同的支持记录、依赖校准摘要的策略选择、发布及源码绑定的执行证据也不能原样充当当前版本；重新计算、校验并在新产物中登记，不覆盖旧记录。单独改正报告口径不要求全量重导出已经合格的 V4 Token。
+`c095084` → `f70684e` 的历史实现已处理分批 Pass 和有效 $\rho_U$。旧分批轨迹若丢了 receipt，只能凭原始、可信的已提交 receipt 重新投影，不能从公共 trace 逆猜私有 Pass。
+
+后续冻结机会和原生振听修复改变了部分合法候选及训练行：从原始、可核验记录使用重新构建的原生扩展重新重放、审计和生成派生 SQLite、索引／选集、指纹及训练配方。错误 Pass 删除后其后的私有历史、行序号或有效样本计数也可能改变；不能只改 manifest 或因为支付一致而沿用。旧输入的缓存、精确续训 checkpoint 和发布都不能当作当前合同。
+
+逐事件校准 v6 不能迁移 v5 的真实类别切片；需要在匹配当前数据、模型、mask 的冻结 logits 和独立 `cal_check` 上按新预登记语义重算。绑定旧输入的 logit archive 不能直接重算来代替输入重建。统计合并状态、训练支持产物、有限策略选择和发布按相应当前绑定重新生成或验证，不重贴阈值或 hash。实施未覆盖原始或既有训练产物，详见[本次迁移报告](kar-furiten-event-calibration-repair.md)。
 
 ## 20. 风险与声明边界
 
@@ -577,8 +609,8 @@ RiichiEnv宿主；完整Schema/hash固定；源record不决定时间；同语义
 ## 23. 来源
 
 - 原始设计及其SHA见页首；Kanachan动作/tile37仅来源参考，非当前工程目标。
-- [RiichiEnv上游冻结基线](https://github.com/smly/RiichiEnv/tree/0ee1236a283b15508f3ac28407027f340b81e1de)；本仓库`state/legal_actions.rs`、`state/mod.rs`定义原生鸣牌余量和Ron/途中流局优先级。
-- 实际雀魂proto的`RecordLiuJu`：type=1、gameend=2、seat=3、tiles=4、liqi=5、allplayertiles=6；只采用公开语义所需字段，协议来源SHA在本轮证据记录。
+- [RiichiEnv 上游冻结基线](https://github.com/smly/RiichiEnv/tree/0ee1236a283b15508f3ac28407027f340b81e1de)；本仓库的 [原生合法动作](../riichienv-core/src/state/legal_actions.rs) 和 [状态规则](../riichienv-core/src/state/mod.rs) 定义原生鸣牌余量及荣和/途中流局优先级。
+- 雀魂 `RecordLiuJu` 源协议字段号包括 `type=1`、`gameend=2`、`seat=3`、`tiles=4`、`liqi=5`、`allplayertiles=6`。只采用公开语义所需字段；协议来源和当时证据见[历史 V4 实现报告](kar-semantic-branch-repair.md)，本次文档校验未重新审计真实牌谱。
 - [雀魂官方FAQ](https://mahjongsoul.com/faq/)及[API](https://mahjongsoul.com/api/faq/list)的流局满贯条文，相关取证见仓库规则文档；自己鸣牌不取消资格。
 - [Guo et al., 温度校准](https://proceedings.mlr.press/v70/guo17a.html)、[Canonne, KL/TV](https://arxiv.org/abs/2202.07198)、[torch.gather](https://docs.pytorch.org/docs/stable/generated/torch.gather.html)、[CrossEntropyLoss](https://docs.pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html)。这些方法不替代当前数据/误差/棋力验收。
 

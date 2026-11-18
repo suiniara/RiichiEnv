@@ -10,7 +10,8 @@ from .contracts import Response
 from .runtime_contracts import UTILITIES
 from .support import unsupported_response_mass
 
-STATISTICS_VERSION = "whole_game_cluster_statistics_v3_value_mass"
+STATISTICS_VERSION = "whole_game_cluster_statistics_v4_event_ovr"
+RESPONSE_EVENT_CALIBRATION_FIELD = "response_event_calibration"
 VALUE_MASS_FIELD = "unsupported_mass_histogram"
 TRAIN_ONLY_MASS_FIELD = "train_only_unsupported_mass_histogram"
 VALUE_MASS_BASIS = "train_and_frozen_cal_check_branch_quality"
@@ -364,6 +365,54 @@ class ClassificationMetrics:
         }
 
 
+@dataclass
+class ResponseEventMetrics:
+    """Bernoulli scores on a publicly allowed event, not a true-class slice."""
+
+    reliability: ReliabilityBins = field(default_factory=ReliabilityBins)
+    positive_count: int = 0
+    positive_games: set[str] = field(default_factory=set)
+    nll_sum: float = 0.0
+    brier_sum: float = 0.0
+
+    def add(self, game: str, probability: float, positive: bool, log_observed: float) -> None:
+        self.reliability.add(probability, float(positive))
+        self.nll_sum -= log_observed
+        self.brier_sum += (probability - int(positive)) ** 2
+        if positive:
+            self.positive_count += 1
+            self.positive_games.add(game)
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "reliability": self.reliability.state_dict(),
+            "positive_count": self.positive_count,
+            "positive_games": sorted(self.positive_games),
+            "nll_sum": self.nll_sum,
+            "brier_sum": self.brier_sum,
+        }
+
+    def merge(self, state: dict[str, Any]) -> None:
+        self.reliability.merge(state["reliability"])
+        self.positive_count += state["positive_count"]
+        self.positive_games.update(state["positive_games"])
+        self.nll_sum += state["nll_sum"]
+        self.brier_sum += state["brier_sum"]
+
+    def report(self) -> dict[str, Any]:
+        reliability = self.reliability.report()
+        count = reliability["count"]
+        return {
+            "count": count,
+            "positive_count": self.positive_count,
+            "positive_independent_games": len(self.positive_games),
+            "nll": self.nll_sum / count if count else None,
+            "brier": self.brier_sum / count if count else None,
+            "ece": reliability["ece"],
+            "reliability": reliability,
+        }
+
+
 class ResponseMassHistogram:
     """Bounded post-mask histogram that cannot merge different support bases or sets."""
 
@@ -431,6 +480,7 @@ class FullDiagnostics:
             "rank": ClassificationMetrics(4, per_class_reliability=True),
         }
         self.rank_by_event = {str(event): ClassificationMetrics(4, per_class_reliability=True) for event in range(21)}
+        self.response_event_calibration = {str(event): ResponseEventMetrics() for event in range(21)}
         self.slices: dict[str, dict[str, ClassificationMetrics]] = {}
         self.clusters = GameClusters()
         self.utility_bins = [{"count": 0, "predicted": 0.0, "observed": 0.0} for _ in range(10)]
@@ -493,6 +543,30 @@ class FullDiagnostics:
                 self.gate_slices[name] = _new_gate()
             _add_gate(self.gate_slices[name], retained=retained, support_size=support_size, mass=mass)
 
+    def add_response_event_calibration(
+        self, *, game: str, logs: Sequence[float], allowed: Sequence[bool], target: int,
+    ) -> None:
+        if (not game or len(logs) != 21 or len(allowed) != 21 or any(type(flag) is not bool for flag in allowed)
+                or type(target) is not int or not 0 <= target < 21 or not allowed[target]):
+            raise ValueError("Expected a valid observed response and its public mask")
+        events = [(event, logs[event]) for event, flag in enumerate(allowed) if flag]
+        if any(not math.isfinite(value) or value > 0 for _, value in events):
+            raise ValueError("Expected stable masked log probabilities for allowed responses")
+        for event, log_p in events:
+            probability = math.exp(log_p)
+            positive = event == target
+            if positive:
+                log_observed = log_p
+            elif probability > 0.5:
+                # log(1 - p) loses tiny complementary mass when p rounds to 1.
+                # Normalize the other allowed classes in log space instead.
+                others = [value for other, value in events if other != event]
+                peak = max(others)
+                log_observed = peak + math.log(math.fsum(math.exp(value - peak) for value in others))
+            else:
+                log_observed = math.log1p(-probability)
+            self.response_event_calibration[str(event)].add(game, probability, positive, log_observed)
+
     def add_response_mass(
         self, probabilities: Sequence[float], *, train_supported: Sequence[bool],
         value_supported: Sequence[bool] | None = None,
@@ -505,6 +579,9 @@ class FullDiagnostics:
         return {
             "heads": {key: value.state_dict() for key, value in self.heads.items()},
             "rank_by_event": {key: value.state_dict() for key, value in self.rank_by_event.items()},
+            RESPONSE_EVENT_CALIBRATION_FIELD: {
+                key: value.state_dict() for key, value in self.response_event_calibration.items()
+            },
             "slices": {
                 name: {key: value.state_dict() for key, value in heads.items()} for name, heads in self.slices.items()
             },
@@ -526,6 +603,8 @@ class FullDiagnostics:
             self.heads[key].merge(value)
         for key, value in state["rank_by_event"].items():
             self.rank_by_event[key].merge(value)
+        for key, metrics in self.response_event_calibration.items():
+            metrics.merge(state[RESPONSE_EVENT_CALIBRATION_FIELD][key])
         for name, heads in state["slices"].items():
             if name not in self.slices:
                 self.slices[name] = {
@@ -594,6 +673,9 @@ class FullDiagnostics:
             "response_groups": grouped,
             "heads": {key: value.report() for key, value in self.heads.items()},
             "rank_by_response": {key: value.report() for key, value in self.rank_by_event.items()},
+            RESPONSE_EVENT_CALIBRATION_FIELD: {
+                key: value.report() for key, value in self.response_event_calibration.items()
+            },
             "by_slice": {
                 name: {key: value.report() for key, value in heads.items()} for name, heads in self.slices.items()
             },
@@ -605,7 +687,7 @@ class FullDiagnostics:
                 head: self.clusters.interval(head + "_brier", seed=bootstrap_seed, replicates=bootstrap_replicates)
                 for head in self.heads
             },
-            "response_class_intervals": {
+            "response_classification_by_true_event_intervals": {
                 str(event): {
                     metric: self.clusters.interval(
                         f"response_event_{event}_{metric}", seed=bootstrap_seed, replicates=bootstrap_replicates

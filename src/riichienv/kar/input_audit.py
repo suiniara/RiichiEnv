@@ -8,6 +8,7 @@ from .decision import ReplayDecision
 from .observation import PublicSnapshot
 from .schema import ACTIVE_SCHEMA_ID, schema_status
 from .tokenize import TokenHistoryCache, TokenizationUnavailableError, append_action, encode_prefix
+from .versioning import INPUT_PIPELINE_VERSION
 
 
 class InputAudit:
@@ -58,6 +59,7 @@ class InputAudit:
             else "PASS",
             "schema_id": ACTIVE_SCHEMA_ID,
             "schema_hash": registry.get("schema_hash"),
+            "input_pipeline_version": INPUT_PIPELINE_VERSION,
             "decisions_checked": self.decisions,
             "bytes_checked": self.bytes_checked,
             "prefix_sha256": self.prefix_hash.hexdigest(),

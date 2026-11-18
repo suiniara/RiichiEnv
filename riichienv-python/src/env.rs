@@ -1002,6 +1002,31 @@ impl RiichiEnv {
         Ok(responses)
     }
 
+    /// Record unused Ron offers from a validated, now-closed MJAI kan preview.
+    /// Ordinary discard responses are accounted for by the MJAI event handler.
+    pub fn _record_replay_kan_ron_declines(&mut self, actor: u8, seats: Vec<u8>) -> PyResult<()> {
+        let GameStateVariant::FourPlayer(state) = &mut self.variant else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "kan response closure requires a four-player environment",
+            ));
+        };
+        if actor >= 4
+            || seats.iter().any(|&seat| seat >= 4 || seat == actor)
+            || state.current_player != actor
+            || state.phase != Phase::WaitAct
+            || !state.needs_tsumo
+            || state.is_done
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "kan response closure requires its declarer awaiting a replacement draw and valid responder seats",
+            ));
+        }
+        for seat in seats {
+            state.players[seat as usize].record_declined_ron();
+        }
+        Ok(())
+    }
+
     #[pyo3(signature = (actions))]
     pub fn step<'py>(
         &mut self,

@@ -22,7 +22,7 @@ from ..schema import TOKEN_BYTE_SIZE
 from ..versioning import artifact_contract, game_count_contract, validate_artifact_contract
 
 DATASET_VERSION = "kar_decision_sqlite_v1"
-ACTION_LABEL_VERSION = "explicit_and_unique_next_draw_pass_v1"
+ACTION_LABEL_VERSION = "explicit_and_unique_next_draw_pass_v2_furiten"
 SQL_SCHEMA = """
 CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE games (game_id TEXT PRIMARY KEY, split TEXT NOT NULL, source_sha256 TEXT NOT NULL,

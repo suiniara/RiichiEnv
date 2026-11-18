@@ -1,6 +1,7 @@
 """Synthetic logits and preregistration only; no trained models or real calibration."""
 import copy
 import json
+import math
 from dataclasses import replace
 
 import pytest
@@ -207,21 +208,97 @@ def test_evaluation_counts_an_observed_response_even_when_rank_is_unavailable(ca
     assert _counts(details[EFFECTIVE]) == {99: 1}
 
 
+def test_event_ece_requalifies_the_calibrated_chi_branch_in_all_three_consumers(case, record_property):
+    original, support, view, basis, rows = case
+    chi = int(Response.CHI_P1)
+    # Preregister the discriminator before evaluating the 900/100 mixture.
+    # These are synthetic limits, never defaults for a real fitted model.
+    branches = BranchQualityPolicy(tuple(
+        BranchQualityCriterion(head, event, 5.0 if head == "response" else 1.0,
+                               2.0 if head == "response" else 0.2, 0.2, 10)
+        for head in ("response", "rank") for event in (COMMON, chi, RARE)
+    ), "synthetic 0.2 ECE on response event calibration and conditional rank")
+    overall = CalibrationQualityPolicy(
+        {"action": 20.0, "response": 1.0, "rank": 1.0}, {head: 2.0 for head in ("action", "response", "rank")},
+        {head: 1.0 for head in ("action", "response", "rank")}, 1, 1, 0.0, "synthetic overall", branches,
+    )
+    response = [(-1000.0 if event != MASKED else 1000.0) for event in range(21)]
+    response[COMMON], response[chi] = math.log(0.9), math.log(0.1)
+    common_logits = {"response_logits": tuple(response), "rank_logits": ((12.0, 0.0, 0.0, 0.0),) * 21}
+    check = [replace(row, response_target=COMMON if index < 900 else chi, **common_logits)
+             for index, row in enumerate(rows)]
+    assert all(row.response_allowed[chi] and row.response_allowed[RARE] for row in check)
+    fit = [replace(check[0], game_id=original.split.fit_games[0], row_id="synthetic-fit-uniform-p")]
+    artifact = calibrate_static_rows(fit, check, split=original.split, binding=original.binding, support=support,
+                                     temperatures=(1.0,), source_reference="immutable synthetic identical predictions",
+                                     diagnostic_fixture=True, quality_policy=overall)
+    measured = artifact.check_metrics
+    original_style = measured["response_classification_by_true_event"]
+    old_next, old_chi = (original_style[str(event)]["top_label_ece"] for event in (COMMON, chi))
+    assert (old_next, old_chi) == pytest.approx((0.1, 0.9))
+    limit = 0.2
+    assert old_next < limit < old_chi
+    assert measured["response"]["ece"] == pytest.approx(0.0, abs=1e-12)
+    for event, positives in ((COMMON, 900), (chi, 100)):
+        metric = measured["branch_metrics"]["response"][str(event)]
+        counts = (metric["count"], metric["positive_count"], metric["positive_independent_games"])
+        assert counts == (1000, positives, positives)
+        assert metric["ece"] == pytest.approx(0.0, abs=1e-12)
+        assert metric["nll"] == pytest.approx(-0.9 * math.log(0.9) - 0.1 * math.log(0.1))
+        assert metric["brier"] == pytest.approx(0.09)
+        assert measured["branch_metrics"]["rank"][str(event)]["count"] == positives
+        assert artifact.value_branch_statuses[event] == "passed"
+        record_property(f"event_{event}_ovr_ece", metric["ece"])
+    record_property("legacy_next_top_label_ece", old_next)
+    record_property("legacy_chi_top_label_ece", old_chi)
+    assert artifact.value_branch_statuses[RARE] == "unavailable"  # no positives despite 1000 eligible rows
+    report = artifact.to_record()
+    loaded = CalibrationArtifact.from_record(report, artifact.binding, support, allow_diagnostic=True)
+    evaluated = FullDiagnostics()
+    for start in range(0, len(check), 128):
+        shard = FullDiagnostics()
+        add_diagnostics(
+            shard, *_evaluation_batch(check[start:start + 128], basis), calibration=loaded, support=support,
+        )
+        evaluated.merge(shard.state_dict())
+    eval_report = evaluated.report(bootstrap_replicates=4)
+    observed = eval_report["response_event_calibration"][str(chi)]
+    assert (observed["count"], observed["positive_count"], observed["positive_independent_games"]) == (1000, 100, 100)
+    assert observed["ece"] == pytest.approx(0.0, abs=1e-8)
+    runtime = RuntimePolicy(
+        _StaticCandidatePredictor(artifact.binding, check[0]), options=PolicyOptions("empirical_only", 0.5),
+        calibration=loaded, support=support, allow_diagnostic_calibration=True,
+    ).decide(view, check[0].candidates, "synthetic-ovr-parity")
+    candidate = runtime.telemetry["candidates"][str(check[0].action_target)]
+    effective = tuple(event in (COMMON, chi) for event in range(21))
+    for event_set in (candidate["value_supported"], eval_report[EFFECTIVE]["event_supported"],
+                      measured["diagnostics"][EFFECTIVE]["event_supported"]):
+        assert tuple(event_set) == effective
+    assert candidate["response_probabilities"][chi] == pytest.approx(0.1)
+    assert candidate["unsupported_mass"] == 0.0 and _counts(eval_report[EFFECTIVE]) == {0: 1000}
+
+
 @pytest.mark.parametrize(
-    "stale", ["old-calibration-version", "old-statistics-version", "missing-effective-mass", "wrong-support"]
+    "stale", ["old-calibration-version", "old-statistics-version", "legacy-classification", "missing-event-stats",
+              "missing-effective-mass", "wrong-support"]
 )
 def test_calibration_loader_does_not_relabel_old_unsupported_mass(case, stale):
     artifact, support, _, _, _ = case
     document = copy.deepcopy(artifact.to_record())
     if stale == "old-calibration-version":
-        document["version"] = "heldout_temperatures_log_gate_v4_branches"
+        document["version"] = "heldout_temperatures_log_gate_v5_value_mass"
     elif stale == "old-statistics-version":
-        document["check_metrics"]["diagnostics"]["statistics_version"] = "whole_game_cluster_statistics_v2"
+        document["check_metrics"]["diagnostics"]["statistics_version"] = "whole_game_cluster_statistics_v3_value_mass"
+    elif stale == "legacy-classification":
+        metrics = document["check_metrics"]
+        metrics["branch_metrics"]["response"] = metrics["response_classification_by_true_event"]
+    elif stale == "missing-event-stats":
+        del document["check_metrics"]["diagnostics"]["response_event_calibration"]
     elif stale == "missing-effective-mass":
         del document["check_metrics"]["diagnostics"][EFFECTIVE]
     else:
         document["check_metrics"]["diagnostics"][EFFECTIVE]["event_supported"] = [True] * 21
     unsigned = {key: value for key, value in document.items() if key != "calibration_sha256"}
     document["calibration_sha256"] = content_hash(unsigned)  # synthetic negative control only
-    with pytest.raises(ValueError, match="Calibration.*(version|mass|support)"):
+    with pytest.raises(ValueError, match="Calibration.*(version|mass|support|response)"):
         CalibrationArtifact.from_record(document, artifact.binding, support, allow_diagnostic=True)

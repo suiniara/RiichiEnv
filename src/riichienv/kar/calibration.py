@@ -13,9 +13,16 @@ from .calibration_roles import CALIBRATION_SPLIT_SALT, calibration_is_fit
 from .contracts import canonical_bytes, content_hash, game_split
 from .policy import fixed_tau_grid, support_discards
 from .probability import complete_candidates, finite_vector, legal_prior, masked_log_softmax, masked_softmax
-from .runtime_contracts import CALIBRATION_VERSION, RuntimeBinding, runtime_contract, sha256_value
+from .runtime_contracts import (
+    CALIBRATED_POLICY_IDENTITY_VERSION,
+    CALIBRATION_VERSION,
+    RuntimeBinding,
+    runtime_contract,
+    sha256_value,
+)
 from .selection_quality import TAU_SELECTION_VERSION, TauSelectionPolicy, paired_tau_evidence
 from .statistics import (
+    RESPONSE_EVENT_CALIBRATION_FIELD,
     STATISTICS_VERSION,
     TRAIN_ONLY_MASS_BASIS,
     TRAIN_ONLY_MASS_FIELD,
@@ -322,6 +329,26 @@ def gate_log_threshold(rows: Sequence[CalibrationRow], action_temperature: float
     return (sorted(logs)[len(logs) // 100], len(logs)) if logs else (None, 0)
 
 
+def _response_branch_metrics(diagnostics: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    measured = diagnostics.get(RESPONSE_EVENT_CALIBRATION_FIELD)
+    keys = ("count", "positive_count", "positive_independent_games", "nll", "brier", "ece")
+    if not isinstance(measured, Mapping) or set(measured) != {str(event) for event in range(21)}:
+        raise ValueError("Calibration requires one-vs-rest response event statistics")
+    result = {}
+    for event, metrics in measured.items():
+        if not isinstance(metrics, Mapping) or any(key not in metrics for key in keys):
+            raise ValueError("Calibration response event statistics are incomplete")
+        count, positives, games = (metrics[key] for key in keys[:3])
+        reliability = metrics.get("reliability")
+        if (any(type(value) is not int for value in (count, positives, games))
+                or not 0 <= games <= positives <= count
+                or not isinstance(reliability, Mapping) or reliability.get("count") != count
+                or reliability.get("ece") != metrics["ece"]):
+            raise ValueError("Calibration response event counts or reliability differ")
+        result[event] = {key: metrics[key] for key in keys}
+    return result
+
+
 def calibration_metrics(
     rows: Sequence[CalibrationRow],
     temperatures: tuple[float, float, float],
@@ -334,11 +361,8 @@ def calibration_metrics(
     """Base quality metrics; without frozen cal_check evidence, mass is train-only."""
     diagnostics = FullDiagnostics()
     train_supported = support.supported if support is not None else None
-    branch_metrics = {head: {str(event): ClassificationMetrics(classes) for event in range(21)}
-                      for head, classes in (("response", 21), ("rank", 4))}
-    branch_games: dict[str, dict[str, set[str]]] = {
-        head: {str(event): set() for event in range(21)} for head in branch_metrics
-    }
+    response_classification = {str(event): ClassificationMetrics(21) for event in range(21)}
+    rank_games: dict[str, set[str]] = {str(event): set() for event in range(21)}
     gate_rows = retained = small = 0
     mass_sum = 0.0
     events = {str(index): 0 for index in range(21)}
@@ -362,11 +386,18 @@ def calibration_metrics(
                 slices=slices,
                 event=row.response_target if head == "rank" else None,
             )
-            if head in branch_metrics:
-                branch_metrics[head][str(row.response_target)].add(probabilities, target, log_probability=logs[target])
-                branch_games[head][str(row.response_target)].add(row.game_id)
-            if head == "response" and train_supported is not None:
-                diagnostics.add_response_mass(probabilities, train_supported=train_supported)
+            if head == "response":
+                # The deployment metric is measured over all allowed events,
+                # whereas this separate classifier describes the true class.
+                assert row.response_allowed is not None
+                diagnostics.add_response_event_calibration(
+                    game=row.game_id, logs=logs, allowed=row.response_allowed, target=target,
+                )
+                response_classification[str(target)].add(probabilities, target, log_probability=logs[target])
+                if train_supported is not None:
+                    diagnostics.add_response_mass(probabilities, train_supported=train_supported)
+            elif head == "rank":
+                rank_games[str(row.response_target)].add(row.game_id)
         if row.response_valid:
             events[str(row.response_target)] += 1
         if row.action_valid and row.action_target < 148 and sum(action < 148 for action in row.candidates) >= 2:
@@ -394,15 +425,20 @@ def calibration_metrics(
             "brier": values["brier"],
             "ece": values["confidence_reliability"]["ece"],
         }
-    report["branch_metrics"] = {}
-    for head, table in branch_metrics.items():
-        report["branch_metrics"][head] = {}
-        for event, classifier in table.items():
-            values = classifier.report()
-            report["branch_metrics"][head][event] = {
-                "count": values["count"], "independent_games": len(branch_games[head][event]),
-                "nll": values["nll"], "brier": values["brier"], "ece": values["confidence_reliability"]["ece"],
-            }
+    report["branch_metrics"] = {
+        "response": _response_branch_metrics(details),
+        "rank": {
+            event: {"count": values["count"], "independent_games": len(rank_games[event]),
+                    "nll": values["nll"], "brier": values["brier"], "ece": values["confidence_reliability"]["ece"]}
+            for event, values in details["rank_by_response"].items()
+        },
+    }
+    report["response_classification_by_true_event"] = {
+        event: {"count": table.count, "top_label_ece": table.confidence.report()["ece"],
+                "nll": table.nll / table.count if table.count else None,
+                "brier": table.brier / table.count if table.count else None}
+        for event, table in response_classification.items()
+    }
     report.update(
         gate_multi_discard_count=gate_rows,
         gate_retention=retained / gate_rows if gate_rows else None,
@@ -527,6 +563,11 @@ class CalibrationArtifact:
             response_count = metrics.get("response", {}).get("count")
             if type(response_count) is not int or response_count < 0:
                 raise ValueError("Calibration response mass requires a valid response observation count")
+            by_event = _response_branch_metrics(details)
+            if (metrics.get("branch_metrics", {}).get("response") != by_event
+                    or sum(value["positive_count"] for value in by_event.values()) != response_count
+                    or any(value["count"] > response_count for value in by_event.values())):
+                raise ValueError("Calibration response branch evidence does not match its observations")
             for field, basis, covered in expected:
                 histogram = ResponseMassHistogram(basis)
                 try:
@@ -623,7 +664,7 @@ def calibrated_policy_identity(
 
         tau_minimum(max_prior_amplification)
     record = {
-        "version": "calibrated_policy_identity_v2_branches",
+        "version": CALIBRATED_POLICY_IDENTITY_VERSION,
         "binding_sha256": binding.digest,
         "calibration_sha256": calibration.digest,
         "support_sha256": support.digest,
@@ -640,7 +681,7 @@ def calibrated_policy_identity(
 def validate_policy_identity(record: Mapping[str, Any], binding: RuntimeBinding) -> None:
     unsigned = {key: value for key, value in record.items() if key != "policy_identity_sha256"}
     if (
-        record.get("version") != "calibrated_policy_identity_v2_branches"
+        record.get("version") != CALIBRATED_POLICY_IDENTITY_VERSION
         or record.get("binding_sha256") != binding.digest
         or record.get("policy_identity_sha256") != content_hash(unsigned)
     ):

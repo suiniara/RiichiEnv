@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from contextlib import nullcontext
 from typing import Any
 
@@ -8,7 +9,7 @@ import torch
 from ..calibration import CalibrationArtifact
 from ..calibration_roles import CALIBRATION_SPLIT_SALT, calibration_is_fit
 from ..policy import support_discards
-from ..probability import masked_softmax
+from ..probability import masked_log_softmax
 from ..statistics import FullDiagnostics
 from ..support import EventSupport
 from .batch import rule_feature_view
@@ -16,6 +17,26 @@ from .dataset import DecisionDataset, TrainingBatch, collate_examples
 from .distributed import DistributedContext
 from .losses import Labels, loss_sums
 from .model import KARTransformer, ModelOutputs
+
+
+def _add_response_diagnostics(
+    metrics: FullDiagnostics,
+    *,
+    game: str,
+    logits: list[float],
+    allowed: list[bool],
+    target: int,
+    temperature: float,
+    train_supported: tuple[bool, ...] | None,
+    value_supported: tuple[bool, ...] | None,
+) -> None:
+    event_logs = masked_log_softmax(logits, allowed, temperature)
+    metrics.add_response_event_calibration(game=game, logs=event_logs, allowed=allowed, target=target)
+    if train_supported is not None:
+        metrics.add_response_mass(
+            tuple(math.exp(value) for value in event_logs),
+            train_supported=train_supported, value_supported=value_supported,
+        )
 
 
 @torch.no_grad()
@@ -72,12 +93,10 @@ def add_diagnostics(
         "response": labels.response_target.cpu().tolist(),
         "rank": labels.final_rank_target.cpu().tolist(),
     }
-    # Use the runtime scalar normalization for the mass histogram. Rounding a
-    # batched FP32 softmax can otherwise disagree at a one-percent bucket edge.
-    response_inputs = (
-        (outputs.response_logits.float().cpu().tolist(), labels.response_allowed.cpu().tolist())
-        if train_supported is not None else None
-    )
+    # Match runtime's scalar normalization for event calibration and the mass
+    # histogram. Batched FP32 softmax can move observations at bin edges.
+    response_logits = outputs.response_logits.float().cpu().tolist()
+    response_masks = labels.response_allowed.cpu().tolist()
     for index, game in enumerate(batch.game_ids):
         ids = tuple(action for action in candidates[index] if action != 546)
         slices = []
@@ -108,10 +127,10 @@ def add_diagnostics(
                     slices=tuple(slices),
                     event=targets["response"][index] if head == "rank" else None,
                 )
-        if response_inputs is not None and train_supported is not None and active["response"][index]:
-            logits, allowed = response_inputs
-            metrics.add_response_mass(
-                masked_softmax(logits[index], allowed[index], temperatures[1]),
+        if active["response"][index]:
+            _add_response_diagnostics(
+                metrics, game=game, logits=response_logits[index], allowed=response_masks[index],
+                target=targets["response"][index], temperature=temperatures[1],
                 train_supported=train_supported, value_supported=value_supported,
             )
         target = targets["action"][index]

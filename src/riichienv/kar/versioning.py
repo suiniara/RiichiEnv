@@ -12,10 +12,11 @@ from .actions import manifest_hash
 from .calibration_quality import BRANCH_QUALITY_VERSION
 from .contracts import MJSOUL_RULESET, REFERENCE_SCHEMA_ID, RESPONSE_MASK_VERSION, SCHEMA_ID, SCHEMA_OVERLAY_SHA256
 from .event_semantics import PUBLIC_CLOCK_VERSION, TERMINAL_PUBLIC_VERSION
+from .native_replay import NATIVE_REPLAY_VERSION
 from .schema import schema_status
 
 ARTIFACT_CONTRACT_VERSION = "kar_riichienv_contract_v4"
-INPUT_PIPELINE_VERSION = "semantic_public_clock_terminal_reveal_v2"
+INPUT_PIPELINE_VERSION = "semantic_public_clock_frozen_decisions_v4_furiten"
 SCHEMA_MAPPING_VERSION = "riichienv_complete_v1_from_kar_v1_2_2_v1"
 ARCHITECTURE_ID = "kar_kl_response_value_v1"
 FEATURE_CONTRACT_VERSION = "visible_rule_features_v1_2_2"
@@ -23,7 +24,7 @@ RULE_FEATURE_MASK_VERSION = "sample_mask_v1"
 TRAINING_PLAN_VERSION = "budget_ladder_v1"
 LOSS_CONTRACT_VERSION = "sentinel_safe_v1_2_1"
 MODEL_TIER_BASIS = "N_train_half_games"
-TRAIN_CONFIG_VERSION = "explicit_train_split_scale_v4_semantics"
+TRAIN_CONFIG_VERSION = "explicit_train_split_scale_v5_decision_time"
 
 
 def artifact_contract() -> dict[str, Any]:
@@ -38,6 +39,7 @@ def artifact_contract() -> dict[str, Any]:
     return {
         "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
         "input_pipeline_version": INPUT_PIPELINE_VERSION,
+        "native_replay_version": NATIVE_REPLAY_VERSION,
         "public_clock_version": PUBLIC_CLOCK_VERSION,
         "terminal_public_version": TERMINAL_PUBLIC_VERSION,
         "branch_quality_version": BRANCH_QUALITY_VERSION,

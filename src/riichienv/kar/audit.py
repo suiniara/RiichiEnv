@@ -9,9 +9,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
 
-from riichienv import Action, ActionType, convert
+from riichienv import Action, Phase, convert
 
-from .actions import legal_candidates, tile136_to_tile37
+from .actions import tile136_to_tile37
 from .completion import certify_completion, observed_raw_final_scores
 from .contracts import (
     ENGINE_COMMIT,
@@ -25,9 +25,10 @@ from .contracts import (
     matches_primary_cohort,
     model_tier,
 )
-from .decision import ReplayDecision
+from .decision import ReplayDecision, ReplayOpportunity
 from .golden import golden_coverage
 from .input_audit import InputAudit
+from .kan_transactions import COMMITTED_KAN_KINDS
 from .native_replay import NativeReplayBridge
 from .observation import ObserverLedger, PublicSnapshot, SelfPassTrigger, extract_rule_features
 from .response import draw_response, resolve_discard_response
@@ -92,23 +93,28 @@ def _clear_json_names(message: Any) -> None:
         _clear_json_names(nested)
 
 
-def _inspect_native_choice(inputs: InputAudit, observation: Any, snapshot: PublicSnapshot, selected: Action) -> None:
-    trigger = snapshot.pending_kan_actor if snapshot.pending_kan_actor is not None else snapshot.last_discard_actor
-    mapped = legal_candidates(observation, drawn_tile=snapshot.drawn_tile, source_player=trigger)
-    matching = [
-        candidate.global_id
-        for candidate in mapped
-        if len(candidate.actions) == 1 and candidate.actions[0].to_dict() == selected.to_dict()
-    ]
-    if len(matching) != 1:
-        raise ValueError("Observed native action does not have a unique complete action identity")
-    inputs.inspect(snapshot, [candidate.global_id for candidate in mapped], matching[0])
+def _require_own(own: ReplayOpportunity | None, actor: int) -> ReplayOpportunity:
+    if own is None or own.snapshot.observer_player_id != actor:
+        raise ValueError("Observed action has no matching frozen own-action opportunity")
+    return own
+
+
+def _freeze_kan_window(
+    ledgers: list[ObserverLedger], preview: dict[int, list[Action]]
+) -> dict[int, ReplayOpportunity]:
+    return {seat: ReplayOpportunity.from_kan_preview(ledgers[seat].snapshot(), actions)
+            for seat, actions in preview.items() if actions}
 
 
 def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | None = None) -> dict[str, Any]:  # noqa: PLR0915
     env = MJSOUL_RULESET.create_env(seed=0)
     ledgers = [ObserverLedger(seat, (0, 1, 2, 3)) for seat in range(4)]
-    pre_reach: dict[int, tuple[Any, Any, int | None]] = {}
+    own: ReplayOpportunity | None = None
+    declaring = False
+    responses: dict[int, ReplayOpportunity] = {}
+    # Kakan flushes earlier queued indicators before its rob window opens.
+    # A robbable ankan does not: that flush happens only after the window.
+    kakan_opening: tuple[int, dict[int, list[Action]]] | None = None
     inputs = InputAudit(on_decision)
     bridge = NativeReplayBridge(env)
     errors: list[dict[str, Any]] = []
@@ -119,9 +125,6 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
     events = list(game.events)
     applied = 0
     final_server_scores: list[int] | None = None
-    terminal_actions: dict[int, list[Action]] | None = None
-    terminal_observations: dict[int, Any] | None = None
-    terminal_snapshots: dict[int, PublicSnapshot] | None = None
     pending_discard: tuple[PublicSnapshot, int] | None = None
     next_draw_player: int | None = None
     pending_self_passes: list[SelfPassTrigger] = []
@@ -131,11 +134,13 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
         if typ in {"start_kyoku", "tsumo"}:
             pending_discard = None
         if typ == "start_kyoku":
-            terminal_actions = None
-            terminal_observations = None
-            terminal_snapshots = None
-            pre_reach.clear()
+            own, declaring, kakan_opening = None, False, None
+            responses.clear()
+        preview: dict[int, list[Action]] | None = None
+        pass_label = False
         try:
+            if declaring and typ not in {"dora", "dahai"}:
+                raise ValueError("Riichi declaration must resolve as its own discard")
             if typ == "start_kyoku":
                 next_draw_player = event["oya"]
             elif typ == "tsumo":
@@ -145,32 +150,26 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
                     raise ValueError("Draw actor does not match the public turn or replacement-draw order")
                 next_draw_player = None
             elif typ == "reach":
-                actor = event["actor"]
-                obs = env.get_observations([actor])[actor]
-                if not any(a.action_type == ActionType.RIICHI for a in obs.legal_actions()):
+                choice = _require_own(own, event["actor"])
+                if not any(action < 148 and action % 2 for action in choice.candidates):
                     raise ValueError("Observed reach is not legal before its declaration")
-                pre_reach[actor] = (obs, ledgers[actor].snapshot(), env.drawn_tile)
+                declaring = True
             elif typ == "dahai":
                 if env.needs_tsumo or env.done() or next_draw_player is not None:
                     raise ValueError("Discard before a required draw or replacement draw")
                 actor = event["actor"]
-                prior = pre_reach.pop(actor, None)
-                obs, snapshot, drawn = prior or (
-                    env.get_observations([actor])[actor],
-                    ledgers[actor].snapshot(),
-                    env.drawn_tile,
-                )
-                ledgers[actor].check_observation(obs)
-                candidates = legal_candidates(obs, drawn_tile=drawn, source_player=snapshot.last_discard_actor)
+                choice = _require_own(own, actor)
+                snapshot = choice.snapshot
                 target = (
                     4 * tile136_to_tile37(convert.mjai_to_tid(event["pai"]))
                     + 2 * int(event["tsumogiri"])
-                    + int(prior is not None)
+                    + int(declaring)
                 )
-                if target not in {candidate.global_id for candidate in candidates}:
-                    raise ValueError(f"Observed complete action {target} is absent from legal candidates")
+                if target not in choice.candidates:
+                    raise ValueError(f"Observed complete action {target} is absent from frozen legal candidates")
                 extract_rule_features(snapshot)
-                inputs.inspect(snapshot, [candidate.global_id for candidate in candidates], target)
+                inputs.inspect(snapshot, choice.candidates, target)
+                own, declaring = None, False
                 discard_count += 1
                 pending_discard = snapshot, target
                 next_draw_player = (actor + 1) % 4
@@ -181,96 +180,95 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
                     validate_response_target(allowed, resolution.response_target)
                     categories.add(resolution.response_target)
                     full_windows += 1
+                    pass_label = resolution.response_target == 0
                 else:
                     errors.append({"event_id": index, "reason": resolution.error})
             elif typ == "hora":
-                if terminal_actions is None:
-                    terminal_observations = env.get_observations(list(range(4)))
-                    terminal_actions = bridge.kan_responses
-                    if terminal_actions is None:
-                        terminal_actions = {seat: obs.legal_actions() for seat, obs in terminal_observations.items()}
-                    terminal_snapshots = {seat: ledger.snapshot() for seat, ledger in enumerate(ledgers)}
                 actor = event["actor"]
-                kind = ActionType.TSUMO if actor == event["target"] else ActionType.RON
-                legal = [action for action in terminal_actions[actor] if action.action_type == kind]
-                if not legal:
+                choice = own if actor == event["target"] else responses.get(actor)
+                if choice is None or choice.snapshot.observer_player_id != actor:
                     raise ValueError("Observed win is absent from the pre-resolution native legal actions")
-                if "pai" in event and not any(
-                    action.tile is not None
-                    and convert.tid_to_mjai(action.tile) == convert.tid_to_mjai(convert.mjai_to_tid(event["pai"]))
-                    for action in legal
-                ):
-                    raise ValueError("Winning tile disagrees with the native legal win")
-                assert terminal_observations is not None and terminal_snapshots is not None
-                if terminal_snapshots[actor].pending_kan_actor is not None:
-                    snapshot = terminal_snapshots[actor]
-                    source = snapshot.pending_kan_actor
-                    assert source is not None
-                    ron_id = 542 + (source - actor) % 4
-                    candidate_ids = [
-                        ron_id if action.action_type == ActionType.RON else 221 for action in terminal_actions[actor]
-                    ]
-                    inputs.inspect(snapshot, candidate_ids, ron_id)
-                else:
-                    _inspect_native_choice(inputs, terminal_observations[actor], terminal_snapshots[actor], legal[0])
+                inputs.inspect(choice.snapshot, choice.candidates, choice.win_target(event))
+                own = None  # Keep responders frozen for other winners in this same window.
             elif typ == "ryukyoku":
                 reason = event.get("reason")
                 if reason in {"kyushukyuhai", "kyushu_kyuhai"}:
-                    obs = env.get_observations([env.current_player])[env.current_player]
-                    legal_abort = [
-                        action for action in obs.legal_actions() if action.action_type == ActionType.KYUSHU_KYUHAI
-                    ]
-                    if not legal_abort:
-                        raise ValueError("Nine-terminals abort is not legal in the current native state")
-                    _inspect_native_choice(inputs, obs, ledgers[env.current_player].snapshot(), legal_abort[0])
+                    choice = _require_own(own, env.current_player)
+                    if 220 not in choice.candidates:
+                        raise ValueError("Nine-terminals abort is not legal in the frozen native state")
+                    inputs.inspect(choice.snapshot, choice.candidates, 220)
                 else:
                     response = draw_response(reason)
                     if response is None or pending_discard is None:
                         raise ValueError("Draw termination has no matching public discard window")
                     snapshot, target = pending_discard
                     validate_response_target(public_rule_response_mask(snapshot, target), int(response))
+                own = None
             elif typ in {"chi", "pon", "daiminkan", "kan", "ankan", "kakan"}:
                 actor = event["actor"]
-                obs = env.get_observations([actor])[actor]
-                selected = obs.select_action_from_mjai(event)
-                if selected is None:
-                    raise ValueError(f"Observed {typ} has no matching native legal action")
-                _inspect_native_choice(inputs, obs, ledgers[actor].snapshot(), selected)
                 if typ in {"ankan", "kakan"}:
-                    bridge.preview_kan(actor, selected)
+                    choice = _require_own(own, actor)
+                else:
+                    responder = responses.get(actor)
+                    if responder is None or responder.snapshot.decision_phase != "discard_response":
+                        raise ValueError(f"Observed {typ} has no matching frozen native legal action")
+                    choice = responder
+                target, selected = choice.select(event)
+                inputs.inspect(choice.snapshot, choice.candidates, target)
+                own = None
+                if typ in {"ankan", "kakan"}:
+                    preview = bridge.preview_kan(actor, selected)
                 next_draw_player = actor if typ in {"daiminkan", "kan", "ankan", "kakan"} else None
+
+            # Always apply public results in source order to the current state.
+            # In particular, neither a dora reveal nor a deposit refreshes an
+            # already-open decision opportunity.
             bridge.prepare(event, [ledger.snapshot() for ledger in ledgers])
             env.apply_event(event)
             bridge.after_apply(event)
             for ledger in ledgers:
                 ledger.apply_event(event)
             if typ == "tsumo":
-                # The next draw is now observed, not a future fact. Current Pass
-                # examples were frozen at the discard; only later history changes.
                 for trigger in pending_self_passes:
                     ledgers[trigger.observer_player_id].record_self_pass(
                         trigger, provenance="inferred_unique_next_draw_pass"
                     )
                 pending_self_passes.clear()
-            if typ == "dahai":
-                resolved = resolve_discard_response(events, index)
-                if resolved.response_observed and resolved.response_target == 0:
-                    responder_ids = [seat for seat in range(4) if seat != event["actor"]]
-                    observations = env.get_observations(responder_ids)
-                    # Native observations originate in a hash map. Stable seat
-                    # order is part of deterministic sample/export identity, not
-                    # a change to any observer's visible input or Pass evidence.
-                    for seat in responder_ids:
-                        observation = observations[seat]
-                        mapped = legal_candidates(observation, source_player=event["actor"])
-                        complete_ids = [candidate.global_id for candidate in mapped]
-                        if 221 in complete_ids and len(complete_ids) > 1:
-                            # Future resolution is a supervision label only. Do
-                            # not materialize SELF_PASS before its actual draw.
-                            inputs.inspect(
-                                ledgers[seat].snapshot(), complete_ids, 221, provenance="inferred_unique_next_draw_pass"
-                            )
+                responses.clear()
+                kakan_opening = None
+            if typ in {"tsumo", "chi", "pon"}:
+                actor = event["actor"]
+                responses.clear()
+                observation = env.get_observations([actor])[actor]
+                own = ReplayOpportunity.observe(ledgers[actor], observation)
+            elif typ == "dahai":
+                seats = sorted(env.active_players) if env.phase == Phase.WaitResponse else []
+                observations = env.get_observations(seats) if seats else {}
+                responses = {seat: ReplayOpportunity.observe(ledgers[seat], observations[seat]) for seat in seats}
+                if pass_label:
+                    for seat, choice in responses.items():
+                        if 221 in choice.candidates and len(choice.candidates) > 1:
+                            # The later draw is only the label; its private marker
+                            # is materialized when that draw is actually processed.
+                            inputs.inspect(choice.snapshot, choice.candidates, 221,
+                                           provenance="inferred_unique_next_draw_pass")
                             pending_self_passes.append(ledgers[seat].pass_trigger())
+            elif preview is not None:
+                responses.clear()
+                view = ledgers[event["actor"]].snapshot()
+                committed = sum(meld.kind in COMMITTED_KAN_KINDS for player in view.melds for meld in player)
+                earlier_dora = committed + 1 - len(view.dora_indicators) if typ == "kakan" else 0
+                if earlier_dora > 0:
+                    kakan_opening = earlier_dora, preview
+                else:
+                    responses = _freeze_kan_window(ledgers, preview)
+            elif typ == "dora" and kakan_opening is not None:
+                remaining, offers = kakan_opening
+                if remaining == 1:
+                    responses = _freeze_kan_window(ledgers, offers)
+                    kakan_opening = None
+                else:
+                    kakan_opening = remaining - 1, offers
             applied += 1
             if typ in {"hora", "ryukyoku"} and "scores" in event:
                 final_server_scores = list(event["scores"])
