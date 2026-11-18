@@ -6,6 +6,8 @@ torch = pytest.importorskip("torch")
 
 from riichienv.kar.calibration import (
     CalibrationArtifact,
+    CalibrationRow,
+    calibrate_static_rows,
     calibrated_policy_identity,
     calibration_split,
     choose_validation_tau,
@@ -45,24 +47,19 @@ def policy_fixture():
         BranchQualityPolicy(tuple(BranchQualityCriterion(head, 0, 5.0, 1.0, 0.5, 1)
                                   for head in ("response", "rank")), "synthetic branch preregistration"),
     )
-    metrics = {key: {"count": 2, "nll": 1.0, "brier": 0.2, "ece": 0.1} for key in ("action", "response", "rank")}
-    metrics.update(gate_multi_discard_count=2, gate_retention=1.0)
-    metrics["branch_metrics"] = {head: {"0": {**metrics[head], "independent_games": 2}}
-                                 for head in ("response", "rank")}
-    artifact = CalibrationArtifact(
-        binding,
-        support.digest,
-        split,
-        (1.0, 1.0, 1.0),
-        -10.0,
-        "d" * 64,
-        "e" * 64,
-        metrics,
-        metrics,
-        "synthetic production-shaped unit fixture,not actual model calibration",
-        False,
-        quality,
-        "cpu",
+    def row(game):
+        return CalibrationRow(
+            game, game + "/decision", (4, 8), (0.0,) * 546, 4,
+            response_logits=(8.0,) + (0.0,) * 20, response_allowed=(True,) * 21,
+            rank_logits=((8.0, 0.0, 0.0, 0.0),) * 21,
+            response_target=0, response_valid=True, rank_target=0, value_valid=True,
+        )
+
+    artifact = calibrate_static_rows(
+        [row(split.fit_games[0])], [row(split.check_games[0])],
+        split=split, binding=binding, support=support, temperatures=(1.0,),
+        source_reference="synthetic production-shaped logits,not actual model calibration",
+        quality_policy=quality, inference_device_type="cpu",
     )
     identity = calibrated_policy_identity(binding, support, artifact)
     outcomes = {float("inf"): {game: 0.0 for game in split.fit_games}, 0.5: {game: 0.5 for game in split.fit_games}}

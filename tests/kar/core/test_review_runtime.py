@@ -43,6 +43,7 @@ def test_independent_calibration_report_has_reliability_branches_clusters_and_ma
     assert details["heads"]["response"]["class_brier"][0] is not None
     assert len(details["rank_by_response"]) == 21 and details["rank_by_response"]["0"]["count"] == 2
     assert "game_clustered_intervals" in details and "utility_calibration" in details
-    assert sum(details["unsupported_mass_histogram"]["counts"]) == 2
+    assert details["unsupported_mass_histogram"]["status"] == "unavailable"
+    assert sum(details["train_only_unsupported_mass_histogram"]["counts"]) == 2
     assert report["gate_by_current_rank"]["3"]["count"] == 1
     assert "support_masses" not in report

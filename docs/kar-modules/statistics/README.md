@@ -1,5 +1,5 @@
 <!-- kar-module: riichienv.kar.statistics -->
-<!-- api: percentile, GameClusters, ReliabilityBins, LatencyDistribution, ClassificationMetrics, FullDiagnostics -->
+<!-- api: percentile, GameClusters, ReliabilityBins, LatencyDistribution, ClassificationMetrics, ResponseMassHistogram, FullDiagnostics -->
 # statistics — 自然频率指标、聚类区间与分布
 
 源码：[statistics.py](../../../src/riichienv/kar/statistics.py) · [总索引](../README.md)
@@ -23,10 +23,10 @@ rank 诊断使用实际观察到的响应分支；预测分支概率、真实名
 
 ## 分布与合并
 
-`FullDiagnostics.add_gate` 记录 M 的 0.01 分桶、0..32 完整支持数及切片，不只保存均值；unsupported mass 在公开 mask/softmax 后加入。`state_dict/merge` 供 DDP 聚合，不能平均各 rank 的均值代替总量合并。
+`FullDiagnostics.add_gate` 记录 M 的 0.01 分桶、0..32 完整支持数及切片，不只保存均值。`ResponseMassHistogram` 在公开 mask/softmax 后统计，保留 support basis、具体支持位、状态、观测数和 101 个桶。有效 `unsupported_mass_histogram` 与 `train_only_unsupported_mass_histogram` 独立；无证据/观测时为 `unavailable`。`state_dict/merge` 供 DDP 聚合，拒绝旧格式或不同支持位的同口径统计，不能平均各 rank 的均值代替总量合并。
 
 延迟的 p50/p95 报告明确的直方图区间，不是精确点分位数；单局精确列表分位数与可合并区间不能混叫同一种统计。
 
 ## 接线与状态
 
-由 `learning/evaluation`、`calibration_metrics` 和 `learning/simulation` 消费；无 Torch、文件读取或独立 CLI。对应 [production/test_statistics.py](../../../tests/kar/production/test_statistics.py)、[test_diagnostic_distributions.py](../../../tests/kar/production/test_diagnostic_distributions.py)。本轮未计算 bootstrap、执行诊断或测试。
+由 `learning/evaluation`、`calibration_metrics` 和 `learning/simulation` 消费；无 Torch、文件读取或独立 CLI。对应 [production/test_statistics.py](../../../tests/kar/production/test_statistics.py)、[test_diagnostic_distributions.py](../../../tests/kar/production/test_diagnostic_distributions.py)。本轮未做真实模型校准；合成诊断与聚合回归的实际结果见[验收报告](../../kar-pass-rho-math-repair.md)。

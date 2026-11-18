@@ -109,6 +109,13 @@ def support_from_train_games(
     return EventSupport(digest, tuple(counts), source_reference)
 
 
+def unsupported_response_mass(probabilities: Sequence[float], supported: Sequence[bool]) -> float:
+    """Sum already-masked response probabilities outside the supplied support set."""
+    if len(probabilities) != 21 or len(supported) != 21:
+        raise ValueError("Unsupported mass requires twenty-one response branches")
+    return math.fsum(probability for probability, covered in zip(probabilities, supported) if not covered)
+
+
 @dataclass(frozen=True)
 class CandidateValue:
     action_id: int
@@ -153,6 +160,6 @@ def candidate_value(
         probability * (utility if supported else -1.5)
         for probability, utility, supported in zip(probabilities, conditional, covered)
     )
-    unsupported = math.fsum(probability for probability, supported in zip(probabilities, covered) if not supported)
+    unsupported = unsupported_response_mass(probabilities, covered)
     return CandidateValue(action_id, probabilities, conditional, marginal, conservative, unsupported,
                           tuple(allowed), support.supported, states, covered)

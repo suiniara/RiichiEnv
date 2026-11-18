@@ -25,7 +25,7 @@
 
 ## 身份、使用与产物
 
-`CalibrationArtifact` 保存绑定、support hash、split、温度、log 阈值、行摘要、深冻结诊断、质量政策和原始后端。加载必须检查完整记录派生字段。diagnostic fixture 不可冒充生产。
+`CalibrationArtifact` 保存绑定、support hash、split、温度、log 阈值、行摘要、深冻结诊断、质量政策和原始后端。版本为 `heldout_temperatures_log_gate_v5_value_mass`。先计算基础指标、按 cal_check 预登记标准确定分支质量，再用同一冻结有效支持集对 fit/check 的 response_valid 行统计有效未支持质量；只读 logit archive 逐行再读，不在内存存整批概率。两份 train-only 分布各自独立于最终价值分布。加载校验统计版本、桶、有效观测数和实际支持位，不对旧报告补标签。diagnostic fixture 不可冒充生产。
 
 这里的温度选择对调用方已经提供的静态数组工作，不创建网络或优化器；真实 logits 收集由 [learning/calibration_job](../learning/calibration_job/README.md)执行。生产有限 tau 还需 [selection_quality](../selection_quality/README.md)的登记收益政策；实际对局由 `validation_policy` 运行。
 

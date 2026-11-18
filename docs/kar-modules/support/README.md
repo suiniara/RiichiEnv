@@ -1,5 +1,5 @@
 <!-- kar-module: riichienv.kar.support -->
-<!-- api: EventSupport, support_from_train_games, CandidateValue, candidate_value -->
+<!-- api: EventSupport, support_from_train_games, unsupported_response_mass, CandidateValue, candidate_value -->
 # support — 独立 train 支持与保守候选价值
 
 源码：[support.py](../../../src/riichienv/kar/support.py) · [总索引](../README.md)
@@ -8,7 +8,7 @@
 
 `EventSupport` 保存实际训练 manifest 身份、21 类独立 train game 数及来源；支持 `to_record/from_record` 和绑定校验。`support_from_train_games(train_manifest, observed_events, source_reference=...)` 由明确 train 游戏与观察事件构建证据。
 
-`candidate_value(action_id, response_logits, rank_logits, ...)` 在公开 allowed mask、T_E/T_R 和支持 manifest 下计算 `CandidateValue`，返回响应概率、各分支效用、名义/保守价值及 unsupported mass。
+`candidate_value(action_id, response_logits, rank_logits, ...)` 在公开 allowed mask、T_E/T_R 和支持 manifest 下计算 `CandidateValue`，返回响应概率、各分支效用、名义/保守价值及 unsupported mass。`unsupported_response_mass(probabilities, supported)` 由 calibration、evaluation 和 runtime 共用，只累加已经 mask/归一化的概率，不改变它们。
 
 ## 冻结公式与边界
 

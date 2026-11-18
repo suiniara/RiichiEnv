@@ -12,10 +12,19 @@ from .calibration_quality import CalibrationQualityPolicy, evaluate_branch_quali
 from .calibration_roles import CALIBRATION_SPLIT_SALT, calibration_is_fit
 from .contracts import canonical_bytes, content_hash, game_split
 from .policy import fixed_tau_grid, support_discards
-from .probability import complete_candidates, finite_vector, legal_prior, masked_log_softmax
+from .probability import complete_candidates, finite_vector, legal_prior, masked_log_softmax, masked_softmax
 from .runtime_contracts import CALIBRATION_VERSION, RuntimeBinding, runtime_contract, sha256_value
 from .selection_quality import TAU_SELECTION_VERSION, TauSelectionPolicy, paired_tau_evidence
-from .statistics import ClassificationMetrics, FullDiagnostics
+from .statistics import (
+    STATISTICS_VERSION,
+    TRAIN_ONLY_MASS_BASIS,
+    TRAIN_ONLY_MASS_FIELD,
+    VALUE_MASS_BASIS,
+    VALUE_MASS_FIELD,
+    ClassificationMetrics,
+    FullDiagnostics,
+    ResponseMassHistogram,
+)
 from .support import EventSupport
 from .versioning import validate_artifact_contract
 
@@ -322,7 +331,9 @@ def calibration_metrics(
     bootstrap_seed: int = 17,
     bootstrap_replicates: int = 2000,
 ) -> dict[str, Any]:
+    """Base quality metrics; without frozen cal_check evidence, mass is train-only."""
     diagnostics = FullDiagnostics()
+    train_supported = support.supported if support is not None else None
     branch_metrics = {head: {str(event): ClassificationMetrics(classes) for event in range(21)}
                       for head, classes in (("response", 21), ("rank", 4))}
     branch_games: dict[str, dict[str, set[str]]] = {
@@ -354,10 +365,8 @@ def calibration_metrics(
             if head in branch_metrics:
                 branch_metrics[head][str(row.response_target)].add(probabilities, target, log_probability=logs[target])
                 branch_games[head][str(row.response_target)].add(row.game_id)
-            if head == "response" and support is not None:
-                diagnostics.add_unsupported(
-                    math.fsum(value for value, covered in zip(probabilities, support.supported) if not covered)
-                )
+            if head == "response" and train_supported is not None:
+                diagnostics.add_response_mass(probabilities, train_supported=train_supported)
         if row.response_valid:
             events[str(row.response_target)] += 1
         if row.action_valid and row.action_target < 148 and sum(action < 148 for action in row.candidates) >= 2:
@@ -408,6 +417,25 @@ def calibration_metrics(
     return report
 
 
+def _value_branch_statuses(branch_quality_report: Mapping[str, Any]) -> tuple[str, ...]:
+    branches = branch_quality_report["branches"]
+    return tuple(branches[str(event)]["status"] for event in range(21))
+
+
+def _value_mass_histogram(
+    rows: Sequence[CalibrationRow], response_temperature: float, supported: tuple[bool, ...]
+) -> dict[str, Any]:
+    # Stream the readonly logit archive again after quality is fixed. No logits
+    # or per-row probabilities are buffered, and this pass cannot affect fitting.
+    histogram = ResponseMassHistogram(VALUE_MASS_BASIS)
+    for row in rows:
+        if row.response_valid:
+            assert row.response_logits is not None and row.response_allowed is not None
+            probabilities = masked_softmax(row.response_logits, row.response_allowed, response_temperature)
+            histogram.add(probabilities, supported)
+    return histogram.report()
+
+
 @dataclass(frozen=True)
 class CalibrationArtifact:
     binding: RuntimeBinding
@@ -447,8 +475,7 @@ class CalibrationArtifact:
 
     @property
     def value_branch_statuses(self) -> tuple[str, ...]:
-        branches = self.branch_quality_report["branches"]
-        return tuple(branches[str(event)]["status"] for event in range(21))
+        return _value_branch_statuses(self.branch_quality_report)
 
     @property
     def digest(self) -> str:
@@ -488,6 +515,28 @@ class CalibrationArtifact:
         document = json.loads(json.dumps(document, allow_nan=False))
         return {**document, "calibration_sha256": content_hash(document)}
 
+    def _validate_response_mass(self, support: EventSupport) -> None:
+        expected = (
+            (VALUE_MASS_FIELD, VALUE_MASS_BASIS, support.value_supported(self.value_branch_statuses)),
+            (TRAIN_ONLY_MASS_FIELD, TRAIN_ONLY_MASS_BASIS, support.supported),
+        )
+        for metrics in (self.fit_metrics, self.check_metrics):
+            details = metrics.get("diagnostics")
+            if not isinstance(details, Mapping) or details.get("statistics_version") != STATISTICS_VERSION:
+                raise ValueError("Calibration response mass statistics version differs")
+            response_count = metrics.get("response", {}).get("count")
+            if type(response_count) is not int or response_count < 0:
+                raise ValueError("Calibration response mass requires a valid response observation count")
+            for field, basis, covered in expected:
+                histogram = ResponseMassHistogram(basis)
+                try:
+                    histogram.merge(details.get(field, {}))
+                except ValueError as error:
+                    raise ValueError(f"Calibration response mass histogram differs: {field}") from error
+                if (sum(histogram.counts) != response_count
+                        or histogram.event_supported != (covered if response_count else None)):
+                    raise ValueError(f"Calibration response mass does not match its observations or support: {field}")
+
     def validate(self, binding: RuntimeBinding, support: EventSupport, *, allow_diagnostic: bool = False) -> None:
         self.split.validate()
         if not self.diagnostic_fixture and (
@@ -508,6 +557,7 @@ class CalibrationArtifact:
             masked_log_softmax((0.0,), (True,), value)
         if self.log_threshold is not None and (not math.isfinite(self.log_threshold) or self.log_threshold > 0):
             raise ValueError("Invalid authoritative log gate threshold")
+        self._validate_response_mass(support)
 
     @classmethod
     def from_record(
@@ -647,6 +697,15 @@ def calibrate_static_rows(
         select_static_temperature(fit_rows, "rank", temperatures)[0],
     )
     threshold, _ = gate_log_threshold(fit_rows, fitted[0])
+    fit_metrics = calibration_metrics(fit_rows, fitted, threshold, support=support)
+    check_metrics = calibration_metrics(check_rows, fitted, threshold, support=support)
+    branch_policy = None if quality_policy is None else quality_policy.branch_policy
+    branch_report = evaluate_branch_quality(check_metrics, branch_policy)
+    covered = support.value_supported(_value_branch_statuses(branch_report))
+    # Both partitions describe this same frozen policy. The cal_fit histogram
+    # is descriptive only: neither histogram feeds any fit or quality decision.
+    for rows, metrics in ((fit_rows, fit_metrics), (check_rows, check_metrics)):
+        metrics["diagnostics"][VALUE_MASS_FIELD] = _value_mass_histogram(rows, fitted[1], covered)
     result = CalibrationArtifact(
         binding,
         support.digest,
@@ -655,8 +714,8 @@ def calibrate_static_rows(
         threshold,
         calibration_rows_sha256(fit_rows),
         calibration_rows_sha256(check_rows),
-        calibration_metrics(fit_rows, fitted, threshold, support=support),
-        calibration_metrics(check_rows, fitted, threshold, support=support),
+        fit_metrics,
+        check_metrics,
         source_reference,
         diagnostic_fixture,
         quality_policy,

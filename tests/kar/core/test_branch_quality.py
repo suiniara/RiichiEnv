@@ -54,9 +54,14 @@ def artifact_fixture(binding, support, public_view, *, bad=True, minimum_games=1
 def test_overall_pass_does_not_authorize_unregistered_branch_quality(
     calibration_fixture, fixed_predictor, event_support, public_view
 ):
-    artifact, _, _ = calibration_fixture
+    original, fit, check = calibration_fixture
+    assert original.quality_report["status"] == "passed"
+    artifact = calibrate_static_rows(
+        fit, check, split=original.split, binding=original.binding, support=event_support,
+        temperatures=original.temperatures[:1], source_reference="synthetic, no branch preregistration",
+        diagnostic_fixture=True, quality_policy=replace(original.quality_policy, branch_policy=None),
+    )
     assert artifact.quality_report["status"] == "passed"
-    artifact = replace(artifact, quality_policy=replace(artifact.quality_policy, branch_policy=None))
     view, ids = public_view
     result = RuntimePolicy(fixed_predictor, options=PolicyOptions("empirical_only", 0.5),
                            support=event_support, calibration=artifact,

@@ -14,7 +14,8 @@ from .settlement import _meld
 if TYPE_CHECKING:
     from .actions import MappedAction
 
-LIVE_EVENT_VERSION = "native_public_resolution_projection_v4_semantic_clock"
+LIVE_EVENT_VERSION = "native_public_resolution_projection_v5_pass_receipts"
+_NATIVE_PASS_PROVENANCE = "native_committed_pass"
 _DRAW_ALIASES = {
     "exhaustive_draw": "exhaustive_draw",
     "nagashimangan": "nagashi_mangan",
@@ -54,7 +55,7 @@ class LiveEventProjection:
         self._delayed_ankan: tuple[Any, ...] | None = None
         self._pending_horas: list[dict[str, Any]] = []
         self._pending_hora_record: int | None = None
-        self._pending_pass_receipts: list[SelfPassTrigger] = []
+        self._pending_pass_receipts: dict[SelfPassTrigger, None] = {}
 
     def _next_record(self) -> int:
         value = self._record_serial
@@ -201,11 +202,15 @@ class LiveEventProjection:
     ) -> None:
         if any(event.get("type") == "self_pass" for event in raw_events):
             raise ValueError("Observer-private Pass cannot enter the native public stream")
-        if any(not isinstance(trigger, SelfPassTrigger) or not 0 <= trigger.observer_player_id < 4
-               for trigger in confirmed_self_passes):
-            raise ValueError("Invalid confirmed private Pass receipt")
         if self.ended and (raw_events or declared_ankan is not None):
             raise ValueError("Events after completed match")
+        # A receipt must come from a trigger already observed at submission.
+        # Reject new invalid receipts before consuming events or queuing any.
+        for trigger in confirmed_self_passes:
+            if (not isinstance(trigger, SelfPassTrigger) or type(trigger.observer_player_id) is not int
+                    or not 0 <= trigger.observer_player_id < 4):
+                raise ValueError("Invalid confirmed private Pass receipt")
+            self.ledgers[trigger.observer_player_id].self_pass_ready(trigger, provenance=_NATIVE_PASS_PROVENANCE)
         if declared_ankan is not None:
             key = self._ankan_key(declared_ankan)
             matching = any(event.get("type") == "ankan" and self._ankan_key(event) == key for event in raw_events)
@@ -271,10 +276,13 @@ class LiveEventProjection:
             self._append(raw, record)
             index += 1
         self.raw_cursor += len(raw_events)
-        # Public events are fully validated first. Markers are inserted at their
-        # observed closing anchor, before any later round in the same native batch.
-        self._pending_pass_receipts.extend(confirmed_self_passes)
-        if not self._pending_horas:
-            receipts, self._pending_pass_receipts = self._pending_pass_receipts, []
-            for trigger in receipts:
-                self.ledgers[trigger.observer_player_id].record_self_pass(trigger, provenance="native_committed_pass")
+        # Public events are fully validated first. Markers can be inserted at an
+        # earlier observed anchor, even if this callback has an incomplete win
+        # group for a later window. An open window keeps its receipt across calls.
+        self._pending_pass_receipts.update(dict.fromkeys(confirmed_self_passes))
+        for trigger in tuple(self._pending_pass_receipts):
+            ledger = self.ledgers[trigger.observer_player_id]
+            if ledger.self_pass_ready(trigger, provenance=_NATIVE_PASS_PROVENANCE):
+                ledger.record_self_pass(trigger, provenance=_NATIVE_PASS_PROVENANCE)
+                # Both newly inserted and already-recorded receipts are complete.
+                del self._pending_pass_receipts[trigger]

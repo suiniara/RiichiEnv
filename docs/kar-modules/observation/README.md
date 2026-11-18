@@ -8,7 +8,7 @@
 
 `ObserverLedger(observer, initial_order)` 重建本家白名单状态；`apply_event/snapshot/check_observation` 推进事实、冻结副本并核对原生本家手牌。`PublicMeld` 表示已成立 meld，`PublicSnapshot` 不包含他家暗手。`project_observer` 只处理指定公共 cutoff；`extract_rule_features` 保留不同完整性依赖。
 
-`pass_trigger()` 返回本家的不可变 `SelfPassTrigger`，只是上下文，不能当作提交成功。`record_self_pass(trigger, provenance=...)` 只记录已知且已关闭窗口的确认 Pass；同一 trigger 重复 no-op。`apply_event(type=self_pass)` 同样要求 owner/source/confirmed/provenance/确认时间匹配，验证失败不推进状态。
+`pass_trigger()` 返回本家的不可变 `SelfPassTrigger`，不是提交成功。`self_pass_ready(trigger, provenance=...)` 区分有合法关闭锚与仍开放等待；非法 owner/trigger/provenance 或已失去关闭锚时报错。`record_self_pass` 仍需真实已关闭且已确认的窗口，同一 trigger 重复 no-op。`apply_event(type=self_pass)` 同样校验 owner/source/confirmed/provenance/确认时间，失败不推进状态。
 
 ## 私有历史与公共域
 

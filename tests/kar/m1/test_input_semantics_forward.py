@@ -31,7 +31,10 @@ def test_source_aligned_inputs_have_identical_small_fp32_readouts(scenario, reco
         actor = 3
         ids = tuple(item.global_id for item in legal_candidates(env.get_observation(actor), drawn_tile=env.drawn_tile))
         action = chosen.global_id
+        # This comparison changes source envelopes, not the midgame decoder.
         offline = [{**event, "source_record_index": 0, "source_record_sha256": "f" * 64} for event in live.events]
+    record_property("comparison_source", "RecordNewRound normalization vs native" if scenario == "opening"
+                    else "native midgame vs same live events with different source metadata")
     owner = ObserverLedger(actor, (0, 1, 2, 3))
     for event in offline:
         owner.apply_event(event)

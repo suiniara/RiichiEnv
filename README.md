@@ -18,7 +18,7 @@
 
 ## KAR 主设计与实现
 
-本分支 KAR 的唯一活动主设计是 [docs/KAR-v1.2.2-DESIGN.md](docs/KAR-v1.2.2-DESIGN.md)：RiichiEnv 宿主、规范公共时钟、N_train 选型及逐分支质量回退已合入正文。接口见 [74 个模块 README](docs/kar-modules/README.md)，实际执行与未验证范围见 [本轮修复报告](docs/kar-semantic-branch-repair.md)。设计、代码和历史 PASS 均不授予训练/评测许可。
+本分支 KAR 的唯一活动主设计是 [docs/KAR-v1.2.2-DESIGN.md](docs/KAR-v1.2.2-DESIGN.md)：RiichiEnv 宿主、规范公共时钟、N_train 选型及逐分支质量回退已合入正文。接口见 [74 个模块 README](docs/kar-modules/README.md)，实际执行与未验证范围见 [本轮修复报告](docs/kar-pass-rho-math-repair.md)。设计、代码和历史 PASS 均不授予训练/评测许可。
 
 ## ✨ Features
 

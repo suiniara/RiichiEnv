@@ -1,12 +1,12 @@
 # KAR-v1.2.2：RiichiEnv 宿主完整主设计
 
-**宿主修订：** V4，2026-11-18。本文是本仓库唯一活动主设计，完整取代附件中的旧实施正文；不是一组需要实施者自行取舍的补丁。
+**宿主修订：** V4，2026-11-18（分批 Pass、质量支持统计与误差界修订）。本文是本仓库唯一活动主设计，完整取代附件中的旧实施正文。
 
 **目标仓库：** `suiniara/RiichiEnv`；宿主、重放、原生合法动作及运行时均为 RiichiEnv。Kanachan 仅为 546 动作与 tile37 编号的来源参考，不是目标工程或运行依赖。
 
-**来源基线：** 用户的 `KAR-v1.2.2-DESIGN(2).md` 与已核对的同字节 `KAR-v1.2.2-DESIGN.md`，SHA-256 为 `4349039c44175ece77f6dddad3a2106fbd3e0e0339935122df242175c83cbdba`。RiichiEnv 上游参考提交为 `0ee1236a283b15508f3ac28407027f340b81e1de`；本次实现审查基线为 `9a4d1549719d36987309f9752aa4c3362914b757`。
+**来源基线：** 原始附件 `KAR-v1.2.2-DESIGN(2).md` 的 SHA-256 为 `4349039c44175ece77f6dddad3a2106fbd3e0e0339935122df242175c83cbdba`。RiichiEnv 上游参考提交为 `0ee1236a283b15508f3ac28407027f340b81e1de`；本轮从 `c095084b07e5eb8d43c0de79a2af1b53bd6d130f` 的仓库主设计继续修订。
 
-**状态：** 本文是规范合同。实现入口见第 21 节；是否实际通过以[当前修复与验收报告](kar-semantic-branch-repair.md)为准。代码存在、历史测试通过、M0 数据资格、预算就绪与用户授权互不替代。本文不授予训练、校准、GPU 或对局评测许可。
+**状态：** 本文是规范合同。实现入口见第 21 节；是否实际通过以[当前修复与验收报告](kar-pass-rho-math-repair.md)为准。代码存在、历史测试通过、M0 数据资格、预算就绪与用户授权互不替代。本文不授予训练、校准、GPU 或对局评测许可。
 
 ## 0. 冻结结论与活动版本
 
@@ -29,7 +29,9 @@
 | response mask | `public_rule_response_mask_v3_abort_last_draw`，包含已有雀魂流局满贯修正 |
 | calibration quality / branch quality | `preregistered_calibration_quality_v2_branches` / `preregistered_response_branch_quality_v1` |
 | event support | `train_independent_games_v2_branch_quality` |
-| calibration | `heldout_temperatures_log_gate_v4_branches` |
+| calibration | `heldout_temperatures_log_gate_v5_value_mass` |
+| diagnostics report / merge state | `whole_game_cluster_statistics_v3_value_mass` |
+| live projection | `native_public_resolution_projection_v5_pass_receipts` |
 | runtime policy | `restricted_kl_runtime_v2_branch_quality`，KL 数学不变 |
 | training configuration | `explicit_train_split_scale_v4_semantics` |
 | training plan / loss / decision bound | `budget_ladder_v1` / `sentinel_safe_v1_2_1` / `one_sided_v1_2_1` |
@@ -233,7 +235,9 @@ P0 是舍牌者，P1/P2/P3 为下/对/上家，RON bit=1/2/4。响应是最终�
 
 capture trigger 只是上下文，不是成功证据。失败/取消/未知意图、被更高优先级鸣牌覆盖的未成立选择都不能补造成 Pass；不读取 GameAction.user_input。
 
-marker 锚定公共关闭事件之后、复用该事件位置，不增加公共 event ID 或时钟，不改其他观察者。杠响应的私有确认以公开 replacement draw 关闭为规范锚，不由重复 transport acknowledgement 决定；普通舍牌以实际关闭事件为锚。旧 snapshot/prefix 冻结不回写。source/provenance 是审计元数据，不作为 E/R 或未来信息输入。
+marker 锚定公共关闭事件之后、复用该事件位置，不增加公共 event ID 或时钟，不改其他观察者。未被抢的杠用实际公开 replacement draw 关闭私有窗口，transport ACK 和 Dora 均不可代替它；已成立抢杠由公开和牌裁定关闭。普通舍牌以实际关闭事件为锚。旧 snapshot/prefix 冻结不回写。source/provenance 是审计元数据，不作为 E/R 或未来信息输入。
+
+成功提交的 receipt 可以随第一段事件或单独在空回调到达。投影按该 receipt 所属 ledger 的合法关闭锚逐条消费：已知且仍开放则保留，已写入或此前已幂等处理才移除。未知/错误 owner、触发、来源以及已经失去合法关闭锚的窗口必须报合同错误，不当作等待；一条记录失败不能清空其他有效待办。整批与合法分批在相同最终 cutoff 的历史、positions 和完整前缀应逐字节一致。
 
 ## 6. 规范化公共事件时钟与 Attention
 
@@ -335,26 +339,36 @@ Response train temperature=1；校准后推理使用 TE，但 allowed mask 同�
 
 ## 10. 冻结概率、价值与受限 KL 数学
 
-### 10.1 分解与预测误差
+### 10.1 名义价值：需要全允许事件的误差界
 
 链式法则 `P(A,E,R|X)=P(A|X)P(E|X,A)P(R|X,A,E)` 与全期望成立，不证明有限模型最优或因果识别。
 
-定义 `δE=TV(p̂,pμ)`；支持分支条件价值误差由 εm 控制；效用跨度3，则名义价值误差 ≤ εm+3δE。所有概率均针对同一公开 allowed 集合，真实有效标签落入被 mask 类别会证伪掩码正确性假设。
+固定 $(x,a)$，令 $A_{\mathrm{pub}}=\{e:M^{pub}_e=1\}$，$\delta_E=\mathrm{TV}(\hat p,p^\mu)$。公开规则不可能的事件在两个分布中都为零；真实有效标签被 mask 会证伪这个假设。对 $p^\mu_e=0$ 的允许事件，可取一个固定的区间内条件效用扩展；这不改 $Q^\mu$，但若 $\hat p_e>0$，它仍属于名义误差控制的范围。
 
-### 10.2 悲观支持与单侧误差
+第 3 节的名义 $\widehat Q$ 对所有允许事件求和。若所有这些事件的条件价值误差都由 $\varepsilon_{m,\mathrm{all}}$ 控制（特别是每个 $\hat p_e>0$ 的事件），则
 
-令冻结的有效价值事件集合为 Esup，具体质量准入见第11节，不改变下式：
+$$\widehat Q-Q^\mu=\sum_{e\in A_{\mathrm{pub}}}\hat p_e(\hat m_e-m^\mu_e)+\sum_{e\in A_{\mathrm{pub}}}(\hat p_e-p^\mu_e)m^\mu_e,$$
+
+$$|\widehat Q-Q^\mu|\le \varepsilon_{m,\mathrm{all}}+3\delta_E.$$
+
+第二项用效用区间 $[-1.5,1.5]$ 的跨度 3 控制。**只控制支持分支不足以推出这个名义误差界。**
+
+### 10.2 保守价值：仅需支持分支的条件价值误差
+
+令 $E_{sup}$ 为第 11 节的冻结有效价值支持集合；$\varepsilon_{m,\mathrm{sup}}$ 只控制 $A_{\mathrm{pub}}\cap E_{sup}$ 上的条件价值误差。保留原公式（公开不允许的类别因 $\hat p_e=0$ 不作贡献）：
 
 $$\widetilde Q=\sum_{e\in E_{sup}}\hat p_e\hat m_e+\sum_{e\notin E_{sup}}\hat p_e(-1.5),\quad
-\rho_a=\sum_{e\notin E_{sup}}\hat p_e,\quad b_a=\epsilon_m+3\delta_E.$$
+\rho_a=\sum_{e\notin E_{sup}}\hat p_e,\quad b_a=\varepsilon_{m,\mathrm{sup}}+3\delta_E.$$
 
-拆分支持误差、未支持替代与响应概率误差，得到：
+拆分支持分支误差、未支持替代（其差值在 $[-3\rho_a,0]$）和响应概率误差，得到：
 
 $$-b_a-3\rho_a\le\widetilde Q-Q^\mu\le b_a.$$
 
-未支持分支取最差值本身不高估，但整个 Q̃ 不是自动具有置信覆盖率的 LCB。`rho_U` 是模型 masked 概率质量，不是 δE 或真实概率误差上界。
+验算：$A_{\mathrm{pub}}=\{0,1\}$、$E_{sup}=\{0\}$、$\hat p=p^\mu=(0.5,0.5)$；事件 0 的真实/预测效用都为 0，事件 1 的真实/预测效用分别为 −1.5/+1.5。则 $\varepsilon_{m,\mathrm{sup}}=\delta_E=0$，但 $Q^\mu=-0.75$、$\widehat Q=+0.75$，名义绝对误差为 1.5（$\varepsilon_{m,\mathrm{all}}=3$）。用 −1.5 替代未支持事件后 $\widetilde Q=-0.75$、$\rho_a=0.5$，保守误差 0 落在 $[-1.5,0]$ 内。见[精确分数回归](../tests/kar/core/test_value_bound_domains.py)。
 
-500 个独立 train 完整游戏只是数据筛查。原均值 Hoeffding 核算 `ceil(72 ln840)=485` 在固定 iid 有界总体均值下算术成立，但不能推出条件网络的 uniform εm≤0.25。决策行相关、游戏聚合可能改变总体，禁止把计数或普通校准指标当误差证书。
+未支持替代本身不高估，但整个 Q̃ 不是自动具有置信覆盖率的 LCB。`rho_U` 是模型 masked 概率质量，不是 $\delta_E$ 或真实概率误差上界。分支质量 passed、样本数、普通校准指标不能提供或置零任何所需误差界，也不能签发 certified 证书。
+
+500 个独立 train 完整游戏只是数据筛查。原均值 Hoeffding 核算 `ceil(72 ln840)=485` 在固定 iid 有界总体均值下算术成立，但不能推出条件价值模型的统一误差界。决策行相关、游戏聚合可能改变总体。
 
 ### 10.3 受限闭式更新
 
@@ -369,7 +383,7 @@ $$\pi_\tau(a)=\begin{cases}M q_\tau(a),&a\in S,\\\pi_0(a),&a\notin S.\end{cases}
 
 ### 10.4 E1/E2
 
-令 `d=qτ-q0`、`Δ̂=Σa d_a Q̃_a`。给定当前状态/候选的有效 b、δπ：
+令 `d=qτ-q0`、`Δ̂=Σa d_a Q̃_a`。给定当前状态/候选的有效 $b_a=\varepsilon_{m,\mathrm{sup}}+3\delta_E$（第 10.2 节，而非名义界）以及 $\delta_\pi$：
 
 $$E1=M[\tau KL(q_\tau\Vert q_0)-\mathbb E_{q_\tau}b-\mathbb E_{q_0}b-3\mathbb E_{q_0}\rho]-3\delta_\pi.$$
 
@@ -436,6 +450,14 @@ mask 的1仅表示未被公开事实证明不可能；未知保守允许。实�
 8. 不完整历史不由未见事实强行判定终止；已明确公开的四立直/多人四杠证据仍可使用。不能通过扩大 Unknown 掩盖已知规则错误。
 
 顺序固定：公开规则 mask → masked Softmax/TE → train+branch质量价值支持 → unsupported概率质量/−1.5 → KL。统计质量不足不改 allowed。全空 mask 是合同错误，不退回未掩码 Softmax；有效真实标签被排除时定位规则或数据错误，不临时放行标签。
+
+### 11.5 报告中的有效未支持质量
+
+冻结顺序：仅用 cal_fit 选择温度/log 门控；计算基础总体与逐分支指标及独立游戏数；按预登记标准从 cal_check 定出分支三态；再与 train 筛查求交得到同一个 $E_{sup}$。随后用冻结 $T_E$、同一公开 mask 和 `response_valid` 样本重算两分区的质量直方图，最后定稿并计算摘要。cal_fit 的质量分布是描述性结果，不作质量放行；两份派生统计均不参与温度、门控或质量判定。
+
+- `unsupported_mass_histogram` 仅指有效价值口径的 $\rho_U=\sum_{e\notin E_{sup}}\hat p_e$。冻结校准且有绑定支持时，evaluation 使用同一有效支持位、同一 masked 概率归一化和分桶定义；无冻结证据时标 `unavailable`，不把 train-only 数字当作 $\rho_U$。若已有冻结分支状态但没有任何 passed 且 train-supported 的分支，全部已允许概率均未支持；runtime 仍回退先验且零候选前向。
+- `train_only_unsupported_mass_histogram` 仅反映 train 计数不足的概率质量，是独立诊断，不用于悲观价值或证书。两个字段明确保存 support basis、支持位、观测数、状态和桶计数，宽度 0.01；1.0 使用桶 100。规则剔除类概率为 0，既不算有效亦不算 train-only 未支持质量。无观测不是实测 0。
+- 报告/聚合状态与校准产物版本受校验，旧 train-only 桶不能读作当前有效质量。从经核验的冻结 logit archive（若存在且获授权）真实重算，不能给旧 JSON 加字段或重签来迁移。
 
 ## 12. 决策执行合同
 
@@ -505,7 +527,9 @@ Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sam
 - 九种九牌公开前不泄漏、source seat/tiles矛盾拒绝、规则重建来源、零结算presence、四视角和下一局实际决策完整历史/位置；缺终局可见信息不可伪装完整。
 - 原生合法136牌墙四家立直、四风、多人/单人四杠、末巡和相邻边界；荣和优先、未知历史保守、有效标签不被排除，mask白名单/空mask错误。
 - 总体指标通过但罕见分支失败；passed/failed/unavailable、独立game与重复行、规则不可能、train499/500分别表达；失败分支p保留但不能供应价值，S外概率/M不变，旧缺合同产物拒绝。
-- 安全哨兵、全无目标、固定rho、DDP/累积梯度等价及恢复、完整有限集合KL/E1/E2反例；本轮禁止反向时不得执行梯度节点而伪记通过。
+- 已确认的原生 Pass 在整批、`ankan | dora | tsumo`、receipt 先单独到达时最终输入一致，并在关闭锚前不写入；混合 ready/waiting、重复和非法 receipt 保持各自语义。
+- 总体通过但罕见分支失败时，1000 局合成反例要求校准报告、加载后报告、evaluation 与 runtime 对同一冻结集合得出同样的有效质量分布 `{0: 990, 99: 10}`。train-only 必须独立，缺冻结质量的 evaluation 不能伪报实测有效质量。
+- 安全哨兵、全无目标、固定rho、DDP/累积梯度等价及恢复、名义/保守误差域、完整有限集合KL/E1/E2反例；本轮禁止反向时不得执行梯度节点而伪记通过。
 - red5/普通5完整动作、空听立直合法、声明前不扣棒、多Ron完整mask、PON优先窗口、DAIMINKAN后岭上自摸、被抢KAKAN不提交、对手暗杠赤牌隐私、同game四视角同split、未来/隐藏扰动不影响已封存输入。
 - Ryanmen九点查表、3/7边张排除、full-suji双侧要求、被叫走历史与物理并集去重、起家顺tie-break、真实零/缺失presence、kind-specific字段、whole-sample随机置空及参数量不变。
 - 数据/SQLite/checkpoint/calibration/support/发布所有新字段的缺失/旧值拒绝，即使校验和有效也不能静默补字段迁移。
@@ -514,13 +538,15 @@ Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sam
 
 ## 19. 旧产物拒绝与真实重建
 
-输入位置、终局公开历史与mask都已改变。artifact v1/v2/v3、source-record时钟、公私Pass旧输入、mask v1/v2、整体指标only的旧quality、support v1、calibration v3及旧有限策略身份都不直接兼容当前V4。
+进入 V4 时，输入位置、终局公开历史与 mask 已改变，artifact v1/v2/v3、source-record 时钟、旧输入、mask v1/v2、旧 quality/support/calibration 与有限策略身份不能跨版本直接复用。旧输入的重建要求仍如下：
 
 - 从只读原始result事件重新审计/规范化/导出新Token、mask和manifest，输出新目录，不覆盖旧库或重签旧hash。
 - 所有旧历史缓存/KV重新生成；同Schema或同shape不证明输入语义一致。
 - 旧权重即使state_dict可加载，也不是当前精确训练/校准/评测产物；标准source/native与版本加载检查拒绝，任何迁移须显式实现、单独授权与真实验收。
 - 旧支持需在当前合格train选择重新统计；旧校准需固定新输入/模型、正式预登记overall与branch判据后重新计算；finite策略选型/吞吐与发布随之重建。
 - 本轮可用新合成产物测试这些入口和拒绝，不能给真实旧产物补字段、改标签或换hash冒充新产物。缺正式分支判据时prior-only或unsupported，不声称已校准。
+
+相对 `c095084`，本轮保留 V4 输入、Schema、mask、train 计数阈值及分支质量判据。修正已确认 Pass 的分批交付不改变合法关闭锚或 Token 编码，但旧分批轨迹若丢了 receipt，只能用原始、可信的已提交 receipt 重新投影；不能从纯公共 trace 逆猜私有 Pass。当前校准 v5 不接受 v4 的旧质量直方图，即使指标与模板字段看起来相近。绑定完整 runtime 合同的支持记录、依赖校准摘要的策略选择、发布及源码绑定的执行证据也不能原样充当当前版本；重新计算、校验并在新产物中登记，不覆盖旧记录。单独改正报告口径不要求全量重导出已经合格的 V4 Token。
 
 ## 20. 风险与声明边界
 

@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from .contracts import Response
 from .runtime_contracts import UTILITIES
+from .support import unsupported_response_mass
 
-STATISTICS_VERSION = "whole_game_cluster_statistics_v2"
+STATISTICS_VERSION = "whole_game_cluster_statistics_v3_value_mass"
+VALUE_MASS_FIELD = "unsupported_mass_histogram"
+TRAIN_ONLY_MASS_FIELD = "train_only_unsupported_mass_histogram"
+VALUE_MASS_BASIS = "train_and_frozen_cal_check_branch_quality"
+TRAIN_ONLY_MASS_BASIS = "train_count_only"
 
 
 def _new_gate() -> dict[str, Any]:
@@ -358,6 +364,65 @@ class ClassificationMetrics:
         }
 
 
+class ResponseMassHistogram:
+    """Bounded post-mask histogram that cannot merge different support bases or sets."""
+
+    def __init__(self, support_basis: str) -> None:
+        self.support_basis = support_basis
+        self.event_supported: tuple[bool, ...] | None = None
+        self.counts = [0] * 101
+
+    def _bind(self, supported: Sequence[bool]) -> None:
+        flags = tuple(supported)
+        if len(flags) != 21 or any(type(flag) is not bool for flag in flags):
+            raise ValueError("Response mass requires a 21-event boolean support set")
+        if self.event_supported is not None and self.event_supported != flags:
+            raise ValueError("Cannot aggregate response mass from different support sets")
+        self.event_supported = flags
+
+    def add(self, probabilities: Sequence[float], supported: Sequence[bool]) -> None:
+        mass = unsupported_response_mass(probabilities, supported)
+        if not math.isfinite(mass) or not 0 <= mass <= 1 + 1e-6:
+            raise ValueError("Invalid post-mask unsupported mass")
+        self._bind(supported)
+        self.counts[min(100, int(mass * 100))] += 1
+
+    def merge(self, record: Mapping[str, Any]) -> None:
+        if (not isinstance(record, Mapping) or record.get("support_basis") != self.support_basis
+                or record.get("bin_width") != 0.01):
+            raise ValueError("Response mass histogram basis differs")
+        counts = record.get("counts")
+        if not isinstance(counts, (list, tuple)) or len(counts) != 101 or any(
+            type(value) is not int or value < 0 for value in counts
+        ):
+            raise ValueError("Invalid response mass histogram counts")
+        count = sum(counts)
+        if type(record.get("observations")) is not int or record["observations"] != count or record.get("status") != (
+            "available" if count else "unavailable"
+        ):
+            raise ValueError("Response mass status or observation count differs")
+        flags = record.get("event_supported")
+        if count:
+            if not isinstance(flags, (list, tuple)):
+                raise ValueError("Measured response mass needs an explicit support set")
+            self._bind(flags)
+        elif flags is not None:
+            raise ValueError("Unavailable response mass cannot claim measured support")
+        for index, value in enumerate(counts):
+            self.counts[index] += value
+
+    def report(self) -> dict[str, Any]:
+        count = sum(self.counts)
+        return {
+            "support_basis": self.support_basis,
+            "event_supported": None if self.event_supported is None else list(self.event_supported),
+            "status": "available" if count else "unavailable",
+            "observations": count,
+            "bin_width": 0.01,
+            "counts": list(self.counts),
+        }
+
+
 class FullDiagnostics:
     def __init__(self):
         self.heads = {
@@ -371,7 +436,8 @@ class FullDiagnostics:
         self.utility_bins = [{"count": 0, "predicted": 0.0, "observed": 0.0} for _ in range(10)]
         self.gate = _new_gate()
         self.gate_slices: dict[str, dict[str, Any]] = {}
-        self.unsupported_histogram = [0] * 101
+        self.value_mass = ResponseMassHistogram(VALUE_MASS_BASIS)
+        self.train_only_mass = ResponseMassHistogram(TRAIN_ONLY_MASS_BASIS)
 
     def add(
         self,
@@ -427,10 +493,13 @@ class FullDiagnostics:
                 self.gate_slices[name] = _new_gate()
             _add_gate(self.gate_slices[name], retained=retained, support_size=support_size, mass=mass)
 
-    def add_unsupported(self, mass: float) -> None:
-        if not math.isfinite(mass) or not 0 <= mass <= 1 + 1e-6:
-            raise ValueError("Invalid post-mask unsupported mass")
-        self.unsupported_histogram[min(100, int(mass * 100))] += 1
+    def add_response_mass(
+        self, probabilities: Sequence[float], *, train_supported: Sequence[bool],
+        value_supported: Sequence[bool] | None = None,
+    ) -> None:
+        self.train_only_mass.add(probabilities, train_supported)
+        if value_supported is not None:
+            self.value_mass.add(probabilities, value_supported)
 
     def state_dict(self) -> dict[str, Any]:
         return {
@@ -443,10 +512,16 @@ class FullDiagnostics:
             "utility_bins": self.utility_bins,
             "gate": self.gate,
             "gate_slices": self.gate_slices,
-            "unsupported_histogram": self.unsupported_histogram,
+            "statistics_version": STATISTICS_VERSION,
+            VALUE_MASS_FIELD: self.value_mass.report(),
+            TRAIN_ONLY_MASS_FIELD: self.train_only_mass.report(),
         }
 
     def merge(self, state: dict[str, Any]) -> None:
+        if state.get("statistics_version") != STATISTICS_VERSION:
+            raise ValueError("Diagnostics state statistics version differs")
+        self.value_mass.merge(state[VALUE_MASS_FIELD])
+        self.train_only_mass.merge(state[TRAIN_ONLY_MASS_FIELD])
         for key, value in state["heads"].items():
             self.heads[key].merge(value)
         for key, value in state["rank_by_event"].items():
@@ -469,8 +544,6 @@ class FullDiagnostics:
             if name not in self.gate_slices:
                 self.gate_slices[name] = _new_gate()
             _merge_gate(self.gate_slices[name], gate)
-        for index, value in enumerate(state["unsupported_histogram"]):
-            self.unsupported_histogram[index] += value
 
     def report(self, *, bootstrap_seed: int = 17, bootstrap_replicates: int = 2000) -> dict[str, Any]:
         calibration = []
@@ -558,7 +631,8 @@ class FullDiagnostics:
             ),
             "gate": _gate_report(self.gate),
             "gate_by_slice": {name: _gate_report(value) for name, value in self.gate_slices.items()},
-            "unsupported_mass_histogram": {"bin_width": 0.01, "counts": list(self.unsupported_histogram)},
+            VALUE_MASS_FIELD: self.value_mass.report(),
+            TRAIN_ONLY_MASS_FIELD: self.train_only_mass.report(),
             "evidence_status": "empirical_only_not_uniform_per_state_error_bounds",
         }
         return result

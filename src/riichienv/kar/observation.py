@@ -164,15 +164,12 @@ class ObserverLedger:
             raise ValueError("A kakan response requires the existing committed pon")
         return trigger
 
-    def record_self_pass(self, trigger: SelfPassTrigger, *, provenance: str) -> bool:
-        """Materialize a confirmed owner action at its public closing-event anchor.
-
-        Public event IDs/clocks do not advance. The caller must have submitted a
-        real Pass successfully, or use the frozen unique-next-draw inference.
-        A previously frozen snapshot is never mutated.
-        """
+    def _self_pass_confirmation(self, trigger: SelfPassTrigger, provenance: str) -> int | None:
         if (
             not isinstance(trigger, SelfPassTrigger)
+            or any(type(value) is not int for value in (
+                trigger.observer_player_id, trigger.trigger_event_id, trigger.round_event_id, trigger.target
+            ))
             or trigger.observer_player_id != self.observer
             or trigger.target == self.observer
             or self._pass_triggers.get(trigger.trigger_event_id) != trigger
@@ -180,15 +177,33 @@ class ObserverLedger:
             raise ValueError("Foreign or unknown private Pass trigger")
         if not isinstance(provenance, str) or provenance not in SELF_PASS_PROVENANCES:
             raise ValueError("Private Pass requires confirmed, supported provenance")
+        inferred = provenance == "inferred_unique_next_draw_pass"
+        if inferred and trigger.trigger_type != "dahai":
+            raise ValueError("An unestablished/overridden call cannot be inferred as private Pass")
         confirmed = self._pass_confirmations.get(trigger.trigger_event_id)
         if confirmed is None:
-            raise ValueError("Private Pass trigger has no observed closing event")
+            if self._active_pass_trigger != trigger.trigger_event_id:
+                raise ValueError("Private Pass window ended without a legal closing event")
+            return None
         closing = self._public_events[confirmed]
-        if provenance == "inferred_unique_next_draw_pass" and (
-            trigger.trigger_type != "dahai" or closing["type"] != "tsumo"
-            or closing.get("actor") != (trigger.target + 1) % 4
-        ):
+        if inferred and (closing["type"] != "tsumo" or closing.get("actor") != (trigger.target + 1) % 4):
             raise ValueError("An unestablished/overridden call cannot be inferred as private Pass")
+        return confirmed
+
+    def self_pass_ready(self, trigger: SelfPassTrigger, *, provenance: str) -> bool:
+        """Check the anchor without mutation; only a valid, still-open trigger may wait."""
+        return self._self_pass_confirmation(trigger, provenance) is not None
+
+    def record_self_pass(self, trigger: SelfPassTrigger, *, provenance: str) -> bool:
+        """Materialize a confirmed owner action at its public closing-event anchor.
+
+        Public event IDs/clocks do not advance. The caller must have submitted a
+        real Pass successfully, or use the frozen unique-next-draw inference.
+        A previously frozen snapshot is never mutated.
+        """
+        confirmed = self._self_pass_confirmation(trigger, provenance)
+        if confirmed is None:
+            raise ValueError("Private Pass trigger has no observed closing event")
         if trigger.trigger_event_id in self._recorded_passes:
             return False
         marker = {"type": "self_pass", "actor": self.observer, "target": trigger.target, "pai": trigger.pai,

@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from riichienv.kar.calibration import CalibrationArtifact, calibration_split
+from riichienv.kar.calibration import CalibrationArtifact, CalibrationRow, calibrate_static_rows, calibration_split
 from riichienv.kar.contracts import MJSOUL_RULESET, content_hash
 from riichienv.kar.event_semantics import PUBLIC_CLOCK_VERSION
 from riichienv.kar.observation import ObserverLedger
@@ -58,9 +58,19 @@ def fixtures():
     binding = RuntimeBinding.current("a" * 64, "b" * 64)
     support = EventSupport(binding.train_manifest_sha256, (500,) * 21, "synthetic version rejection only")
     split = calibration_split([f"version-validation-{index}" for index in range(20)])
-    artifact = CalibrationArtifact(binding, support.digest, split, (1.0, 1.0, 1.0), -1.0,
-                                   "c" * 64, "d" * 64, {"gate_multi_discard_count": 1}, {},
-                                   "synthetic,not actual calibration", True)
+    def row(game):
+        return CalibrationRow(
+            game, game + "/decision", (4, 8), (0.0,) * 546, 4,
+            response_logits=(0.0,) * 21, response_allowed=(True,) * 21,
+            rank_logits=((0.0,) * 4,) * 21,
+            response_target=0, response_valid=True, rank_target=0, value_valid=True,
+        )
+
+    artifact = calibrate_static_rows(
+        [row(split.fit_games[0])], [row(split.check_games[0])],
+        split=split, binding=binding, support=support, temperatures=(1.0,),
+        source_reference="synthetic,not actual calibration", diagnostic_fixture=True,
+    )
     return binding, support, artifact
 
 

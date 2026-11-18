@@ -43,14 +43,29 @@ def test_reliability_and_observed_branch_rank_metrics_are_explicit():
     metrics.add(
         game="b", head="rank", probabilities=[0.1, 0.1, 0.1, 0.7], target=3, log_probability=math.log(0.7), event=4
     )
-    metrics.add_unsupported(0.3)
+    metrics.add_response_mass((0.7, 0.3, *(0.0,) * 19), train_supported=(True,) * 21,
+                              value_supported=(True,) + (False,) * 20)
     metrics.add_gate(retained=False, support_size=1, mass=0.2)
     result = metrics.report(bootstrap_replicates=50)
     assert result["rank_by_response"]["8"]["count"] == 1 and result["rank_by_response"]["4"]["count"] == 1
     assert result["rank_by_response"]["0"]["nll"] is None
     assert result["gate"]["recorded_action_exclusion_fraction"] == 1.0
+    assert result["unsupported_mass_histogram"]["counts"][30] == 1
+    assert result["train_only_unsupported_mass_histogram"]["counts"][0] == 1
     assert result["evidence_status"] == "empirical_only_not_uniform_per_state_error_bounds"
     assert result["epsilon_m_empirical_proxy"] is not None
+
+
+def test_mass_state_merge_rejects_legacy_buckets_and_mixed_value_support():
+    left, right = FullDiagnostics(), FullDiagnostics()
+    probabilities = (0.7, 0.3) + (0.0,) * 19
+    left.add_response_mass(probabilities, train_supported=(True,) * 21, value_supported=(True,) + (False,) * 20)
+    right.add_response_mass(probabilities, train_supported=(True,) * 21, value_supported=(True,) * 21)
+    with pytest.raises(ValueError, match="different support sets"):
+        left.merge(right.state_dict())
+    legacy = {**left.state_dict(), "statistics_version": "whole_game_cluster_statistics_v2"}
+    with pytest.raises(ValueError, match="statistics version differs"):
+        FullDiagnostics().merge(legacy)
 
 
 def test_metric_merge_preserves_natural_frequency_and_zero_class_is_not_perfect():

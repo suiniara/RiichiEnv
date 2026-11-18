@@ -8,6 +8,7 @@ import torch
 from ..calibration import CalibrationArtifact
 from ..calibration_roles import CALIBRATION_SPLIT_SALT, calibration_is_fit
 from ..policy import support_discards
+from ..probability import masked_softmax
 from ..statistics import FullDiagnostics
 from ..support import EventSupport
 from .batch import rule_feature_view
@@ -29,6 +30,11 @@ def add_diagnostics(
 ) -> None:
     labels = batch.labels
     loss_sums(outputs, labels, batch.inputs.legal_mask)
+    if calibration is not None and (support is None or calibration.support_sha256 != support.digest):
+        raise ValueError("Calibrated diagnostics require the bound support artifact")
+    train_supported = support.supported if support is not None else None
+    value_supported = (support.value_supported(calibration.value_branch_statuses)
+                       if support is not None and calibration is not None else None)
     temperatures = calibration.temperatures if calibration is not None else (1.0, 1.0, 1.0)
     action_log = (
         (outputs.policy_logits.float() / temperatures[0])
@@ -66,6 +72,12 @@ def add_diagnostics(
         "response": labels.response_target.cpu().tolist(),
         "rank": labels.final_rank_target.cpu().tolist(),
     }
+    # Use the runtime scalar normalization for the mass histogram. Rounding a
+    # batched FP32 softmax can otherwise disagree at a one-percent bucket edge.
+    response_inputs = (
+        (outputs.response_logits.float().cpu().tolist(), labels.response_allowed.cpu().tolist())
+        if train_supported is not None else None
+    )
     for index, game in enumerate(batch.game_ids):
         ids = tuple(action for action in candidates[index] if action != 546)
         slices = []
@@ -96,9 +108,11 @@ def add_diagnostics(
                     slices=tuple(slices),
                     event=targets["response"][index] if head == "rank" else None,
                 )
-        if support is not None and active["response"][index]:
-            metrics.add_unsupported(
-                sum(value for value, covered in zip(probabilities["response"][index], support.supported) if not covered)
+        if response_inputs is not None and train_supported is not None and active["response"][index]:
+            logits, allowed = response_inputs
+            metrics.add_response_mass(
+                masked_softmax(logits[index], allowed[index], temperatures[1]),
+                train_supported=train_supported, value_supported=value_supported,
             )
         target = targets["action"][index]
         if (
