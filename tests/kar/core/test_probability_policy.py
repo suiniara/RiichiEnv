@@ -39,9 +39,11 @@ def test_unsupported_penalty_happens_after_public_mask(binding):
     response = [0.0] * 21
     response[20] = 20
     ranks = ((20.0, 0.0, 0.0, 0.0),) * 21
-    masked = candidate_value(4, response, ranks, (True,) * 20 + (False,), support)
+    masked = candidate_value(
+        4, response, ranks, (True,) * 20 + (False,), support, branch_quality_statuses=("passed",) * 21
+    )
     assert masked.unsupported_mass == 0 and masked.conservative_value == pytest.approx(masked.marginal_value)
-    allowed = candidate_value(4, response, ranks, (True,) * 21, support)
+    allowed = candidate_value(4, response, ranks, (True,) * 21, support, branch_quality_statuses=("passed",) * 21)
     assert allowed.unsupported_mass > 0.99 and allowed.conservative_value < -1.49
     none = EventSupport(binding.train_manifest_sha256, (499,) * 21, "static fixture")
     assert candidate_value(4, response, ranks, (True,) * 21, none).conservative_value == pytest.approx(-1.5)

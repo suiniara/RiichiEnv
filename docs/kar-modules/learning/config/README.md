@@ -28,7 +28,7 @@ assert config.parameter_count == 5_239_435
 
 维度必须正整数；width 可整除 heads，单头维度为偶数以用于 RoPE。norm_eps、rope_base 有范围要求。preset 不是预算许可，选大模型仍需 N_train 阶梯、M1 证据和预算放行。
 
-forward 版本为 `kar_transformer_v2_legal_set`，另以 `input_pipeline_version` 绑定 LEGAL_SET/SELF_PASS 语义；维度和参数数目不变不等于旧权重精确兼容。特征语义仍为 `visible_rule_features_v1_2_2`，随机置空仍为 `sample_mask_v1`；这两项没有因接线而回滚。
+forward版本为 `kar_transformer_v3_semantic_inputs`，另以input_pipeline/public_clock/terminal_public绑定逻辑位置与终局公开语义，并保留LEGAL_SET/SELF_PASS；维度和参数数目不变不等于旧权重精确兼容。特征语义仍为 `visible_rule_features_v1_2_2`，随机置空仍为 `sample_mask_v1`。
 
 ## 接线与状态
 

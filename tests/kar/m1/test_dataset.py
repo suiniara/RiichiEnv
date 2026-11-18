@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import os
 import sqlite3
@@ -11,11 +12,11 @@ import torch
 
 from riichienv import convert
 from riichienv.kar.actions import action_spec, tile136_to_tile37
-from riichienv.kar.contracts import MJSOUL_RULESET
+from riichienv.kar.contracts import MJSOUL_RULESET, content_hash
 from riichienv.kar.decision import ReplayDecision
 from riichienv.kar.learning.batch import TOKEN_DTYPE
 from riichienv.kar.learning.dataset import DecisionDataset, collate_examples
-from riichienv.kar.learning.export import SQL_SCHEMA, GameWriter
+from riichienv.kar.learning.export import SQL_SCHEMA, GameWriter, learning_contract
 from riichienv.kar.observation import ObserverLedger
 from riichienv.kar.schema import decode_token
 
@@ -37,12 +38,39 @@ def _private_dataset_path(workspace, explicit=None):
     return None
 
 
+def _current_private_fixture(path, *, explicit=False):
+    """Never relabel legacy private data or hide corrupt/current/explicit selections.
+
+    Positive integration assertions remain unchanged and require a real current
+    export. The default archived fixture may only be marked NOT EXECUTED after
+    proving strict rejection and intact manifest/database bytes.
+    """
+    try:
+        probe = DecisionDataset(path, "train")
+    except ValueError as error:
+        if str(error) != "Dataset schema/rules/feature/loss contract differs" or explicit:
+            raise
+        document = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+        scope = document["scope"]
+        if (scope.get("dataset_version") != learning_contract()["dataset_version"]
+                or scope.get("input_pipeline_version") not in {None, "legal_set_pool_private_self_pass_v1"}):
+            raise
+        database = path / "decisions.sqlite3"
+        if not database.is_file() or hashlib.sha256(database.read_bytes()).hexdigest() != document["database_sha256"]:
+            raise ValueError("Selected private fixture database is missing or corrupt") from error
+        pytest.skip("Existing private export uses a legacy input/rule contract; current V4 rebuild is not authorized")
+    else:
+        probe._db().close()
+    return path
+
+
 @pytest.fixture(scope="module")
 def real_dataset_dir():
-    path = _private_dataset_path(Path(__file__).parents[4], os.environ.get("KAR_M1_TEST_DATASET_DIR"))
+    explicit = os.environ.get("KAR_M1_TEST_DATASET_DIR")
+    path = _private_dataset_path(Path(__file__).parents[4], explicit)
     if path is None:
         pytest.skip("Private M1 CPU data has not been exported")
-    return path
+    return _current_private_fixture(path, explicit=explicit is not None)
 
 
 def test_private_fixture_selection_prefers_current_without_bypassing_validation(tmp_path):
@@ -74,6 +102,32 @@ def test_missing_or_incomplete_selected_private_fixture_is_not_skipped(tmp_path,
 
 def test_private_fixture_selection_reports_absence_only_when_no_assets_exist(tmp_path):
     assert _private_dataset_path(tmp_path) is None
+
+
+@pytest.mark.parametrize(
+    "case", ["legacy-default", "legacy-explicit", "corrupt-db", "corrupt-manifest", "current-corrupt"]
+)
+def test_only_intact_default_legacy_fixture_can_report_rebuild_not_executed(tmp_path, case):
+    database = tmp_path / "decisions.sqlite3"
+    database.write_bytes(b"synthetic legacy payload; never accepted as a current SQLite export")
+    scope = {**learning_contract(), "input_pipeline_version": "legal_set_pool_private_self_pass_v1"}
+    if case == "current-corrupt":
+        scope["input_pipeline_version"] = learning_contract()["input_pipeline_version"]
+        scope["response_mask_version"] = "corrupt-current-mask"
+    unsigned = {"status": "PASS", "complete": True, "scope": scope,
+                "database_sha256": hashlib.sha256(database.read_bytes()).hexdigest()}
+    document = {**unsigned, "manifest_sha256": content_hash(unsigned)}
+    if case == "corrupt-manifest":
+        document["unexpected"] = True
+    (tmp_path / "manifest.json").write_text(json.dumps(document), encoding="utf-8")
+    if case == "corrupt-db":
+        database.write_bytes(b"corrupted bytes")
+    if case == "legacy-default":
+        with pytest.raises(pytest.skip.Exception, match="legacy input/rule contract"):
+            _current_private_fixture(tmp_path)
+    else:
+        with pytest.raises(ValueError):
+            _current_private_fixture(tmp_path, explicit=case == "legacy-explicit")
 
 
 def test_binary_vectorized_dtype_matches_frozen_schema(make_sample):

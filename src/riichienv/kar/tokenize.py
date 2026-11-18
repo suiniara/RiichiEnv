@@ -12,6 +12,7 @@ from riichienv import convert
 
 from .actions import tile136_to_tile37
 from .contracts import MAX_CANDIDATES
+from .event_semantics import PUBLIC_CLOCK_VERSION, public_history_positions
 from .kan_transactions import COMMITTED_KAN_KINDS, pending_kan_commits
 from .observation import SELF_PASS_PROVENANCES, PublicSnapshot, extract_rule_features
 from .schema import (
@@ -267,7 +268,7 @@ class TokenHistoryCache:
         _available(snapshot)
         events = tuple(snapshot.events)
         positions = (
-            tuple(snapshot.history_positions) if snapshot.history_positions else tuple(range(1, len(events) + 1))
+            tuple(snapshot.history_positions) if snapshot.history_positions else public_history_positions(events)
         )
         if len(events) != len(positions):
             self.reset()
@@ -320,6 +321,8 @@ class TokenHistoryCache:
 
 
 def _available(snapshot: PublicSnapshot) -> None:
+    if getattr(snapshot, "public_clock_version", None) != PUBLIC_CLOCK_VERSION:
+        raise TokenizationUnavailableError("A current, explicitly versioned public semantic clock is required")
     if not snapshot.history_complete or not snapshot.physical_ledger_complete or not snapshot.visibility_complete:
         raise TokenizationUnavailableError("A complete audited observer prefix is required")
 
@@ -336,7 +339,7 @@ def _history(  # noqa: PLR0915
     observer = snapshot.observer_player_id
     events = [json.loads(value) for value in snapshot.events[start_index:]]
     positions = (
-        positions if positions is not None else snapshot.history_positions or tuple(range(1, len(snapshot.events) + 1))
+        positions if positions is not None else snapshot.history_positions or public_history_positions(snapshot.events)
     )
     if len(snapshot.events) != len(positions):
         raise ValueError("Public event clock does not match visible history")
@@ -363,7 +366,10 @@ def _history(  # noqa: PLR0915
             state.public_event_id += 1
         if typ == "kan_commit" and (pending is None or event.get("kan_type") != pending["kind"]):
             raise ValueError("Kan commitment token lacks its matching declaration")
-        if pending is not None and pending_kan_commits(
+        # Transport ACK updates the live ledger immediately, but is not a
+        # source-independent history boundary. Materialize history acceptance at
+        # common dora/replacement-draw evidence (including delayed old-kan dora).
+        if pending is not None and typ != "kan_commit" and pending_kan_commits(
             event,
             actor=pending["actor"],
             committed_kans=sum(item.get("kind") in COMMITTED_KAN_KINDS for player in melds for item in player),

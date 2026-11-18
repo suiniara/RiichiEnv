@@ -51,7 +51,7 @@ def test_training_and_inference_share_all_explicit_versions():
     assert current["feature_contract_version"] == FEATURE_CONTRACT_VERSION == "visible_rule_features_v1_2_2"
     assert current["rule_feature_mask_version"] == RULE_FEATURE_MASK_VERSION == "sample_mask_v1"
     assert current["training_plan_version"] == TRAINING_PLAN_VERSION == "budget_ladder_v1"
-    assert current["response_mask_version"] == RESPONSE_MASK_VERSION == "public_rule_response_mask_v2_mjsoul_nagashi"
+    assert current["response_mask_version"] == RESPONSE_MASK_VERSION == "public_rule_response_mask_v3_abort_last_draw"
 
 
 @pytest.mark.parametrize("field", tuple(artifact_contract()))

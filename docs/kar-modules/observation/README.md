@@ -12,7 +12,7 @@
 
 ## 私有历史与公共域
 
-`event_id/cutoff_event_id` 始终是公共流下标。私有 SELF_PASS 仅插入本家 `events/history_positions` 的公共确认锚之后，使用该锚的逻辑位置，不推进公共计数或时钟；复合事件数组下标不再等于公共 ID。既有快照不改写，其他三个观察者逐字节不变。
+`event_id/cutoff_event_id` 始终是公共流下标，source record 编号不决定模型时间；所有账本共用 [event_semantics](../event_semantics/README.md) 的因果语义时钟，快照显式绑定 public_clock_version，旧版本不静默补齐。私有 SELF_PASS 仅插入本家 `events/history_positions` 的公共确认锚之后，使用该锚的逻辑位置，不推进公共计数或时钟；复合事件数组下标不再等于公共 ID。既有快照不改写，其他三个观察者逐字节不变。
 
 来源只支持原生成功提交或冻结的 unique-next-draw 推断；不能推补隐藏意图。私有 marker 不广播到公共 trace。API 是可信调用方记录合同，不是数字认证。
 

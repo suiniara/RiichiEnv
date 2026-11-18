@@ -23,10 +23,10 @@
 
 记录温度、支持集、候选价值、rho_U、KL、q0/qtau、界、RNG 前后摘要、最终概率和回退原因。`distribution_changed` 比较实际浮点概率变化，不与“执行过候选前向”混淆；二者都不是收益证书。
 
-缺标定/支持/独立质量证据不会自动启用价值。`allow_diagnostic_calibration` 只允许明确测试 fixture，不能作为生产发布资格。公开快照缺历史/可见性时应拒绝而非从未来补齐。
+缺标定/支持/独立质量证据不会自动启用价值。逐分支质量缺失/failed/unavailable保持概率而取−1.5；没有任何train支持且质量passed的响应分支时，直接先验且不做候选前向，原因 `no_quality_qualified_response_branches`。统计质量不改公开规则mask，S及集合外逐动作概率保持合同不变。`allow_diagnostic_calibration` 只允许明确测试 fixture，不能作为生产发布资格。公开快照缺历史/可见性或旧时钟版本应拒绝而非从未来补齐。
 
 ## 调用关系与状态
 
 预测适配见 [learning/inference](../learning/inference/README.md)，消费见 [agent](../agent/README.md)。runtime 不创建优化器、拟合温度或启动对局；无独立 CLI。
 
-对应 [core/test_runtime.py](../../../tests/kar/core/test_runtime.py)、[core/test_review_runtime.py](../../../tests/kar/core/test_review_runtime.py)。本轮未执行策略或模型；默认保守先验不等于相对真实行为策略的无损保证。
+对应 [core/test_runtime.py](../../../tests/kar/core/test_runtime.py)、[core/test_review_runtime.py](../../../tests/kar/core/test_review_runtime.py)。本轮未执行真实校准或独立棋力评测；合成策略回退与原生合法局面单元的实际结果见[修复报告](../../kar-semantic-branch-repair.md)。默认保守先验不等于相对真实行为策略的无损保证。

@@ -8,6 +8,7 @@ from typing import Any, Protocol
 
 from .calibration import CalibrationArtifact
 from .contracts import content_hash
+from .event_semantics import PUBLIC_CLOCK_VERSION
 from .observation import PublicSnapshot
 from .policy import (
     BoundEvidence,
@@ -61,9 +62,15 @@ class RuntimePolicy:
         if not context or self.predictor.binding != self.binding:
             raise ValueError("Inference model identity changed or decision identity is empty")
         ids = complete_candidates(candidates)
-        if not snapshot.history_complete or not snapshot.visibility_complete:
-            raise ValueError("A runtime decision requires a complete visible prefix")
+        if (not snapshot.history_complete or not snapshot.visibility_complete
+                or getattr(snapshot, "public_clock_version", None) != PUBLIC_CLOCK_VERSION):
+            raise ValueError("A runtime decision requires a complete visible prefix and current semantic clock")
         artifact = self.calibration
+        branch_report = artifact.branch_quality_report if artifact is not None else None
+        branch_states = (
+            tuple(branch_report["branches"][str(event)]["status"] for event in range(21))
+            if branch_report else ("unavailable",) * 21
+        )
         temperatures = artifact.temperatures if artifact is not None else (1.0, 1.0, 1.0)
         logits = self.predictor.policy(snapshot, ids, context)
         prior, logs = legal_prior(logits, ids, temperatures[0])
@@ -89,6 +96,7 @@ class RuntimePolicy:
             "max_prior_amplification": self.options.max_prior_amplification,
             "diagnostic_argmax": self.options.diagnostic_argmax,
             "calibration_quality_status": artifact.quality_report["status"] if artifact is not None else "unavailable",
+            "branch_quality_report": branch_report,
             "candidate_forward_count": 0,
             "KL": 0.0,
             "model_gain": 0.0,
@@ -111,6 +119,8 @@ class RuntimePolicy:
             )
         elif self.support is None:
             reason = "event_support_manifest_unavailable"
+        elif not any(self.support.value_supported(branch_states)):
+            reason = "no_quality_qualified_response_branches"
         elif len(selected) < 2 or mass == 0:
             reason = "fewer_than_two_supported_discards_or_zero_mass"
         elif self.options.mode == "certified" and bounds is None:
@@ -140,6 +150,7 @@ class RuntimePolicy:
                         self.support,
                         response_temperature=temperatures[1],
                         rank_temperature=temperatures[2],
+                        branch_quality_statuses=branch_states,
                     )
                     scores.append(value.conservative_value)
                     rho.append(value.unsupported_mass)

@@ -70,6 +70,8 @@ def validate_frozen_policy(
         raise ValueError("A diagnostic argmax policy is not a validation-selected stochastic deployment")
     if calibration is None or support is None or not calibration.gate_valid or not calibration.empirical_check_valid:
         raise ValueError("Finite deployment requires passed independent calibration-quality checks")
+    if not any(support.value_supported(calibration.value_branch_statuses)):
+        raise ValueError("Finite deployment requires at least one train-supported, quality-qualified response branch")
     expected = calibrated_policy_identity(
         binding, support, calibration, mode=options.mode, max_prior_amplification=options.max_prior_amplification
     )

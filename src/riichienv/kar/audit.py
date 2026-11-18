@@ -256,7 +256,12 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
                 resolved = resolve_discard_response(events, index)
                 if resolved.response_observed and resolved.response_target == 0:
                     responder_ids = [seat for seat in range(4) if seat != event["actor"]]
-                    for seat, observation in env.get_observations(responder_ids).items():
+                    observations = env.get_observations(responder_ids)
+                    # Native observations originate in a hash map. Stable seat
+                    # order is part of deterministic sample/export identity, not
+                    # a change to any observer's visible input or Pass evidence.
+                    for seat in responder_ids:
+                        observation = observations[seat]
                         mapped = legal_candidates(observation, source_player=event["actor"])
                         complete_ids = [candidate.global_id for candidate in mapped]
                         if 221 in complete_ids and len(complete_ids) > 1:

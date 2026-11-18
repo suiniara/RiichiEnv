@@ -10,10 +10,10 @@ from riichienv.kar.versioning import INPUT_PIPELINE_VERSION, artifact_contract, 
 def test_old_artifact_cannot_omit_or_retag_new_input_semantics():
     current = artifact_contract()
     assert current["schema_id"] == "kar-riichienv-v1"
-    assert current["response_mask_version"] == "public_rule_response_mask_v2_mjsoul_nagashi"
-    assert current["artifact_contract_version"] == "kar_riichienv_contract_v3"
-    assert current["input_pipeline_version"] == INPUT_PIPELINE_VERSION == "legal_set_pool_private_self_pass_v1"
-    assert MODEL_VERSION == "kar_transformer_v2_legal_set"
+    assert current["response_mask_version"] == "public_rule_response_mask_v3_abort_last_draw"
+    assert current["artifact_contract_version"] == "kar_riichienv_contract_v4"
+    assert current["input_pipeline_version"] == INPUT_PIPELINE_VERSION == "semantic_public_clock_terminal_reveal_v2"
+    assert MODEL_VERSION == "kar_transformer_v3_semantic_inputs"
     old = dict(current, artifact_contract_version="kar_riichienv_contract_v2")
     old.pop("input_pipeline_version")
     with pytest.raises(ValueError, match="version contract differs"):
@@ -30,7 +30,7 @@ def test_old_forecast_recipe_and_configuration_cannot_silently_cross_input_chang
     config = ProductionTrainConfig(**arguments, budget=BudgetPlan("M2", 650.0, 0.0, forecast))
     record = config.to_record()
     assert record["input_pipeline_version"] == INPUT_PIPELINE_VERSION
-    assert record["training_config_version"] == "explicit_train_split_scale_v3_inputs"
+    assert record["training_config_version"] == "explicit_train_split_scale_v4_semantics"
     assert config.recipe_sha256 == recipe
     record.pop("input_pipeline_version")
     with pytest.raises(ValueError, match="version differs"):

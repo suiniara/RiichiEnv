@@ -1,0 +1,559 @@
+# KAR-v1.2.2：RiichiEnv 宿主完整主设计
+
+**宿主修订：** V4，2026-11-18。本文是本仓库唯一活动主设计，完整取代附件中的旧实施正文；不是一组需要实施者自行取舍的补丁。
+
+**目标仓库：** `suiniara/RiichiEnv`；宿主、重放、原生合法动作及运行时均为 RiichiEnv。Kanachan 仅为 546 动作与 tile37 编号的来源参考，不是目标工程或运行依赖。
+
+**来源基线：** 用户的 `KAR-v1.2.2-DESIGN(2).md` 与已核对的同字节 `KAR-v1.2.2-DESIGN.md`，SHA-256 为 `4349039c44175ece77f6dddad3a2106fbd3e0e0339935122df242175c83cbdba`。RiichiEnv 上游参考提交为 `0ee1236a283b15508f3ac28407027f340b81e1de`；本次实现审查基线为 `9a4d1549719d36987309f9752aa4c3362914b757`。
+
+**状态：** 本文是规范合同。实现入口见第 21 节；是否实际通过以[当前修复与验收报告](kar-semantic-branch-repair.md)为准。代码存在、历史测试通过、M0 数据资格、预算就绪与用户授权互不替代。本文不授予训练、校准、GPU 或对局评测许可。
+
+## 0. 冻结结论与活动版本
+
+保持结构化观察、完整 LEGAL_SET、因子化 ACTION、546/21/21×4 三头、自然分布监督、既定损失、受限 KL 公式及随机采样。只对通过动作支持门控的舍牌重排；集合外各动作概率及集合内总概率质量不变。
+
+| 合同 | 活动身份 |
+|---|---|
+| 完整宿主 Schema | `kar-riichienv-v1` |
+| 完整 canonical Schema SHA-256 | `fcc02a0bef0a7e95ca219c59ae199c4d1f5129372fac91323d3791bc30c31673` |
+| 设计引用 Schema | `kar-v1.2.2`，不是活动 Schema 的别名 |
+| 设计 overlay 字节 SHA-256 | `90286d088014eb72e9f99f1b3c35d0a7553bcf5fec99e8aeb3ba5f02a010716a`，不是完整 Schema hash |
+| Schema 映射 | `riichienv_complete_v1_from_kar_v1_2_2_v1`，legacy compatibility=`not_claimed` |
+| architecture | `kar_kl_response_value_v1` |
+| artifact | `kar_riichienv_contract_v4` |
+| input pipeline | `semantic_public_clock_terminal_reveal_v2` |
+| public clock | `public_semantic_clock_v1` |
+| terminal public resolution | `verified_abort_public_resolution_v1` |
+| model computation identity | `kar_transformer_v3_semantic_inputs`，不改变参数形状 |
+| feature semantics / stochastic mask | `visible_rule_features_v1_2_2` / `sample_mask_v1` |
+| response mask | `public_rule_response_mask_v3_abort_last_draw`，包含已有雀魂流局满贯修正 |
+| calibration quality / branch quality | `preregistered_calibration_quality_v2_branches` / `preregistered_response_branch_quality_v1` |
+| event support | `train_independent_games_v2_branch_quality` |
+| calibration | `heldout_temperatures_log_gate_v4_branches` |
+| runtime policy | `restricted_kl_runtime_v2_branch_quality`，KL 数学不变 |
+| training configuration | `explicit_train_split_scale_v4_semantics` |
+| training plan / loss / decision bound | `budget_ladder_v1` / `sentinel_safe_v1_2_1` / `one_sided_v1_2_1` |
+| model tier basis | `N_train_half_games` |
+
+完整宿主 kind、字段、139 字节 little-endian Token、944 Embedding 行及 62 状态槽已经物化，不再要求缺失的 Kanachan 父注册表才能实施。旧设计 overlay 只作来源引用；不得改活动 ID 或把部分 overlay 当完整 hash。
+
+### 0.1 不声称什么
+
+MLE 不保证有限网络校准；观察条件关联不自动等于干预价值；500 个 train 游戏不是逐状态误差证书；KL 不消除所有 OOD；RON 后最终名次并非低方差；粗响应不是完整下一状态；任何参数规模、预算或 Epoch 数都不保证棋力提升。
+
+## 1. 目标、定义域与效用
+
+给定观察者在 cutoff 当时可见的历史 H、状态 O 与完整合法集合 C，模型估计行为先验、候选舍牌的即时响应分布，以及给定响应的终局名次分布。
+
+- 策略覆盖完整全局动作 0..545。
+- 响应和条件名次仅对舍牌 0..147 有定义。
+- 非舍牌仍训练动作头；不得为其伪造 NEXT_DRAW 或舍牌价值。
+- 最终效用固定 `U=2.5-rank`，rank 为唯一的 1、2、3、4 位，故 `U∈{1.5,0.5,-0.5,-1.5}`。
+- 小局净点数 `G_round` 仅作诊断标签，不增加第四个头、不复制成逐步奖励。
+- 更改平台段位分、点数效用、平分名次或 uma 机制必须升级规则/效用合同。
+
+## 2. 随机变量与因果边界
+
+`X=tokenize(H,O,C)`；A 是实际完整动作；E 是该舍牌的最终即时响应；R 是半庄终局名次。真实响应和终局名次不进入 X。
+
+固定来源/cohort 的行为策略为 μ。总体交叉熵最优先验为 μ，但有限模型的实际校准先验 π0 与 μ 可不同；定义 `δπ(x)=TV(π0(·|x),μ(·|x))`。
+
+对舍牌 a，定义 `pμ(e|x,a)=P(E(a)=e|X=x)`、`mμ(x,a,e)=E[U^{a,μ}|X=x,E(a)=e]`，因此：
+
+$$Q^\mu(x,a)=\sum_e p^\mu(e\mid x,a)m^\mu(x,a,e).$$
+
+干预解释要求：实际动作与日志一致、给定完整可见 X 后条件可交换、目标动作有覆盖、后续本家策略和对手机制固定、标签完整且可追溯。混合未知技能/风格/规则会破坏这些假设；不能满足时只作观察分布相关性解释。
+
+## 3. 三头概率模型
+
+$$\pi_\theta(A\mid X)=\operatorname{Softmax}_{C(X)}f_A(h_{DECIDE}).$$
+
+$$p_\theta^{pub}(E\mid X,A)=\operatorname{Softmax}(\operatorname{mask}_{M^{pub}}f_E(h_{ACTION})).$$
+
+$$v_\theta(R\mid X,A,e)=\operatorname{Softmax}_{r=1..4}f_V(h_{ACTION})[e,r].$$
+
+名义分支效用 `m̂=Σr vθ(r|x,a,e)(2.5-r)`；名义候选价值 `Q̂=Σe p̂(e)m̂(e)`。实际重排使用第 10、11 节的保守评分，不以名义诊断值绕过分支支持。
+
+## 4. 输入协议与可见性
+
+### 4.1 行布局与 Tensor
+
+前缀为 `[BOS][历史 H 行][当前状态 S 62 槽][DECIDE]`，共 H+64 行。追加一个真实或假设 ACTION 后为 H+65。H 是实际历史 Token 行数，不是公共事件时钟。
+
+| 字段 | 形状/取值 |
+|---|---|
+| kind | `[B,L]`，48 类，0=PAD |
+| actor/source | 各 `[B,L]`，5 类相对座位，0=N/A、1=本家 |
+| tiles | `[B,L,5]`，每列 39 类，各有独立 Embedding |
+| stage/wind/slot | 各 `[B,L]`，16/5/17 类 |
+| flags | `[B,L,16]`，0=Unknown/N/A、1=False、2=True |
+| numeric/numeric_present | 各 `[B,L,20]`，FP32/bool |
+| action_ids | `[B,L]`，0..545，546=N/A |
+| action_type_ids | `[B,L]`，0..12 |
+| action_tile37 | `[B,L]`，0=N/A，tile37+1，38=HIDDEN |
+| action_tsumogiri/action_riichi | 各 `[B,L]`，0=N/A、1=False、2=True |
+| block/positions/valid | 各 `[B,L]`，注意力块、语义位置、有效位 |
+| candidates | `[B,32]`，完整动作，546=padding |
+
+未知 numeric 先置零，再清 presence；真实零必须 present=true。不静默裁剪。字段含义由 `(kind,field,index,value)` 决定，stage/flags 的跨 kind 同值可共享表，不能用全局 enum 覆盖其他 kind 的语义。
+
+### 4.2 Kind 注册表
+
+| ID | Kind | ID | Kind |
+|---:|---|---:|---|
+|0|PAD|1|BOS|
+|2|ROUND_STATE|3|PLAYER_STATE|
+|4|HAND_COUNT|5|MELD_STATE|
+|6|DORA_STATE|7|DECISION_CONTEXT|
+|8|LEGAL_SET|9|DECIDE|
+|10|ACTION|11|ROUND_START|
+|12|DRAW_SELF|13|DRAW_OTHER|
+|14|DISCARD|15|CHI_ACCEPT|
+|16|PON_ACCEPT|17|DAIMINKAN_ACCEPT|
+|18|ANKAN_DECLARE|19|ANKAN_ACCEPT|
+|20|KAKAN_DECLARE|21|KAKAN_ACCEPT|
+|22|RIICHI_DECLARE|23|RIICHI_ACCEPT|
+|24|DORA_REVEAL|25|SCORE_DELTA|
+|26|SELF_PASS|27|WIN_RESOLVED|
+|28|ROUND_END|29|PUBLIC_HAND_REVEAL|
+
+30..47 保留，不写入。完整合法编码以仓库 [Schema JSON](../src/riichienv/kar/token_schema.riichienv.v1.json) 为准；不得由部分 overlay 猜测其他 kind。MELD_STATE stage=8/9/10/11/12 对应 CHI/PON/DAIMINKAN/ANKAN/KAKAN。
+
+### 4.3 当前状态 62 槽
+
+ROUND_STATE 1、PLAYER_STATE 4、HAND_COUNT 34、MELD_STATE 16、DORA_STATE 5、DECISION_CONTEXT 1、LEGAL_SET 1。未用 meld/dora 槽为 PAD。自己的 34 基本牌计数包含摸牌恰一次，当前摸牌身份另放在 DECISION_CONTEXT。
+
+### 4.4 牌种、数值与排名
+
+冻结 tile37：0=赤5m，1..9=普通1m..9m；10=赤5p，11..19=普通1p..9p；20=赤5s，21..29=普通1s..9s；30..36=东南西北白发中。模型牌字段用 tile37+1，0=N/A、38=HIDDEN；形状按 base34 合并红五，但赤牌数独立。
+
+| numeric 索引 | 语义 | 除数 |
+|---:|---|---:|
+|0|当前原始点数|50000|
+|1|已发生点数变化|10000|
+|2|与本家点数差|50000|
+|3|本场|10|
+|4|供托根数|10|
+|5|公开剩余活牌山|70|
+|6|风局编号|12|
+|7|起始座位顺序|3|
+|8|本家基本牌暗手数，含摸牌|4|
+|9|本家该基本牌赤牌数|1|
+|10|本家已知该基本牌总数|4|
+|11|已知该基本牌赤牌数|1|
+|12|当前暗手总张数|14|
+|13|已成立 meld 数|4|
+|14|本局舍牌次数|24|
+|15|立直声明的本家舍牌序号|24|
+|16|完整合法动作数|32|
+|17|本局摸牌次数|70|
+|18|紧邻上一名分数减本家分数|50000|
+|19|本家分数减紧邻下一名分数|50000|
+
+18/19 只在 ROUND_STATE 填充。一位没有上一名、四位没有下一名，缺失字段 presence=false；相邻同分为真实零且 present=true。
+
+整场固定 `initial_seat_order_player_ids`。排序键为 `(-score,initial_seat_index)`，起家东优先于南、西、北，当前 oya 不参与破平；ROUND_STATE.stage=1..4 为本家当前名次。当前点数不预分未归属立直棒、不加终局 uma/oka。四家 25000 时为 1/2/3/4，所有存在的相邻差为零。不同平分规则必须另建 ruleset/utility。
+
+### 4.5 ACTION 与完整 LEGAL_SET
+
+舍牌 `a=4*tile37+2*tsumogiri+riichi`。ACTION 写完整 ID、族、舍牌牌种/摸切/立直；非舍牌的后三因子必须 N/A。
+
+族：0=N/A、1=DISCARD、2=ANKAN、3=KAKAN、4=TSUMO、5=KYUSHU、6=PASS、7=CHI、8=PON、9=DAIMINKAN、10=RON，11..12 保留。
+
+$$e(a)=E_{id}[a]+E_{type}[t]+E_{tile}[p]+E_{tsumogiri}[m]+E_{riichi}[r].$$
+
+LEGAL_SET(kind8) 在既有字段向量之上加入 `mean_{a∈C} e(a)`，复用 ACTION 五张表，无新参数。完整候选唯一、非空、≤32；按全局 ID 规范排序后求和，过滤 padding=546，不合并摸切/手切/立直变体。保留 numeric[16]=|C|/32。dense 和 encode_prefix 共用输入实现，单 ACTION 后缀不重复池化集合；缓存精确绑定候选集合。
+
+### 4.6 确定性可见特征与三态
+
+HAND_COUNT.flags[0..2] 是对 P1/P2/P3 的 Genbutsu，3..5 是 full-suji exclusion，6 是 no-visible-possible-ryanmen，7 是公开 Dora 类型，8..15=N/A。字牌 flags[3..6]=N/A。
+
+- Genbutsu 仅来自目标玩家自己的公开舍牌历史，被叫走的舍牌仍保留；暗杠/加杠不算舍牌，不推测临时振听。
+- Full-suji 必须覆盖所有另一侧等待牌；4/5/6 只满足一侧为 False。它不排除单骑/双碰/边张/嵌张/七对子。
+- `known_counts` 依赖 physical_ledger_complete 和 visibility_complete，不依赖 history_complete；舍牌历史相关特征独立依赖历史完整性。不能因物理账本缺口清空完整舍牌历史。
+- 物理并集含自己的暗手、当前河、已成立 meld、公开指示牌。叫走牌从河移入 meld 只计一次，加杠提交才新增第四张；缺信息为 Unknown，不填 False。
+- Dora 只由 cutoff 前明确公开的指示牌计算，不使用未公开里宝牌。
+
+冻结 Ryanmen 查表：
+
+| 目标 | 两张搭子 P(v) | 另一等待 C(v) |
+|---:|---|---|
+|1|(2,3)|4|
+|2|(3,4)|5|
+|3|(4,5)|6|
+|4|(2,3),(5,6)|1,7|
+|5|(3,4),(6,7)|2,8|
+|6|(4,5),(7,8)|3,9|
+|7|(5,6)|4|
+|8|(6,7)|5|
+|9|(7,8)|6|
+
+不跨花色、不循环。目标3的(1,2)和目标7的(8,9)是边张，不列入 Ryanmen。目标 t 四张可见，或每个 P(v) 至少一种搭子牌四张可见，才将 flags[6] 置 True。Full-suji 为 `C(v)⊆目标玩家舍牌历史`。这些标志不是绝对安全证书。
+
+## 5. 完整动作、响应与监督边界
+
+### 5.1 动作表
+
+| ID | 动作 |
+|---|---|
+|0..147|完整舍牌（含摸切与立直变体）|
+|148..181|ANKAN|
+|182..218|KAKAN|
+|219|TSUMO|
+|220|KYUSHU_KYUHAI|
+|221|PASS|
+|222..311|CHI|
+|312..431|PON|
+|432..542|DAIMINKAN|
+|543..545|RON 来源|
+
+不把原生紧凑 action index 或候选下标当完整 ID。普通5p为60..63，赤5p为40..43。动作 manifest 的内容 hash、原生完整 Action 映射与 round-trip 测试共同冻结身份。
+
+### 5.2 响应表
+
+| ID | 类别 |
+|---:|---|
+|0|NEXT_DRAW|
+|1|CHI_P1|
+|2..4|PON_P1/P2/P3|
+|5..7|DAIMINKAN_P1/P2/P3|
+|8..14|RON_MASK_1..7，ID=7+mask|
+|15|EXHAUSTIVE_DRAW|
+|16|ABORT_FOUR_WINDS|
+|17|ABORT_FOUR_RIICHI|
+|18|ABORT_FOUR_KANS|
+|19|ABORT_TRIPLE_RON|
+|20|NAGASHI_MANGAN|
+
+P0 是舍牌者，P1/P2/P3 为下/对/上家，RON bit=1/2/4。响应是最终裁定，不是未公开意图。窗口依次由实际荣和集合、成立鸣牌、正常下家摸牌或终局关闭；缺失/冲突是 invalid，不当作 NEXT_DRAW。大明杠后的岭上自摸不把原舍牌响应改成 RON；暗/加杠抢杠窗口不属于 21 类舍牌响应。
+
+### 5.3 观察者私有 SELF_PASS
+
+只有执行包装器确认原子提交成功的 `native_committed_pass`，或实际观察到唯一正常下家摸牌、并已核实本家存在非平凡合法 Pass 的 `inferred_unique_next_draw_pass`，才写本家私有 marker。
+
+capture trigger 只是上下文，不是成功证据。失败/取消/未知意图、被更高优先级鸣牌覆盖的未成立选择都不能补造成 Pass；不读取 GameAction.user_input。
+
+marker 锚定公共关闭事件之后、复用该事件位置，不增加公共 event ID 或时钟，不改其他观察者。杠响应的私有确认以公开 replacement draw 关闭为规范锚，不由重复 transport acknowledgement 决定；普通舍牌以实际关闭事件为锚。旧 snapshot/prefix 冻结不回写。source/provenance 是审计元数据，不作为 E/R 或未来信息输入。
+
+## 6. 规范化公共事件时钟与 Attention
+
+### 6.1 语义边界
+
+`event_id/cutoff_event_id` 是规范化公共事件流下标，复合 events 另可含本家 marker，二者不能混用。`source_record_index`、source hash、native callback 批次和文件分块仅作来源信息，**不得决定 RoPE positions**。
+
+规范时钟从0开始，只看已观察到的事件：
+
+1. start_game、start_kyoku、draw、reach、discard、reach_accepted、dora、成立鸣牌、杠声明、终止及 end_kyoku/end_game 等各推进一个语义 tick。一次事件展开多条 Token 全部共享位置。
+2. 开局 start_kyoku 与庄家首次 draw 是两个语义事件，无论源 RecordNewRound 将其打包在一起还是分开发送。标准开局 start_game=1、start_kyoku=2、first draw=3，S/DECIDE=4。
+3. reach 与其 discard 分别计时；reach_accepted 与之后的 draw 分别计时。原始 record 是否合并它们不改变时间。
+4. 同一触发牌的连续多荣和是一个公开同时裁定，共享时钟，并按相对放铳者P1/P2/P3规范顺序展开；原始赢家列表顺序不改变输入。公共总支付只编码一次。在线跨批次暂存不完整win group，见到实际边界才发布完整裁定；未完整时拒绝决策snapshot，不利用尚未到达事件补写旧输入。
+5. kan_commit 是可选transport确认，不占模型时钟，不单独生成历史接受Token；它仍可立即证明当前账本的杠已提交。为避免有无ACK及旧杠延迟Dora改变历史，历史接受行统一锚定共同可见的本次有效Dora或replacement draw证据；旧杠延迟Dora不能证明新杠提交。模型真实决策前两条路径的状态/历史/位置一致，不借未来证据回写已封存前缀。
+6. SELF_PASS 不推进时钟，使用已观察关闭事件的锚。不同来源若本家私有事实不同，不强行要求相同历史，也不伪造离线无法知道的 Pass。
+7. 同一公共cutoff有多个已证非平凡Pass监督样本时，按稳定初始座位顺序输出，不遍历原生hash-map顺序；每个观察者的输入不变，样本ID/聚合哈希/串行与两进程重放也必须确定一致。
+
+令最后公共语义位置为 C：BOS=0；所有 S 与 DECIDE=C+1；ACTION=C+2。H 可因单事件展开、同时和牌或私有 marker 与 C 不同，不再把 H 当时钟。
+
+`PublicSnapshot.public_clock_version` 必须显式为当前版本；缺失/旧时钟拒绝 Tokenize 和 runtime。旧历史/模型 K/V 必须重建，不能补一个常数、丢掉 positions、放宽误差或仅改版本标签。
+
+### 6.2 块注意力
+
+| Query / Key | H（含 BOS） | S | D | A |
+|---|---|---|---|---|
+|H|因果|禁止|禁止|禁止|
+|S|允许|双向|禁止|禁止|
+|D|允许|允许|自身|禁止|
+|A|允许|允许|允许|自身|
+
+所有层相同；RMSNorm/FFN 逐 Token，不跨样本归一化。D 在任何层不能读 A。Padding 不作 Key，无效 Query 只读 BOS 后清零；SDPA bool True=允许。
+
+同一决策候选只共享前缀 K/V，分支互不可见，不串接多个 ACTION。缓存绑定 owner、观察者/决策、参数与 buffer 版本、设备/dtype、完整候选、input/model 合同；不能跨决策或更新后复用。
+
+## 7. Transformer 架构与规模口径
+
+pre-norm decoder-only：字段 Embedding 求和与 numeric 投影；L 层 RMSNorm→无 bias QKV→RoPE→block SDPA→无 bias output+residual→RMSNorm→SwiGLU+residual；final RMSNorm。零 dropout，无 BatchNorm 或跨样本混合。
+
+五个 tiles 列分别为独立 `Embedding(39,d)`，共195行。numeric 与 presence 转 FP32 后拼接40维，经 `Linear(40,d,bias=False)`。其他独立字段行数：kind48、actor5、source5、stage16、wind5、slot17、flags16×3、action_id547、type13、action_tile39、tsumogiri3、riichi3；总944行。
+
+Policy=`Linear(d,546)`，Response=`Linear(d,21)`，Value=`Linear(d,84)` reshape21×4，均含 bias。dense、encode_prefix 的 Policy 以及 score_actions 的 Response/Rank **在线性投影本身禁用 autocast**，FP32 输入/计算/输出；不得仅在 BF16 投影后 `.float()`。BF16 主干不要求与完全 FP32 主干逐位相同。
+
+$$P=L(4d^2+3df+2d)+1636d+651.$$
+
+| preset | L | d | heads | f | 参数量 |
+|---|---:|---:|---:|---:|---:|
+|Tiny|4|192|3|512|2,085,771|
+|Small|6|256|4|704|5,239,435|
+|Medium|8|384|6|1024|14,790,795|
+|Large|8|512|8|1408|26,536,587|
+
+### 7.1 统一半庄统计
+
+`N_eligible_half_games` 是过滤后、整场 split 前的完整合格池，仅作审计规模；`available_split_counts` 是该池切分后数量；`exported_split_counts` 是当前实际导出量；`N_train_half_games` 是当前导出 train 完整半庄数。
+
+**模型规模唯一按 N_train_half_games 选型。** 本条已直接解决原正文第7.5/14.2和第17节冲突，不再并列两种口径。
+
+| N_train 完整半庄 | 数据允许最大主力 preset | effective batch |
+|---:|---|---:|
+|<30,000|Small|128|
+|30,000..49,999|Medium|256|
+|≥50,000|Large reference|512|
+
+M1 固定 Small。正式 M2 必须覆盖全部 available train/validation，probe 子集不冒充全量。规模门槛不是学习理论充分条件；规则混杂、数据/支持不足不能靠扩模型解决。实测预算超限按 Large→Medium→Small 降档或停止，不缩 M3 样本伪装预算。
+
+## 8. 数据与监督合同
+
+主 cohort 为雀魂四人赤牌半庄，`category=2/mode=2/mode_id=12`；规则、技能/段位来源同质。Tenhou 或其他规则分开数据集。训练/验证/测试按整场 game_id 的固定 hash/salt 划分，四观察者视角同 split；真实 Golden 整场排除在训练、验证、测试及支持统计外。
+
+主数据必须完整半庄、来源事件完整、所有采纳动作原生合法且可信、舍牌窗口裁定完整、独立结算和最终唯一名次可追溯。不完整数据仅作独立诊断，不混为同一价值分布。
+
+样本保存 game/round/observer/decision/cutoff、初始座位、完整候选与实际全局动作、action provenance、响应适用/观察位和真实响应、最终名次有效位、小局点数诊断、规则/输入/Schema/mask/模型/产物版本与来源链。input 和 labels 分开构造，targets 的扰动不能改变 forward。
+
+`action_valid`、`response_applicable`、`response_observed`、`value_valid` 分开。`value_valid⇒response_valid`；非舍牌不造响应，缺标签不填正常事件。有效 target 若被当前公开 mask 排除，定位规则/数据错误，不按标签 unmask。
+
+### 8.1 终局公开信息
+
+- Hora 仅在公开裁定后揭示赢家手牌；里宝只在规则实际公开时写。不能从全知初始手牌提前传播给其他观察者。
+- 荒牌/流局满贯按冻结原生 tenpai 宣告机制揭示实际应公开手牌；不从支付猜听牌。
+- 九种九牌只揭示宣布者。RecordLiuJu 使用 type、seat、tiles；不用 allplayertiles 机械补其他手牌。核实当前 draw actor、首次 draw、未舍牌、未鸣牌、14张、至少9种幺九字与牌张一致；源 tiles 存在必须匹配，否则拒绝。源 tiles 缺失时，只有已验证历史与冻结公开规则唯一重建才允许，保留明确 provenance。
+- 揭示在终止时点进入 PUBLIC_HAND_REVEAL，所有视角获得同一公共事实；揭示前只有本家知道自己的手牌，旧快照不回写。通用终局若缺应公开且不可证明的信息，置visibility_complete=false并记录gap，后续前缀不可用。当前九种规范化入口要求完整前序牌账本；宣布者/牌张矛盾或重建前提不足直接RecordError，不输出伪装完整的终止事件，不填假手牌。
+- 已验证的途中流局由冻结规则证明本次转移为零，记录零 deltas 和该时点已知 scores，四家均生成 present=true 的 SCORE_DELTA。它与缺少 NoTile/Hule 结算不同；后者保持缺失，不从下一局分数反推、不默认填零。已有立直棒扣分不撤回，也不被终止零转移覆盖。
+- 终局影响必须一直对拍到下一局真实决策的完整历史、顺序、位置与状态，不能只比较 reason 字符串。
+
+## 9. 损失与训练数学
+
+固定训练 manifest 的真实比例 `ρE=P_D(response_valid)`、`ρV=P_D(value_valid)`，不按 microbatch 或 validation 重算。
+
+$$L_A=-\frac1B\sum_i\log\pi_\theta(A_i\mid X_i,C_i).$$
+$$L_E=-\frac1{B\rho_E}\sum_i r_i\log p_\theta^{pub}(E_i\mid X_i,A_i).$$
+$$L_V=-\frac1{B\rho_V}\sum_i v_i\log v_\theta(R_i\mid X_i,A_i,E_i).$$
+$$L=L_A+0.25L_E+0.1L_V.$$
+
+Response train temperature=1；校准后推理使用 TE，但 allowed mask 同一函数。Value 只取实际发生 E 的 rank CE，真实 rank1..4 在数据层明确转0..3。保持自然分布，不做类重加权、Focal、RWR/Profile S、CQL/TD 或额外 BC 阶段。
+
+有效标签先严格验范围、合法动作和 allowed 位，再为无效行分别生成 safe_e、safe_e_v、safe_r；不对有效越界标签 clamp/取模/关 valid。无效行在 CE 前用有限 dummy logits 和全允许 dummy response mask，避免 NaN×0；gather 前不可接收 -1/255 等原始哨兵。全无有效辅助标签返回连图零，不伪称完美 NLL。
+
+一次 update 的全局样本数 N、DDP world size W：各 rank local sums 乘 W/N、W/(NρE)、W/(NρV)，DDP 平均梯度后等于全局定义。不能各自除本地有效数或 microbatch 数。条件 NLL 用 sum/valid_count 单独报告。
+
+## 10. 冻结概率、价值与受限 KL 数学
+
+### 10.1 分解与预测误差
+
+链式法则 `P(A,E,R|X)=P(A|X)P(E|X,A)P(R|X,A,E)` 与全期望成立，不证明有限模型最优或因果识别。
+
+定义 `δE=TV(p̂,pμ)`；支持分支条件价值误差由 εm 控制；效用跨度3，则名义价值误差 ≤ εm+3δE。所有概率均针对同一公开 allowed 集合，真实有效标签落入被 mask 类别会证伪掩码正确性假设。
+
+### 10.2 悲观支持与单侧误差
+
+令冻结的有效价值事件集合为 Esup，具体质量准入见第11节，不改变下式：
+
+$$\widetilde Q=\sum_{e\in E_{sup}}\hat p_e\hat m_e+\sum_{e\notin E_{sup}}\hat p_e(-1.5),\quad
+\rho_a=\sum_{e\notin E_{sup}}\hat p_e,\quad b_a=\epsilon_m+3\delta_E.$$
+
+拆分支持误差、未支持替代与响应概率误差，得到：
+
+$$-b_a-3\rho_a\le\widetilde Q-Q^\mu\le b_a.$$
+
+未支持分支取最差值本身不高估，但整个 Q̃ 不是自动具有置信覆盖率的 LCB。`rho_U` 是模型 masked 概率质量，不是 δE 或真实概率误差上界。
+
+500 个独立 train 完整游戏只是数据筛查。原均值 Hoeffding 核算 `ceil(72 ln840)=485` 在固定 iid 有界总体均值下算术成立，但不能推出条件网络的 uniform εm≤0.25。决策行相关、游戏聚合可能改变总体，禁止把计数或普通校准指标当误差证书。
+
+### 10.3 受限闭式更新
+
+KL 方向固定 `KL(π||π0)`。一般目标为 `maxπ Eπ Q̂ - τ KL(π||π0)`，解为先验乘 exp(Q̂/τ) 后归一化。
+
+首版只定义 `S={a∈C:0≤a≤147,logπ0(a)≥ℓmin}`，M=π0(S)，q0=π0(·|S)。若 |S|<2 或 M=0 直接先验；否则：
+
+$$q_\tau=\operatorname{Softmax}_{a\in S}(\log q_0(a)+\widetilde Q_a/\tau),$$
+$$\pi_\tau(a)=\begin{cases}M q_\tau(a),&a\in S,\\\pi_0(a),&a\notin S.\end{cases}$$
+
+完整候选不 Top-K、不合并动作变体。分支质量只决定 Esup，不删除响应后重新归一化，不偷偷改变 S 的定义；因此集合外逐动作概率与 M 保持合同仍成立。
+
+### 10.4 E1/E2
+
+令 `d=qτ-q0`、`Δ̂=Σa d_a Q̃_a`。给定当前状态/候选的有效 b、δπ：
+
+$$E1=M[\tau KL(q_\tau\Vert q_0)-\mathbb E_{q_\tau}b-\mathbb E_{q_0}b-3\mathbb E_{q_0}\rho]-3\delta_\pi.$$
+
+$$E2=M[\widehat\Delta-\sum_a|d_a|b_a-3\sum_a(q_0(a)-q_\tau(a))_+\rho_a]-3\delta_\pi.$$
+
+依据 Q̃−Qμ 的单侧区间，真实增益下界至少为 E1，抵消同一动作误差得到不更松的 E2。不得把 E1 的 E_q0[rho] 换为 E_qτ[rho]。
+
+反例：q0=(.5,.5)、τ=.1、真值(1.5,0)、Q̃=(-1.5,0)、rho=(1,0)、b=δπ=0，qτ≈(3.05902227e-7,.9999996941)。真实变化约−.7499995411；错误 qτ 加权界约+.0693133109；正确 E1≈−1.4306857714，E2 等于真实变化。该反例永久保留。
+
+`certified` 必须有误差界来源、当前候选覆盖、置信/确定性声明且 E2>0。没有真实上界则 certificate_unavailable，不填零。普通 NLL/Brier/ECE、分桶均值、bootstrap、分支质量 passed 都不产生 certified。经验模式不附数学保证；先验回退仅停止本次额外重排，不证明 π0 相对真实 μ 无损。
+
+整场非劣还要求相关可访问历史上局部条件成立、后续机制固定，并满足终止/可积条件；训练分布平均改善不自动满足。
+
+### 10.5 温度与采样
+
+因 Q̃∈[−1.5,1.5]，支持内相对先验倍率在 `[exp(−3/τ),exp(3/τ)]`。预登记 Rmax>1 时必须 τ≥3/ln Rmax；未配置 Rmax 不声称另有上限。τ=∞ 严格先验、零候选辅助前向；τ→0 不作首版默认。
+
+默认从完整最终分布随机采样。argmax 是单独诊断策略，不继承随机策略的证明，不能作为 certified 或验证冻结的随机部署策略冒充发布。
+
+## 11. 校准、分支质量与推理保护
+
+### 11.1 角色与温度
+
+完整 validation 按固定 game hash 分成 cal_fit/cal_check；test 不调参。冻结网络，仅 cal_fit 的固定温度网格选 TA、TE、TR；分别最小化合法动作、masked response、真实 E 分支 rank NLL。cal_check 只评估预登记判据，不能看完后调阈值。
+
+温度总体 NLL 与平均 forward KL 差一个未知条件熵，Pinsker/Jensen 仅给同一分布上的平均 TV 关系；有限验证 NLL 不是逐状态证书，不能忽略条件熵把原始 NLL 当真实 KL 数值。
+
+### 11.2 动作门控
+
+只用 cal_fit 中真实动作为舍牌、完整 C_D 至少两项且 action_valid 的样本；概率分母是完整合法 C，不是舍牌子集。将真实动作 logπ0 升序，取0-based `n//100`，`>=` 保留 ties，不插值；n<100 取最小值，不外推99%保证。log阈值权威，避免 exp 下溢。无样本/非法概率则 gate unavailable、禁用重排。
+
+cal_check 报告保留率、|S|<2比例、M与支持数分布、当前顺位/立直/副露威胁切片；99%是拟合经验约束，不是因果覆盖率。
+
+### 11.3 显式逐分支质量合同
+
+总体 action/response/rank 的 max_nll/max_brier/max_ece、最小观察数与门控保留率仍按预登记 policy 检查。
+
+另由 `BranchQualityPolicy` 显式登记一组 `BranchQualityCriterion`：
+
+- head 为 response 或 rank；event_id 为0..20。
+- 每项必须给 max_nll、max_brier、max_ece、minimum_independent_games。
+- 整组给非空 source_reference；序列化包括版本、指标总体、cal_check分区、计数单位、缺项语义、回退行为与完整内容 hash；登记内容进入计划/校准/有限策略身份。
+- 指标总体是“真实响应等于 e 的 cal_check 行”：response 为该子集的21类多分类 NLL/Brier/top-label ECE；rank 为该子集的4类指标。ECE 固定10等宽 confidence bins。独立游戏按真实 game_id 去重，100行同一游戏仍为1。
+- 某 e 的 response 与 rank 两个判据都 passed，才算该分支质量 passed。每头缺正式判据、缺指标或独立游戏不足为 unavailable；证据足够但超限为 failed。合并时任一已证失败令分支 failed（仍保留另一头的 unavailable），无失败但有缺项才为 unavailable，不让已知失败被缺项掩盖。
+- **没有正式默认阈值或默认最小验证游戏数。** 审查反例和单元测试数字不是正式生产标准。未登记就是 unavailable，不以总体平均放行罕见分支。
+
+`EventSupport.supported` 只表达 train游戏数≥500，不能独自授权价值。最终：
+
+$$e\in E_{sup}\iff N_{train,e}\ge500\ \land\ quality_{response,e}=passed\ \land\ quality_{rank,e}=passed.$$
+
+规则不可能、训练支持不足、质量 failed、质量 unavailable 分别报告，不混入公开规则 mask。无任何有效价值分支时 runtime 使用同一先验，原因 `no_quality_qualified_response_branches`，不做候选前向；仍有合格分支时对其他分支保留 masked 概率、取−1.5并计入 rho_U。有限生产发布同样要求至少一个训练支持且质量合格分支，以及既有总体质量和独立验证策略选型通过。
+
+### 11.4 公开规则 mask
+
+mask 的1仅表示未被公开事实证明不可能；未知保守允许。实际读取白名单为 observer、候选、公开舍牌历史/当前河、已成立 meld、公开立直接受状态、remaining_draws、history_complete、pending-kan标志和规则开关。不读取他家暗手/私有合法列表/隐藏牌山/未来事件或真实标签。
+
+1. 字牌不能 CHI，只有相对下家可吃；已立直者不能吃碰大明杠。
+2. 完整公开历史中，目标玩家自己舍过候选同基本牌种，排除包含该玩家的 RON mask；不猜隐藏等待或临时振听。
+3. 三家和按雀魂正常多荣和，保留 RON_MASK_7、排除 ABORT_TRIPLE_RON；相反冻结开关则互换。
+4. 候选之后四风连打、多玩家四杠、四家立直按公开证据分 possible/certain。证明任一途中流局必发生时，NEXT_DRAW/CHI/PON/DAIMINKAN及普通荒牌/流局满贯不再可能；**荣和仍先于途中流局**。终止原因优先级为四风→多人四杠→四立直，只有确定证据才压掉低优先级原因。
+5. 多人四杠需要总杠≥4且有多个所有者；一人四杠不触发。四杠已满禁止再大明杠。第四家候选立直必须考虑该候选的立直位，不能只看动作前accepted状态。
+6. remaining_draws=0 时 NEXT_DRAW 与所有吃、碰、大明杠为 False，保留公开规则尚可能的荣和/终局。remaining未知不因缺失断言耗尽。
+7. 流局满贯按雀魂既定修正：自己的吃碰杠本身不取消；自己的中张舍牌或自己的舍牌被叫走才排除资格。先保留已知否定，再对不完整历史作保守判断。不能把错误的“任意 meld 取消”复制到结算。
+8. 不完整历史不由未见事实强行判定终止；已明确公开的四立直/多人四杠证据仍可使用。不能通过扩大 Unknown 掩盖已知规则错误。
+
+顺序固定：公开规则 mask → masked Softmax/TE → train+branch质量价值支持 → unsupported概率质量/−1.5 → KL。统计质量不足不改 allowed。全空 mask 是合同错误，不退回未掩码 Softmax；有效真实标签被排除时定位规则或数据错误，不临时放行标签。
+
+## 12. 决策执行合同
+
+1. 校验完整可见前缀、时钟版本、完整合法 C、模型/数据/recipe绑定。
+2. 前缀一次前向得到546 logits，合法 C 上 TA 先验；构造 S、M。
+3. prior-only/τ∞、缺有效门控、总体质量失败、无有效价值分支、S不足或M=0时直接相同先验。
+4. 有限合格路径对全部 S 构造独立单 ACTION 后缀，共享同一前缀 K/V，无Top-K。
+5. 每候选先公开mask，再TE响应Softmax；TR名次Softmax给分支效用；按Esup计算保守Q和rho，不对可靠分支重新归一化。
+6. 受限KL；certified另校验当前误差界及E2，其余标empirical_only；从完整最终分布随机采样，映射回完整原生Action。
+7. telemetry记录规则位、train计数支持、每分支质量三态、最终价值支持、masked概率、保守/名义诊断、rho、S/M、q0/qtau、KL、E1/E2、回退、RNG前后摘要。
+
+## 13. RiichiEnv/雀魂适配
+
+离线 GameDetailRecords.actions 只读 `.result`，绝不读 `.user_input`。下载 pb2 不 import 执行；协议由可信 proto 静态字段和描述符核对。source_record_index/hash保留来源，不影响模型时间。
+
+离线 replay 在已知 cutoff 调观察；不得用将未来日志注入 current_claims 的 helper 构造决策前合法集合。在线在完整原子执行成功后投影公开事件，模型只收本家白名单 snapshot，不收四家全知协调对象。
+
+立直复合完整动作在声明前冻结输入，再执行reach与对应discard；结构听牌即可，不因可见等待牌四张（空听）而排除合法立直。拒绝失败提交后伪造成功。
+
+暗/加杠分声明、抢杠窗口和提交；KAKAN声明时仍是原PON。仅有本次有效dora/替换draw/匹配ACK证据才提交，旧杠延迟Dora不证明新声明；被抢杠不提前改meld。对手暗杠红牌组成按可见性过滤，不从全知记录泄露。
+
+冻结雀魂规则包括赤牌、三家和、抢暗杠国士、倍役满、包牌、喰替、起家顺破平、终局及流局满贯。规则hash与数据来源必须一致，不混用天凤规则。流局满贯外部依据见[雀魂规则取证](kar-nagashi-rules.md)。
+
+## 14. 训练配置与授权边界
+
+从随机初始化，不继承旧 BC/CQL checkpoint。Small feature-on/off M1同split/seed/样本序，每模式最多1Epoch，effective batch128；feature-on训练整样本25%置空，feature-off清全部新增规则字段。
+
+M2唯一主力默认2Epoch，只有验证继续改善、预登记各头无显著恶化且预算允许才第3Epoch。Small/Medium/Large batch128/256/512；AdamW lr3e-4、betas(.9,.95)、eps1e-8；global L2 clip1；warmup总updates3%且至少100，余下cosine至0.1峰值。每0.25Epoch和Epoch结束完整验证。主参数FP32，可用硬件BF16主干，但三头投影始终FP32。
+
+weight decay：value_head.weight=.05；其他二维矩阵=.01；所有bias/norm与value_head.bias=0。不做首轮WD网格试错。
+
+训练规则特征增强：每决策样本抽一次 Bernoulli(.25)，命中时该样本全部34个HAND_COUNT flags[0..7]同步N/A，ROUND_STATE numeric18/19清零且present=false；不清stage或其他字段。全局feature-off另清ROUND_STATE.stage。验证/测试/推理置空概率0。随机流按原sample_mask_v1和seed/epoch/game/decision/draw派生，不因DDP rank改变样本增强。
+
+`updates_per_epoch=ceil(N_train_decisions/effective_batch)`，不是固定2000更新。正式配置同时保存N_train、N_eligible、available/exported counts、tier/basis、epochs、recipe和预算；无真实吞吐/单价不伪造测量。
+
+Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sampler/分桶游标、所有活动artifact字段、source/native构建指纹、完整训练manifest与split、固定rho/lambda、预算账本/登记身份、温度/log阈值/support/quality与验证策略引用、Rmax/tau_min、证书来源和环境版本。任何核心字段缺失/不匹配拒绝精确续训。
+
+总云资源USD1000独立封顶：M0/M1=100，M2=650，M3=250，包括CPU/GPU、存储、快照和传输。实际spent与未对账fixed reservations分离；收据唯一ID幂等，异常计算也结算，checkpoint绑定账本锚点，拒绝费用回退。不能跨阶段挪用、缩M3样本或隐费用凑预算。
+
+## 15. 计算与缓存成本
+
+前缀一次；最多32个单Token候选后缀，只算门控舍牌。无MCTS、扩散或多步轨迹搜索。FP32参数/梯度/Adam两moment粗下界16P：Tiny31.8MiB、Small79.9MiB、Medium225.7MiB、Large404.9MiB，不含激活/workspace/缓存，不能据此声称GPU batch可运行。
+
+近似训练量 `6NL(4d²+3df)+12LN²d`；真实成本必须测tokens/s、samples/s、长度桶padding、allocated/reserved显存、数据等待，以及prior-only/finite候选成对推理与完整模拟吞吐。纯prior benchmark不能为finite候选成本背书。
+
+## 16. 统计、校准与棋力证据
+
+报告自然频率action/response/rank NLL、Brier、top-label与每类可靠性、有效样本和独立game数；强制动作与多合法动作分开，立直/副露/顺位切片，响应按RON/CHI/PON/DAIMINKAN/terminal族与21分支，rank按真实E分支。效用分桶与独立game聚类区间不当作uniform错误界。报告所有failed/unavailable，不只总体平均。
+
+同checkpoint比较τ∞先验与验证冻结finite策略，固定规则/对手版本/配置、座位轮换、成对初始牌山seed；策略采样RNG独立记录，轨迹分叉后不声称相同反事实。M3为10,000 paired seed blocks、共20,000半庄、四个初始座位平衡；按整场/paired block聚类区间，报告顺位/一四位率/点数/和放铳/覆盖/延迟/费用。未获可重复验证收益保留prior-only，不靠扩模型试错。
+
+## 17. 阶段顺序与运行许可
+
+- M0：完整来源、结果解码、重放、独立结算、完整半庄、observer泄漏、动作/Token/clock/特征/规则mask/真实Golden与计数审计。合成测试不是新的真实Golden证书。
+- M1：授权后Small三头loss/梯度/DDP/恢复与feature-on/off、资源测量。仅forward通过不代表梯度通过，更不代表阶段完成。
+- M2：在M0/M1和预算证据齐全后，以N_train选唯一主力，显式登记唯一output/账本/recipe，完整数据训练2、条件3Epoch。
+- 校准/finite发布：预登记overall+branch质量标准，cal_fit选择、cal_check只验收，校准/支持/后端/随机策略与验证选型完全绑定。
+- M3：只有另获明确授权且完整20,000半庄预算预测通过才运行；不足不静默缩样本。
+
+规则、隐私、动作或mask错误先停止；完整数据或价值支持不足保持unsupported；质量失败或不可用保守回退；无有效误差界不称certified；预算不足按预定降档或停止。文档、单元PASS、数据training_allowed和历史授权都不是当前任务的运行许可。
+
+## 18. 必须保留的永久回归
+
+- 三头形状/参数量、五张独立tile表、40维无bias数值投影；dense/cache FP32与外层CPU BF16投影边界；同hidden FP32参考，拒绝后置cast假修。
+- 完整LEGAL_SET五表均值、等长不同集合影响raw policy、顺序/padding不变、非舍牌N/A、teacher不影响DECIDE、单ACTION与分支隔离、陈旧/跨上下文缓存拒绝。
+- 同语义cutoff的离线/在线所有输入字段与positions对拍：开局/庄家首次draw、reach/discard、accept/draw、Dora、多Ron、杠声明/抢杠/提交、相同已知本家Pass；batch/incremental/合法分块，来源元数据另比。
+- 九种九牌公开前不泄漏、source seat/tiles矛盾拒绝、规则重建来源、零结算presence、四视角和下一局实际决策完整历史/位置；缺终局可见信息不可伪装完整。
+- 原生合法136牌墙四家立直、四风、多人/单人四杠、末巡和相邻边界；荣和优先、未知历史保守、有效标签不被排除，mask白名单/空mask错误。
+- 总体指标通过但罕见分支失败；passed/failed/unavailable、独立game与重复行、规则不可能、train499/500分别表达；失败分支p保留但不能供应价值，S外概率/M不变，旧缺合同产物拒绝。
+- 安全哨兵、全无目标、固定rho、DDP/累积梯度等价及恢复、完整有限集合KL/E1/E2反例；本轮禁止反向时不得执行梯度节点而伪记通过。
+- red5/普通5完整动作、空听立直合法、声明前不扣棒、多Ron完整mask、PON优先窗口、DAIMINKAN后岭上自摸、被抢KAKAN不提交、对手暗杠赤牌隐私、同game四视角同split、未来/隐藏扰动不影响已封存输入。
+- Ryanmen九点查表、3/7边张排除、full-suji双侧要求、被叫走历史与物理并集去重、起家顺tie-break、真实零/缺失presence、kind-specific字段、whole-sample随机置空及参数量不变。
+- 数据/SQLite/checkpoint/calibration/support/发布所有新字段的缺失/旧值拒绝，即使校验和有效也不能静默补字段迁移。
+
+每轮只对实际执行项目宣称PASS；skip不计PASS，标注缺私有资产/旧版本需重建/禁止更新等原因。旧2673/40或其他历史计数不移植到新源码。
+
+## 19. 旧产物拒绝与真实重建
+
+输入位置、终局公开历史与mask都已改变。artifact v1/v2/v3、source-record时钟、公私Pass旧输入、mask v1/v2、整体指标only的旧quality、support v1、calibration v3及旧有限策略身份都不直接兼容当前V4。
+
+- 从只读原始result事件重新审计/规范化/导出新Token、mask和manifest，输出新目录，不覆盖旧库或重签旧hash。
+- 所有旧历史缓存/KV重新生成；同Schema或同shape不证明输入语义一致。
+- 旧权重即使state_dict可加载，也不是当前精确训练/校准/评测产物；标准source/native与版本加载检查拒绝，任何迁移须显式实现、单独授权与真实验收。
+- 旧支持需在当前合格train选择重新统计；旧校准需固定新输入/模型、正式预登记overall与branch判据后重新计算；finite策略选型/吞吐与发布随之重建。
+- 本轮可用新合成产物测试这些入口和拒绝，不能给真实旧产物补字段、改标签或换hash冒充新产物。缺正式分支判据时prior-only或unsupported，不声称已校准。
+
+## 20. 风险与声明边界
+
+响应稀疏、条件混杂、有限网络误校准、行为先验偏差、对手分布漂移、长期随机性、粗事件粒度、独立游戏不足、规则/数据来源差异和同分规则漂移仍是风险。规则特征不增加理想预测器信息量；其可能作用只是有限模型归纳偏置。SHA是内容一致性与来源绑定，不是秘密签名或恶意发布者认证；checkpoint只从可信来源读取。
+
+## 21. 实现入口与单一文档原则
+
+| 模块 | 职责 |
+|---|---|
+|`mjsoul`|可信result-only协议解码与离线规范化|
+|`event_semantics`|公共语义时钟、九种九牌宣布者手牌验证|
+|`live_events` / `observation`|在线原子结果、终局组与各观察者白名单/私有事实|
+|`tokenize` / `schema` / `actions`|完整宿主编码、历史缓存、全局动作因子|
+|`response_mask` / `response`|公开不可能性与实际响应标签，二者分开|
+|`rule_features`|物理known-count、Genbutsu、Ryanmen/Suji、rank/gap|
+|`calibration_quality` / `calibration`|预登记总体/逐分支判据、heldout指标和校准身份|
+|`support` / `runtime` / `policy`|train支持∩质量准入、悲观值、受限KL与证书边界|
+|`versioning` / `runtime_contracts`|统一活动身份，拒绝缺字段和旧合同|
+|`learning`|数据、模型、损失、预算训练/恢复、冻结推理与发布|
+|`audit` / `settlement` / `completion`|原生合法性、独立结算与完整半庄证明|
+
+详细API见[74模块 README 索引](kar-modules/README.md)。[设计一致性](kar-design-consistency.md)、[输入链历史说明](kar-input-chain-repair.md)和[实现覆盖](kar-implementation-coverage.md)是来源/实现/证据说明，不是并行主设计；若存在旧版本文字，不能代替本文的活动规范。
+
+## 22. 最终实施规格摘要
+
+RiichiEnv宿主；完整Schema/hash固定；源record不决定时间；同语义cutoff和已知私有事实产生相同输入；终局只揭示规则实际公开且已验证的事实；62槽/944行/139字节；完整LEGAL_SET；私有Pass因果确认；三头FP32投影；N_train选型；自然三项CE；公开mask先于Softmax，质量不足独立进入unsupported；Esup同时满足train与逐分支质量；受限KL保持S外概率及M；随机采样；无误差证书不称certified；严格版本/source绑定；任何真实运行另需用户明确授权。
+
+## 23. 来源
+
+- 原始设计及其SHA见页首；Kanachan动作/tile37仅来源参考，非当前工程目标。
+- [RiichiEnv上游冻结基线](https://github.com/smly/RiichiEnv/tree/0ee1236a283b15508f3ac28407027f340b81e1de)；本仓库`state/legal_actions.rs`、`state/mod.rs`定义原生鸣牌余量和Ron/途中流局优先级。
+- 实际雀魂proto的`RecordLiuJu`：type=1、gameend=2、seat=3、tiles=4、liqi=5、allplayertiles=6；只采用公开语义所需字段，协议来源SHA在本轮证据记录。
+- [雀魂官方FAQ](https://mahjongsoul.com/faq/)及[API](https://mahjongsoul.com/api/faq/list)的流局满贯条文，相关取证见仓库规则文档；自己鸣牌不取消资格。
+- [Guo et al., 温度校准](https://proceedings.mlr.press/v70/guo17a.html)、[Canonne, KL/TV](https://arxiv.org/abs/2202.07198)、[torch.gather](https://docs.pytorch.org/docs/stable/generated/torch.gather.html)、[CrossEntropyLoss](https://docs.pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html)。这些方法不替代当前数据/误差/棋力验收。
+
+**文档结束。**

@@ -22,9 +22,7 @@ from riichienv.kar.observation import ObserverLedger
 from riichienv.kar.response_mask import public_rule_response_mask
 from riichienv.kar.versioning import artifact_contract, game_count_contract
 
-CORE_FIELDS = ("schema_id", "schema_hash", "ruleset_hash", "action_manifest_hash", "feature_contract_version",
-               "response_mask_version", "rule_feature_mask_version", "training_plan_version",
-               "schema_mapping_version", "reference_design_schema_id", "reference_overlay_sha256")
+CORE_FIELDS = tuple(artifact_contract())
 
 
 def _sha(path):
@@ -90,7 +88,7 @@ def test_current_sqlite_contract_loads_without_changing_model_inputs(synthetic_d
     changed = collate_examples([poisoned])
     for key in original.inputs.fields:
         torch.testing.assert_close(original.inputs.fields[key], changed.inputs.fields[key], rtol=0, atol=0)
-    assert manifest["scope"]["response_mask_version"] == "public_rule_response_mask_v2_mjsoul_nagashi"
+    assert manifest["scope"]["response_mask_version"] == "public_rule_response_mask_v3_abort_last_draw"
 
 
 @pytest.mark.parametrize("field", CORE_FIELDS)

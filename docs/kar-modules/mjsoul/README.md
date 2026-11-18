@@ -8,7 +8,9 @@
 
 - `load_protocol(proto_path)`：由明确的 `.proto` 构造动态描述符，返回 `Protocol`，分别记录源 proto 与 descriptor 身份。
 - `decode_record_bytes(data, protocol, container=...)`：验证容器及服务端记录，返回 `DecodedGame`。
-- `ServerRecord`：原始记录索引/类型及消息载体；`normalize_records(...)`：将结果记录转成标准事件。
+- `ServerRecord`：原始记录索引/类型及消息载体；`normalize_records(...)`：将结果记录转成标准事件。source record编号只作来源，不设置模型时钟。
+- 九种九牌读取RecordLiuJu的type/seat/tiles，与当前首次draw、未舍牌未鸣牌、14张幺九字条件及先前已验证手牌核对；仅揭示宣布者，不读取allplayertiles补其他手牌。源tiles缺失只允许规则证明的唯一重建并记录provenance。
+- 途中流局的零转移由冻结规则证明；已有scores与零deltas生成结算Token。缺失NoTile/Hule结算仍保持缺失，不从后续分数反推或填零。
 - `ProtocolError` 表示协议描述符/字段合同问题；`RecordError` 表示原始字节、容器或记录事实非法。
 
 ## 容器与数据合同
@@ -33,4 +35,4 @@ def decode_verified_archive(proto_path, raw_bytes):
 
 ## 测试与状态
 
-对应 [test_mjsoul.py](../../../tests/kar/test_mjsoul.py)、[test_audit.py](../../../tests/kar/test_audit.py)。本轮未编译协议、读取原始牌谱或运行示例；处理外部输入时遵守项目的隔离目录与只读要求。
+对应 [test_mjsoul.py](../../../tests/kar/test_mjsoul.py)、[test_audit.py](../../../tests/kar/test_audit.py)。本轮未全量重导出真实牌谱或执行下载模块；合成protobuf/原生合法局面及既有有限只读原始资产的实际结果见[修复报告](../../kar-semantic-branch-repair.md)。外部输入仍遵守隔离目录与只读要求。

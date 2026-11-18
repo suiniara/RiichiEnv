@@ -25,4 +25,4 @@
 
 ## 测试与状态
 
-对应 [core/test_artifact_contracts.py](../../../tests/kar/core/test_artifact_contracts.py)、[core/test_frozen_inference.py](../../../tests/kar/core/test_frozen_inference.py)。本轮未运行任何绑定/模型验收；字段版本以源码常量为准。
+对应 [core/test_artifact_contracts.py](../../../tests/kar/core/test_artifact_contracts.py)、[core/test_frozen_inference.py](../../../tests/kar/core/test_frozen_inference.py)。本轮未执行真实模型校准/发布；绑定/模型单位验收的实际范围见[修复报告](../../kar-semantic-branch-repair.md)，字段版本以源码常量和单一主设计为准。

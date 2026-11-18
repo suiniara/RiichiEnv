@@ -2,7 +2,7 @@
 <!-- api: Response, Ruleset -->
 # KAR 模块 README 总索引
 
-源码：[kar/__init__.py](../../src/riichienv/kar/__init__.py)。本目录为 `src/riichienv/kar/` 的 **73 个 Python 模块**逐一提供说明；本页对应主包 `__init__.py`，[learning 索引](learning/README.md)对应其子包 `__init__.py`，其余文件各有独立目录与 `README.md`。JSON 资源另见[冻结资源说明](assets/README.md)。
+源码：[kar/__init__.py](../../src/riichienv/kar/__init__.py)。本目录为 `src/riichienv/kar/` 的 **74 个 Python 模块**逐一提供说明；本页对应主包 `__init__.py`，[learning 索引](learning/README.md)对应其子包 `__init__.py`，其余文件各有独立目录与 `README.md`。JSON 资源另见[冻结资源说明](assets/README.md)。
 
 KAR 以 **RiichiEnv** 为宿主。`from riichienv.kar import ...` 仅导出 `MJSOUL_RULESET`、`SCHEMA_ID`、`Response`、`Ruleset`，不自动加载 Torch、训练模型或启动对局。完整设计到实现的对应关系见[58项覆盖表](../kar-implementation-coverage.md)，端到端工作流见[生产代码说明](../kar-production-code.md)。
 
@@ -45,6 +45,7 @@ KAR 以 **RiichiEnv** 为宿主。`from riichienv.kar import ...` 仅导出 `MJS
 | `decision` | [说明](decision/README.md) | 不混合输入和标签的决策载体 |
 | `acceptance` | [说明](acceptance/README.md) | 单/多分片最终 gate |
 | `golden` | [说明](golden/README.md) | 真实来源 Golden 核验 |
+| `event_semantics` | [说明](event_semantics/README.md) | 规范公共时钟与终局公开事实验证 |
 | `observation` | [说明](observation/README.md) | 白名单观察者账本 |
 | `tokenize` | [说明](tokenize/README.md) | 前缀、ACTION、历史缓存 |
 | `rule_features` | [说明](rule_features/README.md) | 确定性公开规则特征 |

@@ -22,7 +22,7 @@ def _selection(split, count):
         index += 1
     current = runtime_contract()
     record = {
-        "scope": {key: current[key] for key in ("schema_hash", "ruleset_hash", "action_manifest_hash")},
+        "scope": dict(current),
         "games": games,
     }
     record["scope"]["split_salt"] = SALT

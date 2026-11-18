@@ -8,15 +8,16 @@ from itertools import chain
 from types import MappingProxyType
 from typing import Any
 
-from .calibration_quality import CalibrationQualityPolicy, evaluate_quality
+from .calibration_quality import CalibrationQualityPolicy, evaluate_branch_quality, evaluate_quality
 from .calibration_roles import CALIBRATION_SPLIT_SALT, calibration_is_fit
 from .contracts import canonical_bytes, content_hash, game_split
 from .policy import fixed_tau_grid, support_discards
 from .probability import complete_candidates, finite_vector, legal_prior, masked_log_softmax
 from .runtime_contracts import CALIBRATION_VERSION, RuntimeBinding, runtime_contract, sha256_value
 from .selection_quality import TAU_SELECTION_VERSION, TauSelectionPolicy, paired_tau_evidence
-from .statistics import FullDiagnostics
+from .statistics import ClassificationMetrics, FullDiagnostics
 from .support import EventSupport
+from .versioning import validate_artifact_contract
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,7 @@ def calibration_split_from_manifest(
     digest = document.get("manifest_sha256")
     if not isinstance(digest, str) or digest != content_hash(document["games"]):
         raise ValueError("Validation selection manifest integrity mismatch")
+    validate_artifact_contract(document["scope"], context="validation calibration selection")
     current = runtime_contract()
     if any(
         document["scope"].get(key) != current[key] for key in ("schema_hash", "ruleset_hash", "action_manifest_hash")
@@ -321,6 +323,11 @@ def calibration_metrics(
     bootstrap_replicates: int = 2000,
 ) -> dict[str, Any]:
     diagnostics = FullDiagnostics()
+    branch_metrics = {head: {str(event): ClassificationMetrics(classes) for event in range(21)}
+                      for head, classes in (("response", 21), ("rank", 4))}
+    branch_games: dict[str, dict[str, set[str]]] = {
+        head: {str(event): set() for event in range(21)} for head in branch_metrics
+    }
     gate_rows = retained = small = 0
     mass_sum = 0.0
     events = {str(index): 0 for index in range(21)}
@@ -344,6 +351,9 @@ def calibration_metrics(
                 slices=slices,
                 event=row.response_target if head == "rank" else None,
             )
+            if head in branch_metrics:
+                branch_metrics[head][str(row.response_target)].add(probabilities, target, log_probability=logs[target])
+                branch_games[head][str(row.response_target)].add(row.game_id)
             if head == "response" and support is not None:
                 diagnostics.add_unsupported(
                     math.fsum(value for value, covered in zip(probabilities, support.supported) if not covered)
@@ -375,6 +385,15 @@ def calibration_metrics(
             "brier": values["brier"],
             "ece": values["confidence_reliability"]["ece"],
         }
+    report["branch_metrics"] = {}
+    for head, table in branch_metrics.items():
+        report["branch_metrics"][head] = {}
+        for event, classifier in table.items():
+            values = classifier.report()
+            report["branch_metrics"][head][event] = {
+                "count": values["count"], "independent_games": len(branch_games[head][event]),
+                "nll": values["nll"], "brier": values["brier"], "ece": values["confidence_reliability"]["ece"],
+            }
     report.update(
         gate_multi_discard_count=gate_rows,
         gate_retention=retained / gate_rows if gate_rows else None,
@@ -422,6 +441,16 @@ class CalibrationArtifact:
         return evaluate_quality(self.check_metrics, self.quality_policy)
 
     @property
+    def branch_quality_report(self) -> dict[str, Any]:
+        policy = None if self.quality_policy is None else self.quality_policy.branch_policy
+        return evaluate_branch_quality(self.check_metrics, policy)
+
+    @property
+    def value_branch_statuses(self) -> tuple[str, ...]:
+        branches = self.branch_quality_report["branches"]
+        return tuple(branches[str(event)]["status"] for event in range(21))
+
+    @property
     def digest(self) -> str:
         return self.to_record()["calibration_sha256"]
 
@@ -446,6 +475,8 @@ class CalibrationArtifact:
             "diagnostic_fixture": self.diagnostic_fixture,
             "quality_policy": self.quality_policy.to_record() if self.quality_policy is not None else None,
             "quality_report": self.quality_report,
+            "branch_quality_report": self.branch_quality_report,
+            "value_branch_statuses": list(self.value_branch_statuses),
             "inference_device_type": self.inference_device_type,
             "gate_valid": self.gate_valid,
             "empirical_check_valid": self.empirical_check_valid,
@@ -542,10 +573,12 @@ def calibrated_policy_identity(
 
         tau_minimum(max_prior_amplification)
     record = {
-        "version": "calibrated_policy_identity_v1",
+        "version": "calibrated_policy_identity_v2_branches",
         "binding_sha256": binding.digest,
         "calibration_sha256": calibration.digest,
         "support_sha256": support.digest,
+        "branch_quality_policy_sha256": calibration.branch_quality_report["branch_quality_policy_sha256"],
+        "value_branch_statuses": list(calibration.value_branch_statuses),
         "inference_device_type": calibration.inference_device_type,
         "mode": mode,
         "sampling": "diagnostic_argmax" if diagnostic_argmax else "stochastic",
@@ -557,11 +590,25 @@ def calibrated_policy_identity(
 def validate_policy_identity(record: Mapping[str, Any], binding: RuntimeBinding) -> None:
     unsigned = {key: value for key, value in record.items() if key != "policy_identity_sha256"}
     if (
-        record.get("version") != "calibrated_policy_identity_v1"
+        record.get("version") != "calibrated_policy_identity_v2_branches"
         or record.get("binding_sha256") != binding.digest
         or record.get("policy_identity_sha256") != content_hash(unsigned)
     ):
         raise ValueError("Calibrated-policy identity integrity or model mismatch")
+    fields = {
+        "version", "binding_sha256", "calibration_sha256", "support_sha256",
+        "branch_quality_policy_sha256", "value_branch_statuses", "inference_device_type",
+        "mode", "sampling", "max_prior_amplification", "policy_identity_sha256",
+    }
+    if set(record) != fields:
+        raise ValueError("Calibrated-policy identity requires its full branch-quality contract")
+    states = record["value_branch_statuses"]
+    if not isinstance(states, (list, tuple)) or len(states) != 21 or any(
+        state not in {"passed", "failed", "unavailable"} for state in states
+    ):
+        raise ValueError("Invalid calibrated-policy branch quality states")
+    if record["branch_quality_policy_sha256"] is not None:
+        sha256_value(record["branch_quality_policy_sha256"], "branch_quality_policy_sha256")
     for key in ("calibration_sha256", "support_sha256"):
         sha256_value(record[key], key)
 

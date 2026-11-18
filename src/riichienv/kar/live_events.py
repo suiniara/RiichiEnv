@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from riichienv import HandEvaluator, convert
 
+from .event_semantics import nine_terminals_public_hand
 from .observation import ObserverLedger, PublicSnapshot, SelfPassTrigger
 from .payments import end_game_pot
 from .settlement import _meld
@@ -13,7 +14,7 @@ from .settlement import _meld
 if TYPE_CHECKING:
     from .actions import MappedAction
 
-LIVE_EVENT_VERSION = "native_public_resolution_projection_v3_private_pass"
+LIVE_EVENT_VERSION = "native_public_resolution_projection_v4_semantic_clock"
 _DRAW_ALIASES = {
     "exhaustive_draw": "exhaustive_draw",
     "nagashimangan": "nagashi_mangan",
@@ -51,6 +52,9 @@ class LiveEventProjection:
         self.ended = False
         self._record_serial = 0
         self._delayed_ankan: tuple[Any, ...] | None = None
+        self._pending_horas: list[dict[str, Any]] = []
+        self._pending_hora_record: int | None = None
+        self._pending_pass_receipts: list[SelfPassTrigger] = []
 
     def _next_record(self) -> int:
         value = self._record_serial
@@ -75,6 +79,8 @@ class LiveEventProjection:
     def snapshot(self, seat: int) -> PublicSnapshot:
         if type(seat) is not int or not 0 <= seat < 4:
             raise ValueError("Invalid observer")
+        if self._pending_horas:
+            raise ValueError("Public win resolution is incomplete; no decision snapshot is available")
         return self.ledgers[seat].snapshot()
 
     def capture_self_passes(self, choices: Mapping[int, MappedAction]) -> tuple[SelfPassTrigger, ...]:
@@ -104,7 +110,7 @@ class LiveEventProjection:
             raise ValueError("Native win payments do not match the public riichi pot")
         scores = tuple(score + delta for score, delta in zip(self.public_scores, total))
         normalized = []
-        for raw in group:
+        for raw in sorted(group, key=lambda value: (value["actor"] - value["target"]) % 4):
             actor, target = raw["actor"], raw["target"]
             view = self.snapshot(actor)
             if actor == target:
@@ -164,11 +170,17 @@ class LiveEventProjection:
             actor = self.snapshot(0).current_draw_actor
             if actor is None:
                 raise ValueError("Nine-terminals public reveal lacks a declaring actor")
-            shown[actor] = [convert.tid_to_mjai(tile) for tile in self.snapshot(actor).hand]
+            view = self.snapshot(actor)
+            shown[actor] = nine_terminals_public_hand(
+                actor, [convert.tid_to_mjai(tile) for tile in view.hand],
+                current_draw_actor=view.current_draw_actor, draw_count=view.draw_counts[actor],
+                has_discarded=bool(view.discard_history[actor]), calls_seen=any(view.melds),
+            )
         self._append(
             {
                 "type": "ryukyoku",
                 "reason": reason,
+                **({"actor": actor} if reason == "kyushukyuhai" else {}),
                 "deltas": list(delta),
                 "scores": list(scores),
                 "public_hands": shown,
@@ -214,13 +226,18 @@ class LiveEventProjection:
                 self._delayed_ankan = None
                 index += 1
                 continue
-            if kind == "hora":
-                end = index + 1
-                while end < len(raw_events) and raw_events[end]["type"] == "hora":
-                    end += 1
-                self._win_group(raw_events[index:end], record)
+            if self._pending_horas and kind != "hora":
+                group = self._pending_horas
+                group_record = self._pending_hora_record
+                self._pending_horas, self._pending_hora_record = [], None
+                assert group_record is not None
+                self._win_group(group, group_record)
                 self._delayed_ankan = None
-                index = end
+            if kind == "hora":
+                if not self._pending_horas:
+                    self._pending_hora_record = record
+                self._pending_horas.append(raw)
+                index += 1
                 continue
             if kind in {"start_kyoku", "ryukyoku", "end_kyoku", "end_game"}:
                 self._delayed_ankan = None
@@ -256,5 +273,8 @@ class LiveEventProjection:
         self.raw_cursor += len(raw_events)
         # Public events are fully validated first. Markers are inserted at their
         # observed closing anchor, before any later round in the same native batch.
-        for trigger in confirmed_self_passes:
-            self.ledgers[trigger.observer_player_id].record_self_pass(trigger, provenance="native_committed_pass")
+        self._pending_pass_receipts.extend(confirmed_self_passes)
+        if not self._pending_horas:
+            receipts, self._pending_pass_receipts = self._pending_pass_receipts, []
+            for trigger in receipts:
+                self.ledgers[trigger.observer_player_id].record_self_pass(trigger, provenance="native_committed_pass")

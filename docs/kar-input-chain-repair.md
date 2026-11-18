@@ -1,86 +1,37 @@
-# KAR 输入链路：LEGAL_SET 与观察者私有 SELF_PASS
+# KAR 输入链路：完整 LEGAL_SET、私有 SELF_PASS 与规范语义时钟
 
-审查基线：`a8696698af57dfeeb4c2699c4b685eea56e19f77`，分支 `kar/riichienv-v1-20261117`。
-主设计 SHA256：`4349039c44175ece77f6dddad3a2106fbd3e0e0339935122df242175c83cbdba`。
+活动规范见[单一主设计](KAR-v1.2.2-DESIGN.md)，本轮结果见[修复与验收报告](kar-semantic-branch-repair.md)。本页说明实现，不是另一份可与主文档冲突的设计。原输入链轮a869→91b0db0的372项是历史证据。
 
-## 1. LEGAL_SET 的实际模型输入
+## LEGAL_SET
 
-旧前缀仅以 `numeric[16]` 表示候选数；模型没有读取 `ModelBatch.candidates`，等长集合无法影响输入。现在每个有效 LEGAL_SET(kind=8) 行增加：
+每个有效kind8行增加 `mean(E_id+E_type+E_tile+E_tsumogiri+E_riichi)`。复用ACTION五表，无新可训练参数；`schema.action_factor_ids`共用因子工厂，只有DISCARD填后三因子，其他动作N/A。候选为完整全局ID，唯一非空≤32，按ID排序，过滤546，不Top-K、不合并变体。numeric16继续数量/32。
 
-`mean_a(E_id[a] + E_type[type(a)] + E_tile[tile(a)] + E_tsumogiri[tsumogiri(a)] + E_riichi[riichi(a)])`。
+dense与encode_prefix共用embedding/_hidden；单ACTION后缀不再加整个集合。缓存绑定完整候选、参数/buffer版本、设备、上下文及当前input/model合同。Policy、Response、Rank三头在线性投影本身禁用autocast，保留9a4d154的FP32修复。
 
-- 复用 ACTION 的五张既有表，没有新的 Embedding/可训练参数。
-- `schema.action_factor_ids()` 与 ACTION 后缀共同派生五个索引。只对 DISCARD 填牌种/摸切/立直因子；所有非舍牌按冻结 §4.7 使用 N/A，不把 `a//4` 应用于全 546 类。
-- 模型输入过滤 padding=546，真实成员必须唯一、非空、容量不超过 32；重复真实 ID 拒绝，而不是重复加权。按 ID 排序后求和，集合排列不改变表示。
-- 保留 `numeric[16]=|C|/32` 的原数量语义，不截断、不只池化舍牌、不合并四种变体。
-- dense 与 `encode_prefix` 都经过 `_hidden` / 同一 InputEmbedding。单 ACTION 的 `score_actions` 不再注入整个集合；它只验证集合与缓存所属前缀相同。
-- K/V cache 新绑定完整候选集合、输入版本及模型合同；参数或计算 buffer 被改动、旧输入版本或上下文不一致均拒绝。
+## 公共域和语义时钟
 
-固定可控 Embedding 的回归直接读取实际 embedding 输出，精确核对公式；不是只检查输出 legal mask。
+`event_id/cutoff_event_id`是公共流下标，不等于含私有marker的复合events数组下标。source_record_index/hash是来源证明，**不再分组推进模型时间**。
 
-## 2. 公共事件域、私有历史与逻辑时钟
+`event_semantics.PublicEventClock`由离线和在线账本共用：start_game、start_kyoku、首次摸牌分别占1/2/3；reach与discard、reach_accepted与后续draw、Dora各有明确语义tick。单事件展开多Token共位置。同触发多Ron共享裁定时间，公开支付只编码一次，在线不完整多Ron组拒绝决策快照；分块不能提前支付或丢掉后续赢家。
 
-`ObserverLedger.event_id` / `PublicSnapshot.cutoff_event_id` 继续表示规范化**公共事件流**下标；它不是复合 `snapshot.events` 的数组下标。`source_record_index` 只是公共可见逻辑组，不等于 event ID。
+kan_commit是可选transport ACK，不占模型时钟；它可立即更新当前账本的已提交状态，但历史接受Token统一在共同可见的本次有效Dora/替换draw证据处生成。旧杠延迟Dora仍不证明新杠提交，有无ACK不改变最终历史。S/DECIDE位置=C+1，ACTION=C+2；H历史行数不再被当成时间C。`PublicSnapshot.public_clock_version`缺失/旧值拒绝，不为旧快照补当前版本。
 
-观察者自己的 `events`/`history_positions` 可以多出已确认私有标记。SELF_PASS：
+## 私有Pass的因果边界
 
-- 不增加公共 event ID，不推进公共逻辑时钟，不修改手牌、河牌、副露、分数或他家状态。
-- 放在关闭相应响应窗口的公共事件之后，使用该确认事件的逻辑位置。同组多个 Token 共位置本来就受完整 Schema 支持。
-- 因 H 增加一行，历史行数改变；S/DECIDE 的逻辑位置仍由公共可见时钟 C 决定，不因别人的私有事件变化。
-- 先前 `PublicSnapshot` 与 `TokenSequence` 是冻结副本；确认后的 materialization 不改写它们。
-- 若一个原生 batch 已包含后续 Dora、摸牌或新局，按公共确认锚插入本家的复合历史，不把旧局 Pass 放到新局后。增量缓存能延伸新尾部；前缀不再相符时重建，不输出陈旧 blob。
+capture只捕获上下文；标准在线包装器在原子提交成功后确认。离线只有已验证非平凡选择与实际唯一正常下家draw，才推断Pass；不从user_input、未知意图或被覆盖鸣牌补造。
 
-## 3. 确认入口与在线事务
+确认marker仅入本家，锚定实际公共关闭事件，不增加公共ID/时钟。杠的私有确认规范锚为替换draw，不被transport ACK先后左右。批次含后续事件时按锚插入，旧snapshot/TokenSequence不回写，其他观察者字节不变。当前决策可有后续标签，但该次输入不能含未来确认。
 
-`SelfPassTrigger` 是观察者专属的已知触发上下文，不是成功凭证。`pass_trigger()` 只捕获当前普通舍牌或已声明杠的 source/kind/pai/public ID；加杠要求原 PON 存在，暗杠牌信息使用该观察者已过滤的公开表示。
+provenance保留native_committed_pass/inferred_unique_next_draw_pass；不同来源不必伪造相同provenance。相同可见事实、已知私有事实、候选与语义cutoff，全部模型字段（含positions）必须相同。
 
-`record_self_pass(trigger, provenance=...)` 仅接受本家/已观察/已关闭窗口及支持的来源；`apply_event(type=self_pass)` 有同样的 owner/source/confirmed/时间校验，并在任何公共状态推进前验证。来源为：
+## 终局公开信息
 
-- `native_committed_pass`：执行包装器已验证合法选择且原子原生提交成功。
-- `inferred_unique_next_draw_pass`：冻结的离线唯一正常摸牌响应规则，不是隐藏意图猜测。
+九种九牌离线与在线共同验证宣布者、当前首次draw、14张幺九字条件、未舍牌未鸣牌、source tiles一致性。只在公开终止后揭示宣布者；不机械补出全知记录里的其他手牌。源tiles缺失时仅允许冻结规则与已验证前序事件的唯一重建，记录来源。已证明途中流局零转移与缺失日志分开，已知scores+零deltas产生四个present=true的SCORE_DELTA；缺失NoTile/Hule结算不填零。
 
-触发 public ID 是本家去重键；重复确认 no-op，既不重复插入，也不改写首次 provenance。
+必须比较到下一局的真实决策前缀，不能只比reason。历史缓存共享语义位置、支持增量与必要重建；不完整终局可见性不冒充可训练前缀。
 
-`run_match` 在响应提交前调用 `capture_self_passes`（无副作用），只有 `execute_joint_responses` 正常成功后才向 `observe_native` 提供这些已确认选择。失败、取消不确认。Projection 先完成公共批次校验，再按确认锚只写各自账本；公开 `projection.events` 不包含 self_pass，原生 public stream 中混入私有事件立即拒绝。
+## 当前版本与兼容性
 
-该入口是可信调用方的记录合同，不是数字认证；捕获 trigger 或设置字符串本身都不证明提交成功。标准执行链保证成功边界，不从他家动作猜本家行为。
+宿主Schema/hash不变；artifact=`kar_riichienv_contract_v4`，input=`semantic_public_clock_terminal_reveal_v2`，model=`kar_transformer_v3_semantic_inputs`，train config=`explicit_train_split_scale_v4_semantics`。mask v3保留雀魂修正并补途中流局/末巡互斥；branch quality合同独立绑定。
 
-## 4. 离线监督与历史分离
-
-原有 `inferred_unique_next_draw_pass` 监督规则保留：正常 NEXT_DRAW 关闭窗口、该观察者确有非平凡 Pass 选择，才能产生该标签。优先级覆盖下未成立的 CHI/PON/RON 不一律变成 Pass，raw user_input 不用于补行为。
-
-Pass 决策样本仍冻结于触发舍牌后、ACK/摸牌前。可用后续事实作监督标签，但私有历史仅在循环真正处理到确认摸牌时写入。于是：
-
-- 当前 Pass 前缀不含本次 SELF_PASS；
-- 下一次本家输入恰有一条该窗口的 kind=26；
-- 较早 cutoff 不会被未来 NEXT_DRAW 增补；
-- 有无 export callback 都得到相同后续输入，provenance 保留在标记/样本元数据中，不变成 E/R 模型输入。
-
-## 5. 输入版本与兼容性
-
-完整 Schema ID、canonical hash、546 动作、21 响应、三头、既定 loss、雀魂 mask v2 均不改：
-
-- `schema_id=kar-riichienv-v1`
-- canonical hash `fcc02a0bef0a7e95ca219c59ae199c4d1f5129372fac91323d3791bc30c31673`
-- `response_mask_version=public_rule_response_mask_v2_mjsoul_nagashi`
-
-但 forward 与派生历史改变，因此活动身份更新为：
-
-- `artifact_contract_version=kar_riichienv_contract_v3`
-- `input_pipeline_version=legal_set_pool_private_self_pass_v1`
-- `MODEL_VERSION=kar_transformer_v2_legal_set`
-- `training_config_version=explicit_train_split_scale_v3_inputs`（recipe 包含 input 版本）
-
-旧 v1/v2 权重产物即使参数形状一致也不能精确续训/评估；标准 checkpoint、数据、支持/校准、发布加载合同拒绝缺失/不匹配字段，旧成本 recipe 不能静默复用。旧 K/V 和历史缓存需重建。Token 编码在没有新增已知 Pass 的同一快照上可保持字节不变，但这不证明整条旧派生数据/旧 forward 精确兼容。
-
-本轮不修改旧 manifest/hash、不迁移权重、不重导出数据、不做真实校准。手工绕过加载器或给旧产物换标签不构成兼容迁移。
-
-## 6. 定向证据
-
-本轮 372 个有界 CPU forward/历史/版本回归通过，0 failed/errors/skipped。所有最终组均记录执行前后相同的源码/测试文件指纹、完整 argv、退出码、原始 stdout、JUnit 和硬禁止调用计数。上一轮 1348 项是历史证据，不替本次结果。
-
-实际包含精确 LEGAL_SET 向量、等长差异、置换/padding/非舍牌、dense/cache 与 teacher 隔离、全部 preset 参数量、普通及抢暗杠真实 Pass、受控 run_match、失败/取消、争议 CHI、KAKAN 原 PON、批量/增量与离线对拍。
-
-未启动完整对局 runner、阶段任务或 M3；新增 Pass 回归均为有界合成情景。既有 `test_token_cache` 另读取一个已存在的固定牌谱资产，只做只读 Token 增量/批量对拍，不导出数据、不把它当作新增私有 Pass 的真实证书。
-
-未执行 backward、autograd.grad、optimizer.step、M1/M2/M3、训练 launcher、GPU/云、真实校准或数据重导出。守卫记录上述禁止调用为零。未执行梯度验证意味着本轮不声称新增池化的训练梯度已验收；只确认 forward 共用实现。至此停止。
+旧v3输入的参数形状即使相同，位置/终局历史仍不同。旧数据、历史/KV缓存、checkpoint、校准、支持及发布不能精确复用，需要在新目录真实重建并另行授权；不手改旧hash或覆盖旧产物。未执行的真实数据、梯度、GPU、校准与棋力验收如实见当前报告，不沿用历史372/1348/45项宣布通过。

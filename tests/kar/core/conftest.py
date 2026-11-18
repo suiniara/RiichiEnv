@@ -5,7 +5,7 @@ import pytest
 
 from riichienv.kar.actions import legal_candidates
 from riichienv.kar.calibration import CalibrationRow, calibrate_static_rows, calibration_split
-from riichienv.kar.calibration_quality import CalibrationQualityPolicy
+from riichienv.kar.calibration_quality import BranchQualityCriterion, BranchQualityPolicy, CalibrationQualityPolicy
 from riichienv.kar.contracts import MJSOUL_RULESET
 from riichienv.kar.observation import ObserverLedger
 from riichienv.kar.runtime_contracts import RuntimeBinding
@@ -64,24 +64,24 @@ def calibration_fixture(binding, event_support, public_view):
     _, ids = public_view
     split = calibration_split([f"validation-{index}" for index in range(20)])
 
-    def row(game):
+    def row(game, event=0):
         return CalibrationRow(
             game,
-            game + "/row0",
+            game + f"/row{event}",
             ids,
             (0.0,) * 546,
             ids[0],
             response_logits=(0.0,) * 21,
             rank_logits=((0.0,) * 4,) * 21,
             response_allowed=(True,) * 21,
-            response_target=0,
+            response_target=event,
             response_valid=True,
             rank_target=0,
             value_valid=True,
         )
 
     fit = [row(split.fit_games[0])]
-    check = [row(split.check_games[0])]
+    check = [row(split.check_games[0], event) for event in range(21)]
     artifact = calibrate_static_rows(
         fit,
         check,
@@ -99,6 +99,9 @@ def calibration_fixture(binding, event_support, public_view):
             1,
             0.0,
             "synthetic, explicitly preregistered fixture criteria",
+            BranchQualityPolicy(tuple(BranchQualityCriterion(head, event, 20.0, 2.0, 1.0, 1)
+                                      for head in ("response", "rank") for event in range(21)),
+                                "synthetic all-branch unit criteria,not production defaults"),
         ),
         inference_device_type="fixture",
     )

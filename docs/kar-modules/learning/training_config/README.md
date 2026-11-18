@@ -8,7 +8,7 @@
 
 `ProductionTrainConfig` 记录 phase、实际 N_train/N_eligible、tier、planned_epochs、预算、seed、设备/精度、microbatch、特征模式和固定超参。M1 仅 Small 一轮，M2 为两轮/条件第三轮；有效 batch Small/Medium/Large 为128/256/512。
 
-`training_recipe_sha256(arguments)` 先于价格生成标准化配方身份；`to_record/from_record` 校验往返派生字段。训练计划仍为 `budget_ladder_v1`，配置序列化另用 `explicit_train_split_scale_v3_inputs`，必须显式包含新 `input_pipeline_version`、`model_tier_basis=N_train_half_games`、规则置空版本及概率；不再以默认值补齐缺失的旧版本字段。两个 N 字段禁止 bool/负数混入，M2 不得因 eligible 总量较大就越过 train 门槛。
+`training_recipe_sha256(arguments)` 先于价格生成标准化配方身份；`to_record/from_record` 校验往返派生字段。训练计划仍为 `budget_ladder_v1`，配置序列化另用 `explicit_train_split_scale_v4_semantics`，必须显式包含新 `input_pipeline_version`、`model_tier_basis=N_train_half_games`、规则置空版本及概率；不再以默认值补齐缺失的旧版本字段。两个 N 字段禁止 bool/负数混入，M2 不得因 eligible 总量较大就越过 train 门槛。
 
 ## 唯一登记
 

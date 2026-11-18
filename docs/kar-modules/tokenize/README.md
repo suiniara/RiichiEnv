@@ -12,7 +12,7 @@
 
 ## 数据合同
 
-前缀为 BOS + H 历史 + 62 状态槽 + DECIDE，共 `H+64` 行；追加 ACTION 后为 `H+65` 行。逻辑位置与块属性由可见事实决定。没有完整可见历史/本家手牌、候选非法或超过 32 时应报错，不静默补字段或截断。
+前缀为 BOS + H 历史 + 62 状态槽 + DECIDE，共 `H+64` 行；追加 ACTION 后为 `H+65` 行。逻辑位置按 `public_semantic_clock_v1`，不按source record或H行数：最后公共语义位置C，S/DECIDE=C+1、ACTION=C+2。缺失/旧public_clock_version拒绝，不默认为当前。没有完整可见历史/本家手牌、候选非法或超过 32 时应报错，不静默补字段或截断。
 
 ```python
 from riichienv.kar.tokenize import encode_prefix, append_action

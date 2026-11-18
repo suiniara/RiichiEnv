@@ -14,7 +14,7 @@
 
 响应 softmax **先 mask**，再计算未启用事件概率质量 rho_U。名次效用为 `(1.5, .5, -.5, -1.5)`；未支持事件在保守价值中使用 -1.5，不是零分。21 个 rank 分布要与事件维度对应，不能拿真实响应标签挑选线上候选分支。
 
-至少 500 个独立 train 完整游戏才启用对应分支；重复决策行不增加数量，499 train 加 1 validation 不能凑 500。计数、NLL、Brier 或 rho_U 都不是 delta_E / epsilon_m 的统一误差上界。
+`EventSupport.supported` 只表达至少500个独立train完整游戏。`value_supported(branch_statuses)` 还要求预登记的response/rank逐分支质量均passed；缺失默认unavailable，不因train计数通过而供应预测价值。重复决策行不增加数量，499 train 加1 validation不能凑500。规则allowed、train_supported、branch_quality_statuses、value_supported独立记录。failed/unavailable分支仍保留masked概率、取−1.5并计入rho_U，不重新归一化其余分支。计数、NLL、Brier或rho_U都不是delta_E/epsilon_m统一误差上界。
 
 ## 集成与失败处理
 
@@ -24,4 +24,4 @@
 
 ## 测试与状态
 
-对应 [core/test_artifact_contracts.py](../../../tests/kar/core/test_artifact_contracts.py)、[core/test_runtime.py](../../../tests/kar/core/test_runtime.py)、[core/test_probability_policy.py](../../../tests/kar/core/test_probability_policy.py)。本轮未执行支持统计或候选评分。
+对应 [core/test_artifact_contracts.py](../../../tests/kar/core/test_artifact_contracts.py)、[core/test_runtime.py](../../../tests/kar/core/test_runtime.py)、[core/test_probability_policy.py](../../../tests/kar/core/test_probability_policy.py)。本轮未进行真实train支持重建；合成计数、逐分支保守价值与版本拒绝的实际结果见[修复报告](../../kar-semantic-branch-repair.md)。

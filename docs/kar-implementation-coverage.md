@@ -1,8 +1,10 @@
-# KAR 实现覆盖与输入链路定向复验（2026-11-17）
+# KAR 实现覆盖与分轮验收记录
 
-逐模块职责、接口、数据合同、使用方式及测试位置见 [73个模块 README 总索引](kar-modules/README.md) 与 [learning 子包索引](kar-modules/learning/README.md)。
+唯一活动规范见[完整主设计](KAR-v1.2.2-DESIGN.md)，V4语义/规则/分支质量修复及当前执行结果见[本轮报告](kar-semantic-branch-repair.md)。下面保留的372/1348项为各自旧源码的历史证据，不自动升级为当前V4通过。
 
-## 当前：输入链路修复与 forward-only 定向复验
+逐模块职责、接口、数据合同、使用方式及测试位置见 [74个模块 README 总索引](kar-modules/README.md) 与 [learning 子包索引](kar-modules/learning/README.md)。
+
+## 历史：a869 → 91b0 输入链路 forward-only 定向复验
 
 基线 `a8696698af57dfeeb4c2699c4b685eea56e19f77`。本轮为 **372 passed、0 failed/errors/skipped**，Ruff/Ty 通过；所有最终测试由硬守卫记录 backward/autograd.grad/optimizer.step 调用为0，CUDA未初始化。准确源码/测试聚合 SHA 为 `3d0ab308450d263d698f0cfe557f5c70b630ce729589e59b5640dd8dd72feedd`，每组执行前后相同。
 

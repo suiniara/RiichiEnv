@@ -10,7 +10,7 @@ from riichienv.kar.calibration import (
     calibration_split,
     choose_validation_tau,
 )
-from riichienv.kar.calibration_quality import CalibrationQualityPolicy
+from riichienv.kar.calibration_quality import BranchQualityCriterion, BranchQualityPolicy, CalibrationQualityPolicy
 from riichienv.kar.contracts import game_split
 from riichienv.kar.learning.deployment import validate_frozen_policy
 from riichienv.kar.policy import PolicyOptions
@@ -42,9 +42,13 @@ def policy_fixture():
         1,
         0.8,
         "synthetic preregistration",
+        BranchQualityPolicy(tuple(BranchQualityCriterion(head, 0, 5.0, 1.0, 0.5, 1)
+                                  for head in ("response", "rank")), "synthetic branch preregistration"),
     )
     metrics = {key: {"count": 2, "nll": 1.0, "brier": 0.2, "ece": 0.1} for key in ("action", "response", "rank")}
     metrics.update(gate_multi_discard_count=2, gate_retention=1.0)
+    metrics["branch_metrics"] = {head: {"0": {**metrics[head], "independent_games": 2}}
+                                 for head in ("response", "rank")}
     artifact = CalibrationArtifact(
         binding,
         support.digest,

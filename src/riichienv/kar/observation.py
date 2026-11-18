@@ -7,6 +7,7 @@ from typing import Any
 from riichienv import convert
 
 from .contracts import canonical_bytes
+from .event_semantics import PUBLIC_CLOCK_VERSION, PublicEventClock
 from .kan_transactions import COMMITTED_KAN_KINDS, pending_kan_commits
 from .rule_features import (
     current_rank_features,
@@ -69,6 +70,7 @@ class PublicSnapshot:
     pending_kan_tile: int | None = None
     history_positions: tuple[int, ...] = ()
     visibility_complete: bool = True
+    public_clock_version: str | None = None
 
     def to_bytes(self) -> bytes:
         return canonical_bytes(asdict(self))
@@ -137,7 +139,7 @@ class ObserverLedger:
         self.interrupted = False
         self.history_positions: list[int] = []
         self.logical_clock = 0
-        self.last_visible_group: tuple[str, int] | None = None
+        self._event_clock = PublicEventClock()
         self.visibility_complete = True
         self._round_event_id = -1
         self._public_events: list[dict[str, Any]] = []
@@ -230,8 +232,6 @@ class ObserverLedger:
                     current.trigger_type == "dahai" and public["target"] == current.target
                     and public["pai"] == current.pai
                 )
-            elif typ == "kan_commit":
-                closed = public["actor"] == current.target and public.get("kan_type") == current.trigger_type
             elif typ == "hora":
                 closed = public.get("target") == current.target and public.get("actor") != current.target
             elif typ == "ryukyoku":
@@ -437,6 +437,9 @@ class ObserverLedger:
                         "public_hands",
                         "visibility_complete",
                         "visibility_gap",
+                        "public_reveal_provenance",
+                        "settlement_provenance",
+                        "declaring_actor_provenance",
                     )
                     if k in event
                 }
@@ -462,10 +465,7 @@ class ObserverLedger:
                 raise ValueError("Invalid public live-wall count")
             self.remaining = remaining
             public["remaining_draws"] = remaining
-        group = ("record", event["source_record_index"]) if "source_record_index" in event else ("event", self.event_id)
-        if group != self.last_visible_group:
-            self.logical_clock += 1
-            self.last_visible_group = group
+        self.logical_clock = self._event_clock.advance(public)
         self.history_positions.append(self.logical_clock)
         self._public_event_indices.append(len(self.events))
         self.events.append(canonical_bytes(public).decode("utf-8"))
@@ -508,6 +508,7 @@ class ObserverLedger:
             pending_kan_tile=None if self.pending is None else self.pending[2][0],
             history_positions=tuple(self.history_positions),
             visibility_complete=self.visibility_complete,
+            public_clock_version=PUBLIC_CLOCK_VERSION,
         )
 
     def check_observation(self, observation: Any) -> None:

@@ -123,7 +123,9 @@ def _protocol(*, include_ura=True, include_players=True) -> Protocol:
             ("type", 1, F.TYPE_UINT32),
             ("gameend", 2, "GameEnd"),
             ("seat", 3, F.TYPE_UINT32),
+            ("tiles", 4, F.TYPE_STRING, True),
             ("liqi", 5, "LiQiSuccess"),
+            ("allplayertiles", 6, F.TYPE_STRING, True),
         ],
         "GameEndPlayer": [("seat", 1, F.TYPE_UINT32), ("total_point", 2, F.TYPE_INT32)],
         "GameEndResult": [("players", 1, "GameEndPlayer", True)],
@@ -342,17 +344,19 @@ def test_riichi_deposit_only_after_explicit_liqi_success(protocol):
     assert game.metadata["source_score_chain_complete"] is False
 
 
-def test_multiple_ron_winners_share_the_original_trigger(protocol):
+@pytest.mark.parametrize("reverse_winners", [False, True])
+def test_multiple_ron_winners_share_the_original_trigger(protocol, reverse_winners):
+    winners = [
+        {"seat": 1, "hu_tile": "1m", "zimo": False, "count": 1, "fu": 30},
+        {"seat": 2, "hu_tile": "1m", "zimo": False, "count": 1, "fu": 30},
+    ]
     results = [
         _result(protocol, "RecordNewRound", **_new_round()),
         _result(protocol, "RecordDiscardTile", seat=0, tile="1m", moqie=False),
         _result(
             protocol,
             "RecordHule",
-            hules=[
-                {"seat": 1, "hu_tile": "1m", "zimo": False, "count": 1, "fu": 30},
-                {"seat": 2, "hu_tile": "1m", "zimo": False, "count": 1, "fu": 30},
-            ],
+            hules=list(reversed(winners)) if reverse_winners else winners,
             old_scores=[25000] * 4,
             delta_scores=[-2000, 1000, 1000, 0],
             scores=[23000, 26000, 26000, 25000],
@@ -363,6 +367,37 @@ def test_multiple_ron_winners_share_the_original_trigger(protocol):
     assert [(event["actor"], event["target"]) for event in winners] == [(1, 0), (2, 0)]
     assert [event["type"] for event in game.events][-1] == "end_kyoku"
     assert game.complete is False
+
+
+@pytest.mark.parametrize("source_hand", ["observed", "missing", "mismatch"])
+def test_liuju_wire_uses_only_verified_declaring_tiles_not_all_players(protocol, source_hand):
+    from tests.kar.test_input_semantics import deal, new_round_data  # noqa: PLC0415
+
+    env = deal({0: ("1m", "9m", "1p", "9p", "1s", "9s", "E", "S", "W", "N", "P", "F", "C")}, ["2m"])
+    raw = list(env.mjai_log)
+    start = next(event for event in raw if event["type"] == "start_kyoku")
+    data = new_round_data(start, raw[-1])
+    revealed = data["tiles0"].copy() if source_hand != "missing" else []
+    if source_hand == "mismatch":
+        revealed[0] = "3m"
+    payload = _legacy(protocol, [
+        _result(protocol, "RecordNewRound", **data),
+        _result(protocol, "RecordLiuJu", type=1, seat=0, tiles=revealed,
+                allplayertiles=["PRIVATE_NONDECLARING_HAND_MUST_NOT_ENTER_INPUT"] * 4),
+    ])
+    if source_hand == "mismatch":
+        with pytest.raises(RecordError, match="source hand"):
+            decode_record_bytes(payload, protocol, container="game_detail_records")
+    else:
+        game = decode_record_bytes(payload, protocol, container="game_detail_records")
+        terminal = game.events[-2]
+        assert terminal["actor"] == 0 and terminal["deltas"] == [0] * 4
+        assert terminal["scores"] == [25000] * 4
+        assert Counter(terminal["public_hands"][0]) == Counter(data["tiles0"])
+        assert terminal["public_hands"][1:] == [None] * 3
+        assert "allplayertiles" not in game.records[-1].data
+        assert "PRIVATE_NONDECLARING" not in repr(game.events)
+        assert ("source_declaring_tiles" in terminal["public_reveal_provenance"]) == (source_hand == "observed")
 
 
 def test_unknown_liuju_is_not_guessed(protocol):

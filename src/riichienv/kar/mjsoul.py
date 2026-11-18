@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from .event_semantics import ABORT_REASONS, nine_terminals_public_hand
+
 
 class ProtocolError(ValueError):
     pass
@@ -261,7 +263,7 @@ def _record_data(message: Any, name: str) -> dict[str, Any]:
         "lq.RecordAnGangAddGang": ("seat", "type", "tiles", "doras"),
         "lq.RecordHule": ("old_scores", "delta_scores", "scores", "doras"),
         "lq.RecordNoTile": ("liujumanguan", "gameend"),
-        "lq.RecordLiuJu": ("type", "seat"),
+        "lq.RecordLiuJu": ("type", "seat", "tiles"),
     }
     result = _copy_fields(message, fields[name])
     if _has(message, "liqi"):
@@ -518,6 +520,7 @@ def normalize_records(  # noqa: PLR0915
     discard_history: list[list[str]] = [[], [], [], []]
     meld_seen = False
     kan_actors: list[int] = []
+    draw_counts = [0] * 4
 
     def emit(event: dict[str, Any], record: ServerRecord) -> None:
         events.append({**event, "source_record_index": record.index, "source_record_sha256": record.source_sha256})
@@ -643,8 +646,10 @@ def normalize_records(  # noqa: PLR0915
             discard_history = [[], [], [], []]
             meld_seen = False
             kan_actors = []
+            draw_counts = [0] * 4
             round_open = True
             if dealer_draw is not None:
+                draw_counts[actor] += 1
                 hands[actor].append(dealer_draw)
                 last_draw = actor, dealer_draw
                 emit({"type": "tsumo", "actor": actor, "pai": dealer_draw}, record)
@@ -655,6 +660,7 @@ def normalize_records(  # noqa: PLR0915
         if name == "lq.RecordDealTile":
             actor, tile = _seat(data.get("seat")), _tile(data.get("tile"))
             reveal_dora(data, record)
+            draw_counts[actor] += 1
             hands[actor].append(tile)
             last_draw = actor, tile
             trigger = None
@@ -747,7 +753,10 @@ def normalize_records(  # noqa: PLR0915
             if len(set(seats)) != len(seats):
                 raise RecordError("Duplicate hule winner")
             known_ura: list[str] | None = None
-            for winner, actor in zip(winners, seats):
+            ordered_winners = sorted(
+                zip(winners, seats), key=lambda pair: (pair[1] - trigger[0]) % 4 if trigger else pair[1]
+            )
+            for winner, actor in ordered_winners:
                 zimo = winner.get("zimo")
                 if not isinstance(zimo, bool):
                     raise RecordError("Hule requires zimo semantics")
@@ -842,7 +851,35 @@ def normalize_records(  # noqa: PLR0915
                 reason = "four_winds" if four_winds else "four_kans"
             else:
                 raise RecordError("Unfrozen LiuJu reason; no response category is guessed")
-            emit({"type": "ryukyoku", "reason": reason}, record)
+            event: dict[str, Any] = {"type": "ryukyoku", "reason": reason, "visibility_complete": True}
+            if reason == "kyushukyuhai":
+                actor = _seat(data.get("seat", None if last_draw is None else last_draw[0]))
+                try:
+                    revealed = nine_terminals_public_hand(
+                        actor, hands[actor], current_draw_actor=None if last_draw is None else last_draw[0],
+                        draw_count=draw_counts[actor], has_discarded=bool(discard_history[actor]),
+                        calls_seen=meld_seen, source_tiles=[_tile(tile) for tile in data.get("tiles", ())],
+                    )
+                except ValueError as error:
+                    raise RecordError(str(error)) from error
+                shown: list[list[str] | None] = [None for _ in range(4)]
+                shown[actor] = revealed
+                event.update(
+                    actor=actor, public_hands=shown,
+                    public_reveal_provenance="source_declaring_tiles_verified_against_prior_events"
+                    if data.get("tiles") else "frozen_nine_terminals_reveal_from_verified_prior_events",
+                    declaring_actor_provenance="source_seat_and_current_draw"
+                    if "seat" in data else "unique_verified_current_draw",
+                )
+            if reason in ABORT_REASONS:
+                # Frozen aborts have no transfer. This is rule evidence, not a
+                # blanket zero imputation for missing NoTile/Hule settlements.
+                event.update(deltas=[0] * 4, settlement_provenance="frozen_abort_zero_transfer")
+                if current_scores is not None:
+                    event["scores"] = current_scores.copy()
+                else:
+                    event.update(settlement_labels_missing=True, settlement_missing_fields=["scores"])
+            emit(event, record)
             round_open = False
         end_scores = data.get("gameend_scores")
         if end_scores:

@@ -8,6 +8,7 @@ from typing import Any
 from .contracts import content_hash, game_split
 from .probability import masked_softmax
 from .runtime_contracts import SUPPORT_VERSION, UTILITIES, RuntimeBinding, runtime_contract, sha256_value
+from .versioning import validate_artifact_contract
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,14 @@ class EventSupport:
 
     @property
     def supported(self) -> tuple[bool, ...]:
+        """Train-count support only; never a claim of branch calibration."""
         return tuple(count >= 500 for count in self.train_game_counts)
+
+    def value_supported(self, branch_statuses: Sequence[str] | None) -> tuple[bool, ...]:
+        states = tuple(branch_statuses) if branch_statuses is not None else ("unavailable",) * 21
+        if len(states) != 21 or any(state not in {"passed", "failed", "unavailable"} for state in states):
+            raise ValueError("Value support needs twenty-one explicit branch quality states")
+        return tuple(trained and state == "passed" for trained, state in zip(self.supported, states))
 
     def to_record(self) -> dict[str, Any]:
         document = {
@@ -37,6 +45,7 @@ class EventSupport:
             "train_game_counts": list(self.train_game_counts),
             "counting_unit": "distinct_complete_train_game_id",
             "support_threshold": 500,
+            "value_gate": "train_count_and_preregistered_branch_quality",
             "source_reference": self.source_reference,
             "uniform_error_certificate": False,
         }
@@ -78,6 +87,7 @@ def support_from_train_games(
     if not isinstance(digest, str) or digest != content_hash(train_manifest["games"]):
         raise ValueError("Training-selection manifest integrity mismatch")
     scope = train_manifest["scope"]
+    validate_artifact_contract(scope, context="training support selection")
     current = runtime_contract()
     if any(scope.get(key) != current[key] for key in ("schema_hash", "ruleset_hash", "action_manifest_hash")):
         raise ValueError("Training selection uses another public protocol")
@@ -107,6 +117,10 @@ class CandidateValue:
     marginal_value: float
     conservative_value: float
     unsupported_mass: float
+    rule_allowed: tuple[bool, ...]
+    train_supported: tuple[bool, ...]
+    branch_quality_statuses: tuple[str, ...]
+    value_supported: tuple[bool, ...]
 
 
 def candidate_value(
@@ -118,6 +132,7 @@ def candidate_value(
     *,
     response_temperature: float = 1.0,
     rank_temperature: float = 1.0,
+    branch_quality_statuses: Sequence[str] | None = None,
 ) -> CandidateValue:
     if type(action_id) is not int or not 0 <= action_id < 148:
         raise ValueError("Only complete discard actions have response/rank value semantics")
@@ -132,11 +147,12 @@ def candidate_value(
         for row in rank_logits
     )
     marginal = math.fsum(probability * utility for probability, utility in zip(probabilities, conditional))
+    states = tuple(branch_quality_statuses) if branch_quality_statuses is not None else ("unavailable",) * 21
+    covered = support.value_supported(states)
     conservative = math.fsum(
         probability * (utility if supported else -1.5)
-        for probability, utility, supported in zip(probabilities, conditional, support.supported)
+        for probability, utility, supported in zip(probabilities, conditional, covered)
     )
-    unsupported = math.fsum(
-        probability for probability, supported in zip(probabilities, support.supported) if not supported
-    )
-    return CandidateValue(action_id, probabilities, conditional, marginal, conservative, unsupported)
+    unsupported = math.fsum(probability for probability, supported in zip(probabilities, covered) if not supported)
+    return CandidateValue(action_id, probabilities, conditional, marginal, conservative, unsupported,
+                          tuple(allowed), support.supported, states, covered)

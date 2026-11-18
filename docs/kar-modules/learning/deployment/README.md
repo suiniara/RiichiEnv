@@ -17,7 +17,7 @@
 
 ## 有限策略必须绑定
 
-温度、门控、支持、原始后端、采样模式、Rmax 和验证选择都属于实际策略身份。有限部署要求质量 passed、门控有效、生产 tau v3 的配对收益 gate 通过且选择来自 cal_fit；权重相同不意味着另一份标定可以复用旧 tau。
+温度、门控、支持、原始后端、采样模式、Rmax和验证选择都属于实际策略身份。有限部署要求总体质量passed、门控有效，至少一个train支持且response/rank分支质量passed的响应类别，并通过生产tau的cal_fit配对收益gate。分支政策摘要与状态进入完整策略身份；缺新字段的旧校准/支持拒绝。权重相同不意味着另一份标定可以复用旧tau。
 
 正式有限发布拒绝 diagnostic argmax，diagnostic 校准 fixture 不能冒充生产。没有有效逐状态上界不声称 certified；标准冻结 M3 使用有限随机经验策略。
 
@@ -29,4 +29,4 @@ release 保存模型配置、真实 weights 文件 hash、RuntimeBinding、训�
 
 ## 测试与状态
 
-对应 [core/test_frozen_inference.py](../../../../tests/kar/core/test_frozen_inference.py)、[production/test_review_policy_identity.py](../../../../tests/kar/production/test_review_policy_identity.py)。实际加载/保存会创建网络与文件；本轮未执行这些操作或测试。
+对应 [core/test_frozen_inference.py](../../../../tests/kar/core/test_frozen_inference.py)、[production/test_review_policy_identity.py](../../../../tests/kar/production/test_review_policy_identity.py)。实际加载/保存会创建网络与文件；本轮未迁移真实旧发布；新临时合成产物的保存/加载及拒绝回归范围见[修复报告](../../../kar-semantic-branch-repair.md)，不代表真实模型重建或棋力验收。

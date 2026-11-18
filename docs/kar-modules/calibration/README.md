@@ -21,7 +21,7 @@
 
 生产 split 校验完整 manifest hash、主 validation、排除 Golden 及固定角色 salt。三个温度和 p_min 只在 cal_fit 选择。门控概率分母是全部合法 C，而非仅舍牌；真实动作在门控前 C_D、至少两个完整舍牌且 action_valid 才参与。n 个 log 概率排序后取 0-based `n//100`，`>=` 保留 ties，无插值。
 
-空标定子集使 gate 无效，不能伪造阈值。独立质量由 [calibration_quality](../calibration_quality/README.md)判定；“有 cal_check 样本”不等于通过。
+空标定子集使 gate 无效，不能伪造阈值。独立总体与逐响应分支质量由 [calibration_quality](../calibration_quality/README.md)判定；“有cal_check样本”或总体通过不等于分支通过。`calibration_metrics`保存真实E子集的response/rank指标和独立game数；artifact绑定branch policy/report及21个value_branch_statuses。缺正式标准/证据为unavailable，失败分支不再未经保护地供应价值。
 
 ## 身份、使用与产物
 
@@ -31,4 +31,4 @@
 
 ## 测试与状态
 
-对应 [core/test_calibration.py](../../../tests/kar/core/test_calibration.py)、[core/test_artifact_contracts.py](../../../tests/kar/core/test_artifact_contracts.py)、[production/test_selection_and_roles.py](../../../tests/kar/production/test_selection_and_roles.py)。本轮未运行温度拟合或对局。
+对应 [core/test_calibration.py](../../../tests/kar/core/test_calibration.py)、[core/test_artifact_contracts.py](../../../tests/kar/core/test_artifact_contracts.py)、[production/test_selection_and_roles.py](../../../tests/kar/production/test_selection_and_roles.py)。本轮未进行真实模型校准或阶段评测；合成静态数组、质量三态与版本拒绝单元的实际结果见[修复报告](../../kar-semantic-branch-repair.md)。

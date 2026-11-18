@@ -41,37 +41,54 @@ def public_rule_response_mask(
         allowed[Response.NEXT_DRAW] = snapshot.remaining_draws > 0
         allowed[Response.EXHAUSTIVE_DRAW] = snapshot.remaining_draws == 0
         if snapshot.remaining_draws == 0:
-            allowed[5:8] = [False] * 3
-    if snapshot.history_complete:
-        no_calls = not any(snapshot.melds)
-        others = [(actor + relative) % 4 for relative in range(1, 4)]
-        four_winds = (
-            no_calls
-            and 27 <= tile <= 30
-            and not snapshot.discard_history[actor]
-            and all(
-                len(snapshot.discard_history[p]) == 1 and snapshot.discard_history[p][0] // 4 == tile for p in others
-            )
-        )
-        allowed[Response.ABORT_FOUR_WINDS] = ruleset.four_winds_abort and four_winds
-        allowed[Response.ABORT_FOUR_RIICHI] = (
-            ruleset.four_riichi_abort
-            and bool(candidate_discard % 2)
-            and all(snapshot.riichi_accepted[p] for p in others)
-        )
-        allowed[Response.ABORT_FOUR_KANS] = (
-            ruleset.four_kans_abort and sum(counts) == 4 and sum(c > 0 for c in counts) > 1
-        )
-    else:
-        allowed[Response.ABORT_FOUR_WINDS] = ruleset.four_winds_abort
-        allowed[Response.ABORT_FOUR_RIICHI] = ruleset.four_riichi_abort
-        allowed[Response.ABORT_FOUR_KANS] = ruleset.four_kans_abort
+            # Native legal_actions.rs requires live-wall > 0 for ALL open calls,
+            # not just daiminkan. Ron remains possible on the final discard.
+            allowed[1:8] = [False] * 7
+    possible, certain = _abortive_after_discard(snapshot, actor, tile, bool(candidate_discard % 2), ruleset, counts)
+    abort_ids = (Response.ABORT_FOUR_WINDS, Response.ABORT_FOUR_KANS, Response.ABORT_FOUR_RIICHI)
+    for index, value in zip(abort_ids, possible):
+        allowed[index] = value
+    # Frozen native priority is four winds -> multi-owner four kans -> four riichi.
+    # Unknown higher-priority causes remain possible; only positive public proof
+    # suppresses normal continuation. In every case Ron still has priority.
+    if certain[0]:
+        allowed[Response.ABORT_FOUR_KANS] = allowed[Response.ABORT_FOUR_RIICHI] = False
+    elif certain[1]:
+        allowed[Response.ABORT_FOUR_RIICHI] = False
+    if any(certain):
+        allowed[:8] = [False] * 8
+        allowed[Response.EXHAUSTIVE_DRAW] = False
     allowed[Response.NAGASHI_MANGAN] = (
-        ruleset.nagashi_mangan and _nagashi_possible(snapshot, actor, tile) and snapshot.remaining_draws in {None, 0}
+        not any(certain) and ruleset.nagashi_mangan and _nagashi_possible(snapshot, actor, tile)
+        and snapshot.remaining_draws in {None, 0}
     )
     if not any(allowed):
         raise ValueError("Public response mask excludes every category")
     return tuple(allowed)
+
+
+def _abortive_after_discard(
+    snapshot: PublicSnapshot, actor: int, tile: int, declaring: bool, ruleset: Ruleset, counts: list[int]
+) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
+    """Return possible/certain causes separately; absence from partial history is not proof."""
+    others = [(actor + relative) % 4 for relative in range(1, 4)]
+    history = snapshot.discard_history
+    wind_negative = (
+        any(snapshot.melds) or not 27 <= tile <= 30 or bool(history[actor])
+        or any(len(history[player]) > 1 or (history[player] and history[player][0] // 4 != tile) for player in others)
+    )
+    winds = ruleset.four_winds_abort and not wind_negative
+    wind_certain = winds and snapshot.history_complete and all(len(history[player]) == 1 for player in others)
+    winds = winds and (wind_certain or not snapshot.history_complete)
+    total, owners = sum(counts), sum(count > 0 for count in counts)
+    kans_certain = ruleset.four_kans_abort and total >= 4 and owners > 1
+    kans = ruleset.four_kans_abort and (kans_certain or (not snapshot.history_complete and total < 4))
+    riichi_certain = (
+        ruleset.four_riichi_abort and (declaring or snapshot.riichi_accepted[actor])
+        and all(snapshot.riichi_accepted[player] for player in others)
+    )
+    riichi = ruleset.four_riichi_abort and (riichi_certain or not snapshot.history_complete)
+    return (bool(winds), bool(kans), bool(riichi)), (bool(wind_certain), bool(kans_certain), bool(riichi_certain))
 
 
 def _nagashi_possible(snapshot: PublicSnapshot, actor: int, tile: int) -> bool:
