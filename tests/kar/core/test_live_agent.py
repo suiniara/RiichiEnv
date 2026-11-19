@@ -17,7 +17,7 @@ def _deal_with_hands(hands, drawn):
     env = RiichiEnv("4p-red-single", seed=42, rule=GameRule.default_mjsoul())
     observations = env.reset(wall=wall + [drawn] + remainder, oya=0)
     projection = LiveEventProjection()
-    projection.observe_native(list(env.mjai_log))
+    projection.observe_native(list(env.rule_log))
     return env, observations, projection
 
 
@@ -28,7 +28,7 @@ def _hands_except(specials, drawn):
 
 
 def _sync(env, projection, before):
-    projection.observe_native(list(env.mjai_log[before:]))
+    projection.observe_native(list(env.rule_log[before:]))
 
 
 def test_live_riichi_keeps_both_native_steps_and_owner_cutoffs():
@@ -36,7 +36,7 @@ def test_live_riichi_keeps_both_native_steps_and_owner_cutoffs():
     drawn = 53
     env, obs, projection = _deal_with_hands(_hands_except({0: [tile for tile in full if tile != drawn]}, drawn), drawn)
     selected = next(candidate for candidate in legal_candidates(obs[0]) if candidate.global_id == 61)
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     result = execute_candidate(env, 0, selected)
     _sync(env, projection, before)
     assert len(result.step_observations) == 2
@@ -63,7 +63,7 @@ def test_all_responders_are_validated_before_one_joint_multi_ron_submission():
     discard = next(
         action for action in obs[0].legal_actions() if action.action_type == ActionType.DISCARD and action.tile == east
     )
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     responses = env.step({0: discard})
     _sync(env, projection, before)
     choices = {}
@@ -74,13 +74,13 @@ def test_all_responders_are_validated_before_one_joint_multi_ron_submission():
             next(candidate for candidate in mapped if candidate.global_id == 221),
         )
     assert {seat for seat, candidate in choices.items() if candidate.spec.action_type == "RON"} == {1, 2}
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     bad = dict(choices)
     seat = next(iter(bad))
     bad[seat] = replace(bad[seat], _legal_signature=())
     with pytest.raises(ValueError):
         execute_joint_responses(env, bad)
-    assert len(env.mjai_log) == before
+    assert len(env.rule_log) == before
     seat_three_private_hand = projection.snapshot(3).hand
     execute_joint_responses(env, choices)
     _sync(env, projection, before)
@@ -100,7 +100,7 @@ def test_pon_is_followed_by_forced_tedashi_without_an_extra_draw():
     discard = next(
         action for action in obs[0].legal_actions() if action.action_type == ActionType.DISCARD and action.tile == 108
     )
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     responses = env.step({0: discard})
     _sync(env, projection, before)
     choices = {}
@@ -110,13 +110,13 @@ def test_pon_is_followed_by_forced_tedashi_without_an_extra_draw():
             (candidate for candidate in mapped if seat == 1 and candidate.spec.action_type == "PON"),
             next(candidate for candidate in mapped if candidate.global_id == 221),
         )
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     result = execute_joint_responses(env, choices)
     _sync(env, projection, before)
     assert set(result) == {1} and result[1].drawn_tile is None
     assert projection.snapshot(1).post_call_actor == 1
     assert all(candidate.global_id % 4 == 0 for candidate in legal_candidates(result[1]) if candidate.global_id < 148)
-    assert not any(event["type"] == "tsumo" for event in env.mjai_log[before:])
+    assert not any(event["type"] == "tsumo" for event in env.rule_log[before:])
 
 
 def test_live_ankan_commits_only_after_public_replacement_boundary():
@@ -124,9 +124,9 @@ def test_live_ankan_commits_only_after_public_replacement_boundary():
     hand = [0, 1, 2, 3, 4, 8, 12, 36, 40, 44, 72, 76, 80]
     env, observations, projection = _deal_with_hands(_hands_except({0: hand}, drawn), drawn)
     candidate = next(value for value in legal_candidates(observations[0]) if value.spec.action_type == "ANKAN")
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     result = execute_candidate(env, 0, candidate)
-    delta = list(env.mjai_log[before:])
+    delta = list(env.rule_log[before:])
     assert delta[0]["type"] == "ankan"
     projection.observe_native(delta[:1])
     pending = projection.snapshot(0)

@@ -2,7 +2,7 @@ import pytest
 from test_kan_preview import _ankan_env
 from test_observation_response import round_events
 
-from riichienv import Phase, convert
+from riichienv import Phase
 from riichienv.kar.actions import execute_candidate, execute_joint_responses, legal_candidates
 from riichienv.kar.kan_transactions import pending_kan_commits
 from riichienv.kar.live_events import LiveEventProjection
@@ -48,34 +48,30 @@ def test_old_deferred_dora_does_not_accept_a_new_kakan_in_snapshot_or_tokens():
 
 
 @pytest.mark.parametrize("ron", [False, True])
-def test_robbable_ankan_uses_validated_declaration_and_late_acknowledgement(ron):
+def test_robbable_ankan_uses_native_declaration_and_explicit_commit(ron):
     env, declaration = _ankan_env()
     projection = LiveEventProjection()
-    projection.observe_native(list(env.mjai_log))
+    projection.observe_native(list(env.rule_log))
     mapped = next(
         value
         for value in legal_candidates(env.get_observations([0])[0])
         if value.spec.action_type == "ANKAN" and value.actions[0].tile == declaration.tile
     )
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     responses = execute_candidate(env, 0, mapped)
-    delta = list(env.mjai_log[before:])
-    assert env.phase == Phase.WaitResponse and not delta
-    projected = {
-        "type": "ankan",
-        "actor": 0,
-        "consumed": [convert.tid_to_mjai(tile) for tile in mapped.actions[0].consume_tiles],
-    }
-    projection.observe_native(delta, declared_ankan=projected, pending_kan_window=True)
+    delta = list(env.rule_log[before:])
+    assert env.phase == Phase.WaitResponse
+    assert len(delta) == 1 and delta[0]["type"] == "ankan"
+    projection.observe_native(delta)
     view = projection.snapshot(1)
     assert view.pending_kan_actor == 0 and view.pending_kan_kind == "ankan" and view.decision_phase == "kan_response"
     choices = {}
     for seat, observation in responses.items():
         options = legal_candidates(observation, source_player=view.pending_kan_actor)
         choices[seat] = next(value for value in options if value.spec.action_type == ("RON" if ron else "PASS"))
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     execute_joint_responses(env, choices)
-    projection.observe_native(list(env.mjai_log[before:]))
+    projection.observe_native(list(env.rule_log[before:]))
     assert sum(event["type"] == "ankan" for event in projection.events) == 1
     if ron:
         assert not projection.snapshot(0).melds[0]

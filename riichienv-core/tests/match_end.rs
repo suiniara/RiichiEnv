@@ -1,6 +1,7 @@
 //! Match-end regressions found by replaying raw Mahjong Soul records.
-//! Also matches the sudden-death and leftover-deposit rules at
-//! https://tenhou.net/man/#RULE.
+//! Mahjong Soul ordinary resolutions end at the extension target, while
+//! Tenhou gives dealer continuation priority. Both preserve multi-ron renchan.
+//! Three-player progression retains its existing contract.
 
 use riichienv_core::rule::GameRule;
 use serde_json::{Value, json};
@@ -36,8 +37,32 @@ macro_rules! match_end_tests {
                 s.players.iter().map(|p| p.score).collect()
             }
 
+            fn record_ron_winners(s: &mut $state, winners: &[u8], wind: u8) {
+                use riichienv_core::hand_evaluator::HandEvaluator;
+                use riichienv_core::types::{Conditions, Wind};
+
+                // This fixture starts after settlement.  Supply actual
+                // evaluated winner records, not just the ambiguous renchan
+                // flag: one dealer winner and a dealer in multi-ron have
+                // different extension-round termination rules in four-player.
+                // Both hands can ron the same South tile, without exhausting
+                // any tile type across their concealed hands.
+                for &winner in winners {
+                    let text = if winner == 0 { "123p456p789s111z2z" } else { "789p123s456s333z2z" };
+                    let evaluator = HandEvaluator::hand_from_text(text).unwrap();
+                    let result = evaluator.calc(113, vec![], vec![], Some(Conditions {
+                        riichi: true,
+                        player_wind: Wind::from(winner),
+                        round_wind: Wind::from(wind),
+                        ..Default::default()
+                    }));
+                    assert!(result.is_win);
+                    s.win_results.insert(winner, result);
+                }
+            }
+
             #[test]
-            fn extension_tenpai_dealer_repeats_when_child_is_top() {
+            fn extension_ready_dealer_respects_ruleset_priority() {
                 for rule in [GameRule::default_tenhou(), GameRule::default_mjsoul()] {
                     for (mode, wind) in [($east, 1), ($half, 2)] {
                         for dealer in [0, $np - 1] {
@@ -46,51 +71,101 @@ macro_rules! match_end_tests {
                             let mut s = state(mode, wind, dealer, initial.clone(), 2);
                             s.rule = rule;
                             exhaust(&mut s, true);
-                            assert!(
-                                !s.is_done,
-                                "child reaching the target must not cancel renchan"
-                            );
-                            assert_eq!((s.round_wind, s.oya, s.honba), (wind, dealer, 3));
-                            assert_eq!(scores(&s), initial);
-                            assert_eq!(s.riichi_sticks, 2);
+                            if $np == 4 && !rule.extension_dealer_repeat_priority {
+                                assert!(s.is_done, "MjSoul ordinary extension draws end at the target despite dealer tenpai");
+                                let mut final_scores = initial;
+                                final_scores[(dealer as usize + 1) % $np] += 2000;
+                                assert_eq!(scores(&s), final_scores);
+                                assert_eq!(s.riichi_sticks, 0);
+                            } else {
+                                assert!(!s.is_done, "Tenhou and the unchanged three-player path give renchan priority");
+                                assert_eq!((s.round_wind, s.oya, s.honba), (wind, dealer, 3));
+                                assert_eq!(scores(&s), initial);
+                                assert_eq!(s.riichi_sticks, 2);
+                            }
                         }
                     }
                 }
             }
 
             #[test]
-            fn extension_dealer_win_repeats_when_child_is_top() {
-                for (mode, wind) in [($east, 1), ($half, 2)] {
-                    let mut after_double_ron = vec![$start; $np];
-                    after_double_ron[1] = $target + 1000;
-                    let mut s = state(mode, wind, 0, after_double_ron.clone(), 0);
-                    // The settlement entry point receives renchan=true when
-                    // the dealer is among multiple ron winners.
-                    s._initialize_next_round(true, false);
-                    assert!(!s.is_done);
-                    assert_eq!((s.round_wind, s.oya, s.honba), (wind, 0, 3));
-                    assert_eq!(scores(&s), after_double_ron);
+            fn extension_dealer_multi_ron_repeats_when_child_is_top() {
+                for rule in [GameRule::default_tenhou(), GameRule::default_mjsoul()] {
+                    for (mode, wind) in [($east, 1), ($half, 2)] {
+                        let mut after_double_ron = vec![$start; $np];
+                        after_double_ron[1] = $target + 1000;
+                        let mut s = state(mode, wind, 0, after_double_ron.clone(), 0);
+                        s.rule = rule;
+                        record_ron_winners(&mut s, &[0, 1], wind);
+                        s._initialize_next_round(true, false);
+                        assert!(!s.is_done);
+                        assert_eq!((s.round_wind, s.oya, s.honba), (wind, 0, 3));
+                        assert_eq!(scores(&s), after_double_ron);
+                    }
                 }
             }
 
             #[test]
-            fn extension_top_dealer_stops_only_at_target_with_seat_tiebreak() {
-                for (mode, wind) in [($east, 1), ($half, 2)] {
-                    for dealer in [0, $np - 1] {
+            fn extension_target_and_dealer_tie_rank_respect_ruleset() {
+                for rule in [GameRule::default_tenhou(), GameRule::default_mjsoul()] {
+                    let repeat_priority = $np == 3 || rule.extension_dealer_repeat_priority;
+                    for (mode, wind) in [($east, 1), ($half, 2)] {
+                        for dealer in [0, $np - 1] {
+                            for score in [$target - 100, $target] {
+                                for tied in [false, true] {
+                                    for draw in [false, true] {
+                                        let mut initial = vec![$start - 1000; $np];
+                                        initial[dealer as usize] = score;
+                                        if tied {
+                                            initial[(dealer as usize + 1) % $np] = score;
+                                        }
+                                        let mut s = state(mode, wind, dealer, initial, 0);
+                                        s.rule = rule;
+                                        s._initialize_next_round(true, draw);
+                                        assert_eq!(s.is_done, score >= $target && (!repeat_priority || !tied || dealer == 0));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            #[test]
+            fn extension_single_dealer_win_respects_ruleset_priority() {
+                for rule in [GameRule::default_tenhou(), GameRule::default_mjsoul()] {
+                    for (mode, wind) in [($east, 1), ($half, 2)] {
+                        // A previous dealer multi-ron can have left a child
+                        // above the target. MjSoul does not carry that exception
+                        // into an ordinary later win; Tenhou still prioritizes
+                        // dealer continuation.
+                        let mut after_single_win = vec![$start; $np];
+                        after_single_win[1] = $target + 1000;
+                        let mut s = state(mode, wind, 0, after_single_win, 0);
+                        s.rule = rule;
+                        record_ron_winners(&mut s, &[0], wind);
+                        s._initialize_next_round(true, false);
+                        assert_eq!(s.is_done, $np == 4 && !rule.extension_dealer_repeat_priority);
+                    }
+                }
+            }
+
+            #[test]
+            fn scheduled_last_dealer_still_needs_top_rank_for_yame() {
+                for rule in [GameRule::default_tenhou(), GameRule::default_mjsoul()] {
+                    for (mode, wind) in [($east, 0), ($half, 1)] {
                         for score in [$target - 100, $target] {
                             for tied in [false, true] {
                                 for draw in [false, true] {
                                     let mut initial = vec![$start - 1000; $np];
-                                    initial[dealer as usize] = score;
+                                    initial[$np - 1] = score;
                                     if tied {
-                                        initial[(dealer as usize + 1) % $np] = score;
+                                        initial[0] = score;
                                     }
-                                    let mut s = state(mode, wind, dealer, initial, 0);
+                                    let mut s = state(mode, wind, $np - 1, initial, 0);
+                                    s.rule = rule;
                                     s._initialize_next_round(true, draw);
-                                    assert_eq!(
-                                        s.is_done,
-                                        score >= $target && (!tied || dealer == 0)
-                                    );
+                                    assert_eq!(s.is_done, score >= $target && !tied);
                                 }
                             }
                         }

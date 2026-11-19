@@ -68,7 +68,7 @@ class _Episode:
         self.env = MJSOUL_RULESET.create_env(seed=13)
         self.obs = self.env.reset(wall=_wall(specials, draws, replacements, dora_variant=dora_variant), oya=0)
         self.live = LiveEventProjection()
-        self.live.observe_native(list(self.env.mjai_log))
+        self.live.observe_native(list(self.env.rule_log))
         self.agents = [KARAgent(seat, _Policy()) for seat in range(4)]
 
     def _choose(self, seat, family, tile=None, *, riichi=False, capture=False):
@@ -85,14 +85,9 @@ class _Episode:
         assert self.env.phase == Phase.WaitAct
         seat = self.env.current_player
         action, selection = self._choose(seat, family, tile, riichi=riichi, capture=capture)
-        public, raw = len(self.live.events), len(self.env.mjai_log)
+        public, raw = len(self.live.events), len(self.env.rule_log)
         self.obs = execute_candidate(self.env, seat, action)
-        declared_ankan = None
-        if family == "ANKAN":
-            declared_ankan = {"type": "ankan", "actor": seat,
-                              "consumed": [convert.tid_to_mjai(t) for t in action.actions[0].consume_tiles]}
-        self.live.observe_native(list(self.env.mjai_log)[raw:], declared_ankan=declared_ankan,
-                                 pending_kan_window=self.env.phase == Phase.WaitResponse)
+        self.live.observe_native(list(self.env.rule_log)[raw:])
         if selection is not None:
             kind = {"DISCARD": "dahai", "TSUMO": "hora"}.get(family, family.lower())
             selection.record_index = self._find_result(public, seat, kind)
@@ -114,9 +109,9 @@ class _Episode:
             if choice is not None:
                 selected = choice
         receipts = self.live.capture_self_passes(choices)
-        public, raw = len(self.live.events), len(self.env.mjai_log)
+        public, raw = len(self.live.events), len(self.env.rule_log)
         self.obs = execute_joint_responses(self.env, choices)
-        self.live.observe_native(list(self.env.mjai_log)[raw:], confirmed_self_passes=receipts)
+        self.live.observe_native(list(self.env.rule_log)[raw:], confirmed_self_passes=receipts)
         if capture:
             assert selected is not None
             if family == "PASS":
@@ -148,6 +143,10 @@ def _server_records(events):  # noqa: PLR0915
     declaration, deposit = None, None
     for index, event in enumerate(events[3:], 3):
         kind = event["type"]
+        if kind == "kan_commit":
+            # The native acknowledgement has no Mahjong Soul record. That
+            # transport proves commitment with the following dora/draw instead.
+            continue
         if kind == "reach":
             declaration = event["actor"]
             continue
@@ -177,6 +176,8 @@ def _server_records(events):  # noqa: PLR0915
             # Server kan records can include a marker made visible in that
             # transaction; dora before a discard instead belongs to its result.
             for later in events[index + 1:]:
+                if later["type"] == "kan_commit":
+                    continue
                 if later["type"] != "dora":
                     break
                 data.setdefault("doras", indicators.copy()).append(later["dora_marker"])
@@ -212,7 +213,9 @@ def _offline(episode):
     events = normalize_records(records)
     # No reordering or stripping of a public bonus reveal/payment to make
     # inputs match. Only server packing, not decision cutoffs, is supplied.
-    assert [item["type"] for item in events] == [item["type"] for item in live]
+    # Only the native transport acknowledgement is absent on the server path;
+    # every semantic public event must still have the same order.
+    assert [item["type"] for item in events] == [item["type"] for item in live if item["type"] != "kan_commit"]
     decisions = []
     game = DecodedGame("a" * 64, "b" * 64, "synthetic-native-wall", {}, tuple(records), events)
     report = replay_game(game, on_decision=decisions.append)

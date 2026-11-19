@@ -1,6 +1,7 @@
 #![allow(clippy::useless_conversion)]
 use crate::agari;
 use crate::errors::RiichiResult;
+use crate::rule::GameRule;
 use crate::score;
 use crate::types::{Conditions, Hand, Meld, MeldType, WinResult, Wind};
 use crate::yaku;
@@ -176,44 +177,56 @@ impl HandEvaluator {
     }
 
     pub fn is_tenpai(&self) -> bool {
-        let current_total: u8 = self.hand.counts.iter().sum::<u8>() + (self.melds.len() as u8 * 3);
-        if current_total != 13 {
-            return false;
-        }
-        let mut hand_14 = self.hand.clone();
-        for i in 0..crate::types::TILE_MAX {
-            if hand_14.counts[i] < 4 {
-                hand_14.add(i as u8);
-                if agari::is_agari(&mut hand_14) {
-                    return true;
-                }
-                hand_14.remove(i as u8);
-            }
-        }
-        false
+        self.wait_tiles(true).next().is_some()
+    }
+
+    /// Formal tenpai depends on the ruleset when all four copies of a wait
+    /// are already in this player's concealed hand and established melds.
+    pub fn is_tenpai_with_rule(&self, rule: &GameRule) -> bool {
+        self.wait_tiles(rule.allow_fifth_copy_tenpai)
+            .next()
+            .is_some()
     }
 
     pub fn get_waits_u8(&self) -> Vec<u8> {
-        let mut waits = Vec::new();
-        let current_total: u8 = self.hand.counts.iter().sum::<u8>() + (self.melds.len() as u8 * 3);
-        if current_total != 13 {
-            return waits;
-        }
+        self.wait_tiles(true).collect()
+    }
+
+    pub fn get_waits_u8_with_rule(&self, rule: &GameRule) -> Vec<u8> {
+        self.wait_tiles(rule.allow_fifth_copy_tenpai).collect()
+    }
+
+    fn wait_tiles(&self, allow_fifth_copy_tenpai: bool) -> impl Iterator<Item = u8> + '_ {
+        let current_total: usize =
+            self.hand.counts.iter().map(|&n| n as usize).sum::<usize>() + self.melds.len() * 3;
         let mut hand_14 = self.hand.clone();
-        for i in 0..crate::types::TILE_MAX {
-            if hand_14.counts[i] < 4 {
-                hand_14.add(i as u8);
-                if crate::agari::is_agari(&mut hand_14) {
-                    waits.push(i as u8);
-                }
-                hand_14.remove(i as u8);
+        (0..crate::types::TILE_MAX).filter_map(move |i| {
+            // The legacy interface and Tenhou use concealed counts for formal
+            // tenpai. Mahjong Soul also excludes copies in the player's melds.
+            // Neither rule counts visible tiles belonging to other players.
+            let owned_count = if allow_fifth_copy_tenpai {
+                self.hand.counts[i]
+            } else {
+                self.full_hand.counts[i]
+            };
+            if current_total != 13 || owned_count >= 4 {
+                return None;
             }
-        }
-        waits
+            hand_14.add(i as u8);
+            let is_agari = agari::is_agari(&mut hand_14);
+            hand_14.remove(i as u8);
+            is_agari.then_some(i as u8)
+        })
     }
 
     pub fn get_waits(&self) -> Vec<u32> {
-        self.get_waits_u8().iter().map(|&x| x as u32).collect()
+        self.wait_tiles(true).map(u32::from).collect()
+    }
+
+    pub fn get_waits_with_rule(&self, rule: &GameRule) -> Vec<u32> {
+        self.wait_tiles(rule.allow_fifth_copy_tenpai)
+            .map(u32::from)
+            .collect()
     }
 }
 
@@ -249,14 +262,29 @@ impl HandEvaluator {
         self.is_tenpai()
     }
 
+    #[pyo3(name = "is_tenpai_with_rule")]
+    pub fn is_tenpai_with_rule_py(&self, rule: &GameRule) -> bool {
+        self.is_tenpai_with_rule(rule)
+    }
+
     #[pyo3(name = "get_waits_u8")]
     pub fn get_waits_u8_py(&self) -> Vec<u8> {
         self.get_waits_u8()
     }
 
+    #[pyo3(name = "get_waits_u8_with_rule")]
+    pub fn get_waits_u8_with_rule_py(&self, rule: &GameRule) -> Vec<u8> {
+        self.get_waits_u8_with_rule(rule)
+    }
+
     #[pyo3(name = "get_waits")]
     pub fn get_waits_py(&self) -> Vec<u32> {
         self.get_waits()
+    }
+
+    #[pyo3(name = "get_waits_with_rule")]
+    pub fn get_waits_with_rule_py(&self, rule: &GameRule) -> Vec<u32> {
+        self.get_waits_with_rule(rule)
     }
 }
 
@@ -296,5 +324,78 @@ fn get_next_tile(tile: u8) -> u8 {
         31
     } else {
         tile + 1
+    }
+}
+
+#[cfg(test)]
+mod physical_wait_tests {
+    use super::*;
+
+    #[test]
+    fn own_pon_and_fourth_tile_formal_wait_depends_on_rule() {
+        // Concealed 1m 234567p 789s, with an established pon of 1m.
+        let hand = vec![3, 40, 44, 48, 53, 56, 60, 96, 100, 104];
+        let pon = Meld {
+            meld_type: MeldType::Pon,
+            tiles: vec![0, 1, 2],
+            opened: true,
+            from_who: 0,
+            called_tile: Some(0),
+        };
+        let evaluator = HandEvaluator::new(hand, vec![pon]);
+        assert!(evaluator.is_tenpai());
+        assert_eq!(evaluator.get_waits_u8(), vec![0]);
+        assert_eq!(evaluator.get_waits(), vec![0]);
+        assert!(evaluator.is_tenpai_with_rule(&GameRule::default_tenhou()));
+        assert_eq!(
+            evaluator.get_waits_u8_with_rule(&GameRule::default_tenhou()),
+            vec![0]
+        );
+        assert!(!evaluator.is_tenpai_with_rule(&GameRule::default_mjsoul()));
+        assert!(
+            evaluator
+                .get_waits_u8_with_rule(&GameRule::default_mjsoul())
+                .is_empty()
+        );
+        assert!(
+            evaluator
+                .get_waits_with_rule(&GameRule::default_mjsoul())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn an_available_fourth_copy_remains_a_valid_wait() {
+        // Concealed 23m 234p 789s EE, with a pon containing three 1m.
+        // The fourth 1m can complete 123m; publicly exhausted tiles elsewhere
+        // are not part of this player's physical-copy constraint.
+        let hand = vec![4, 8, 40, 44, 48, 96, 100, 104, 108, 109];
+        let pon = Meld {
+            meld_type: MeldType::Pon,
+            tiles: vec![0, 1, 2],
+            opened: true,
+            from_who: 0,
+            called_tile: Some(0),
+        };
+        let evaluator = HandEvaluator::new(hand, vec![pon]);
+        assert!(evaluator.is_tenpai());
+        assert_eq!(evaluator.get_waits_u8(), vec![0, 3]);
+        for rule in [GameRule::default_tenhou(), GameRule::default_mjsoul()] {
+            assert!(evaluator.is_tenpai_with_rule(&rule));
+            assert_eq!(evaluator.get_waits_u8_with_rule(&rule), vec![0, 3]);
+        }
+    }
+
+    #[test]
+    fn concealed_four_copies_cannot_be_a_formal_wait_under_either_rule() {
+        // 1111m 234567p 789s: only a fifth 1m could produce the missing pair.
+        let hand = vec![0, 1, 2, 3, 40, 44, 48, 53, 56, 60, 96, 100, 104];
+        let evaluator = HandEvaluator::new(hand, vec![]);
+        assert!(!evaluator.is_tenpai());
+        assert!(evaluator.get_waits_u8().is_empty());
+        for rule in [GameRule::default_tenhou(), GameRule::default_mjsoul()] {
+            assert!(!evaluator.is_tenpai_with_rule(&rule));
+            assert!(evaluator.get_waits_u8_with_rule(&rule).is_empty());
+        }
     }
 }

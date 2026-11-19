@@ -114,9 +114,9 @@ def test_late_self_pass_changed_prefix_and_rewind_rebuild_in_real_predictor(enco
     choices = {seat: ep._choose(seat, "PASS")[0] for seat in ep.env.active_players}
     receipts = tuple(receipt for receipt in ep.live.capture_self_passes(choices) if receipt.observer_player_id == 1)
     assert len(receipts) == 1
-    raw = len(ep.env.mjai_log)
+    raw = len(ep.env.rule_log)
     ep.obs = execute_joint_responses(ep.env, choices)
-    ep.live.observe_native(list(ep.env.mjai_log)[raw:])  # original batch has no receipt yet
+    ep.live.observe_native(list(ep.env.rule_log)[raw:])  # original batch has no receipt yet
     first, first_ids = _own(ep)
     assert first.observer_player_id == 1
     assert both(first, first_ids, "before-more-events") == 0

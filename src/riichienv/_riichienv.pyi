@@ -1,7 +1,44 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
+
+NATIVE_RULES_VERSION: str
+KAR_PUBLIC_RESPONSE_NAMES: list[str]
+
+class NativeObserverState:
+    def __init__(self, observer: int) -> None: ...
+    def apply_event_json(self, event: str) -> str: ...
+    def state_json(self) -> str: ...
+
+def native_pending_kan_commits(event: str, actor: int, committed_kans: int, indicators: int) -> bool: ...
+def kar_public_response_mask(
+    *,
+    actor: int,
+    candidate_tile: int,
+    declares_riichi: bool,
+    discard_history: Sequence[Sequence[int]],
+    current_rivers: Sequence[Sequence[int]],
+    meld_kinds: Sequence[Sequence[str]],
+    riichi_accepted: Sequence[bool],
+    remaining_draws: int | None,
+    history_complete: bool,
+    chi_allowed: bool,
+    sanchaho_is_draw: bool,
+    four_winds_abort: bool,
+    four_riichi_abort: bool,
+    four_kans_abort: bool,
+    nagashi_mangan: bool,
+) -> list[bool]: ...
+def kar_public_nagashi_possibilities(
+    *,
+    actor: int,
+    candidate_tile: int,
+    discard_history: Sequence[Sequence[int]],
+    current_rivers: Sequence[Sequence[int]],
+    history_complete: bool,
+) -> list[bool]: ...
 
 if TYPE_CHECKING:
     from riichienv.visualizer import GameViewer
@@ -16,6 +53,8 @@ class GameRule:
     sanchaho_is_draw: bool
     kuikae_forbidden: bool
     dealer_first_discard_is_tedashi: bool
+    extension_dealer_repeat_priority: bool
+    allow_fifth_copy_tenpai: bool
     def __init__(
         self,
         allows_ron_on_ankan_for_kokushi_musou: bool = False,
@@ -27,6 +66,8 @@ class GameRule:
         sanchaho_is_draw: bool = False,
         kuikae_forbidden: bool = True,
         dealer_first_discard_is_tedashi: bool = False,
+        extension_dealer_repeat_priority: bool = True,
+        allow_fifth_copy_tenpai: bool = True,
     ) -> None: ...
     @staticmethod
     def default_tenhou() -> GameRule: ...
@@ -203,7 +244,11 @@ class HandEvaluator:
         self, win_tile: int, dora_indicators: list[int], ura_indicators: list[int], conditions: Conditions
     ) -> WinResult: ...
     def is_tenpai(self) -> bool: ...
+    def is_tenpai_with_rule(self, rule: GameRule) -> bool: ...
     def get_waits(self) -> list[int]: ...
+    def get_waits_with_rule(self, rule: GameRule) -> list[int]: ...
+    def get_waits_u8(self) -> list[int]: ...
+    def get_waits_u8_with_rule(self, rule: GameRule) -> list[int]: ...
     @staticmethod
     def hand_from_text(text: str) -> HandEvaluator: ...
 
@@ -249,6 +294,10 @@ class Observation:
     player_id: int
     prev_events_size: int
     forced_tedashi: bool
+    rule: GameRule
+    def legal_riichi_discards(self) -> list[Action]:
+        """Return complete native RIICHI actions with their legal physical discard tiles."""
+        ...
     def new_events(self) -> list[str]:
         """Return MJAI JSON events unseen by this player since their previous observation.
 
@@ -790,6 +839,12 @@ class RiichiEnv:
     wall: list[int]
     discards: list[list[int]]
     mjai_log: list[dict[str, Any]]
+    @property
+    def rule_log(self) -> list[dict[str, Any]]: ...
+    @property
+    def replay_context_version(self) -> str: ...
+    @property
+    def replay_kan_responses(self) -> dict[int, list[Action]] | None: ...
     _custom_honba: int
     _custom_round_wind: int
 
@@ -848,6 +903,16 @@ class RiichiEnv:
         self, oya: int | None = None, honba: int | None = None, *args: Any, **kwargs: Any
     ) -> dict[int, Observation]: ...
     def preview_kan_responses(self, actor: int, declaration: Action, player_id: int) -> list[Action]: ...
+    def prepare_replay_kan(self, actor: int, declaration: Action) -> dict[int, list[Action]]: ...
+    def validate_replay_event(self, event: dict[str, Any]) -> None: ...
+    def validate_replay_draw(self, actor: int) -> None: ...
+    def step_riichi_discard(
+        self,
+        actor: int,
+        declaration: Action,
+    ) -> tuple[dict[int, Observation], dict[int, Observation]]:
+        """Atomically validate/execute reach plus discard, preserving both observation deltas."""
+        ...
     def _record_replay_kan_ron_declines(self, actor: int, seats: list[int]) -> None: ...
     def step(self, actions: dict[int, Action | Action3P]) -> dict[int, Observation]: ...
     def done(self) -> bool: ...
@@ -897,6 +962,12 @@ def get_yaku_by_id(id_: int) -> Yaku | None: ...
 def get_all_yaku() -> list[Yaku]: ...
 
 __all__ = [
+    "NATIVE_RULES_VERSION",
+    "NativeObserverState",
+    "KAR_PUBLIC_RESPONSE_NAMES",
+    "native_pending_kan_commits",
+    "kar_public_response_mask",
+    "kar_public_nagashi_possibilities",
     "Action",
     "Action3P",
     "ActionType",
@@ -928,4 +999,32 @@ __all__ = [
     "Yaku",
     "get_yaku_by_id",
     "get_all_yaku",
+    "native_win_payments",
+    "native_draw_payments",
+    "native_end_game_pot",
+    "native_round_transition",
 ]
+
+def native_win_payments(
+    wins: list[tuple[int, WinResult, int | None, int]],
+    oya: int,
+    target: int | None,
+    honba: int,
+    riichi_sticks: int,
+) -> list[int]: ...
+def native_draw_payments(tenpai: list[bool], oya: int, nagashi_winners: list[int], abortive: bool) -> list[int]: ...
+def native_end_game_pot(
+    scores: list[int] | tuple[int, ...], riichi_sticks: int, initial_seat_order: list[int] | tuple[int, ...]
+) -> list[int]: ...
+def native_round_transition(
+    scores: list[int] | tuple[int, ...],
+    oya: int,
+    round_wind: int,
+    honba: int,
+    game_mode: int,
+    kind: str,
+    dealer_continues: bool,
+    winner_count: int = 1,
+    initial_seat_order: list[int] | tuple[int, ...] = (0, 1, 2, 3),
+    rule: GameRule | None = None,
+) -> tuple[int, int, int, bool, bool, str | None]: ...

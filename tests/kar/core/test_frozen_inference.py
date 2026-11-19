@@ -171,7 +171,7 @@ def test_frozen_policy_executes_six_real_agent_windows_without_changing_weights(
     env = MJSOUL_RULESET.create_env(seed=17)
     observations = env.reset()
     projection = LiveEventProjection()
-    projection.observe_native(list(env.mjai_log))
+    projection.observe_native(list(env.rule_log))
     predictors = {
         seat: FrozenModelPredictor(frozen_predictor.model, frozen_predictor.binding.train_manifest_sha256)
         for seat in range(4)
@@ -184,12 +184,12 @@ def test_frozen_policy_executes_six_real_agent_windows_without_changing_weights(
             for seat, observation in observations.items()
             if observation.legal_actions()
         }
-        before = len(env.mjai_log)
+        before = len(env.rule_log)
         if env.phase == Phase.WaitResponse:
             observations = dict(execute_joint_responses(env, choices))
         else:
             observations = dict(execute_candidate(env, env.current_player, choices[env.current_player]))
-        projection.observe_native(list(env.mjai_log[before:]))
+        projection.observe_native(list(env.rule_log[before:]))
     assert sum(agent.decisions for agent in agents.values()) >= 6
     assert model_weights_sha256(frozen_predictor.model) == before_weights
     assert all(predictor.candidate_calls == 0 for predictor in predictors.values())

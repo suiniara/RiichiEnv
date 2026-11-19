@@ -145,11 +145,49 @@ macro_rules! kakan_tests {
                 for (base, added) in [(36, 39), (52, 52), (52, 55)] {
                     let mut expected = single_pon(base, added);
                     let mut actual = expected.clone();
+                    let hand_before = actual.players[0].hand.clone();
+                    let pon_before = actual.players[0].melds[0].tiles.clone();
+                    let wall_before = actual.wall.tiles.clone();
                     let normal = kakan(&mut expected, added);
                     let short = abbreviate(&normal, true);
                     expected.step(&HashMap::from([(0, normal)]));
                     actual.step(&HashMap::from([(0, short)]));
                     assert_same_outcome(&mut actual, &mut expected);
+                    if $np == 4 && actual.phase == Phase::WaitResponse {
+                        // Four-player kan declarations do not consume the tile
+                        // or upgrade the Pon until the robbery window closes.
+                        assert_eq!(actual.players[0].melds[0].meld_type, MeldType::Pon);
+                        assert_eq!(actual.players[0].melds[0].tiles, pon_before);
+                        assert_eq!(actual.players[0].hand, hand_before);
+                        assert_eq!(actual.wall.tiles, wall_before);
+                        assert_eq!(actual.wall.rinshan_draw_count, 0);
+                        assert_eq!(actual.pending_kan.as_ref().unwrap().1.tile, Some(added));
+                        assert!(!actual.active_players.is_empty());
+                        assert!(actual.active_players.iter().all(|seat| {
+                            actual.current_claims[seat].iter().any(|action| {
+                                action.action_type == ActionType::Ron && action.tile == Some(added)
+                            })
+                        }));
+                        let passes = actual
+                            .active_players
+                            .iter()
+                            .map(|&seat| {
+                                (
+                                    seat,
+                                    Action::new(ActionType::Pass, None, vec![], Some(seat)),
+                                )
+                            })
+                            .collect();
+                        actual.step(&passes);
+                        expected.step(&passes);
+                        assert_same_outcome(&mut actual, &mut expected);
+                        assert_eq!(actual.phase, Phase::WaitAct);
+                        assert_eq!(actual.pending_kan, None);
+                        assert_eq!(actual.wall.rinshan_draw_count, 1);
+                    }
+                    // Three-player declarations retain their legacy eager
+                    // commit behavior; no extra response is submitted there.
+                    assert_eq!(actual.players[0].melds[0].meld_type, MeldType::Kakan);
                     assert_eq!(
                         actual.players[0].melds[0].tiles,
                         (base..base + 4).collect::<Vec<_>>()
@@ -248,6 +286,8 @@ macro_rules! kakan_tests {
                             ]),
                         );
                         let mut actual = expected.clone();
+                        let hand_before = actual.players[0].hand.clone();
+                        let pon_before = actual.players[0].melds[0].tiles.clone();
                         let normal = kakan(&mut expected, 52);
                         let short = abbreviate(&normal, omit_tile);
                         expected.step(&HashMap::from([(0, normal)]));
@@ -262,6 +302,12 @@ macro_rules! kakan_tests {
                                 .any(|a| a.action_type == ActionType::Ron && a.tile == Some(52))
                         );
                         assert_same_outcome(&mut actual, &mut expected);
+                        if $np == 4 {
+                            assert_eq!(actual.players[0].melds[0].meld_type, MeldType::Pon);
+                            assert_eq!(actual.players[0].melds[0].tiles, pon_before);
+                            assert_eq!(actual.players[0].hand, hand_before);
+                            assert_eq!(actual.wall.rinshan_draw_count, 0);
+                        }
                         let response = if claim_ron {
                             ActionType::Ron
                         } else {
@@ -273,6 +319,15 @@ macro_rules! kakan_tests {
                         expected.step(&actions);
                         assert_same_outcome(&mut actual, &mut expected);
                         assert_eq!(actual.wall.rinshan_draw_count, u8::from(!claim_ron));
+                        if $np == 4 && claim_ron {
+                            assert_eq!(actual.players[0].melds[0].meld_type, MeldType::Pon);
+                            assert_eq!(actual.players[0].melds[0].tiles, pon_before);
+                            assert_eq!(actual.players[0].hand, hand_before);
+                        } else {
+                            assert_eq!(actual.players[0].melds[0].meld_type, MeldType::Kakan);
+                            assert_eq!(actual.players[0].melds[0].tiles, vec![52, 53, 54, 55]);
+                            assert!(!actual.players[0].hand.contains(&52));
+                        }
                     }
                 }
             }

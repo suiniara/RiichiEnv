@@ -4,17 +4,14 @@ import copy
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from riichienv import HandEvaluator, convert
+from riichienv import convert
 
-from .event_semantics import nine_terminals_public_hand
 from .observation import ObserverLedger, PublicSnapshot, SelfPassTrigger
-from .payments import end_game_pot
-from .settlement import _meld
 
 if TYPE_CHECKING:
     from .actions import MappedAction
 
-LIVE_EVENT_VERSION = "native_public_resolution_projection_v5_pass_receipts"
+LIVE_EVENT_VERSION = "native_rule_event_projection_v6"
 _NATIVE_PASS_PROVENANCE = "native_committed_pass"
 _DRAW_ALIASES = {
     "exhaustive_draw": "exhaustive_draw",
@@ -52,7 +49,6 @@ class LiveEventProjection:
         self.public_scores: tuple[int, ...] | None = None
         self.ended = False
         self._record_serial = 0
-        self._delayed_ankan: tuple[Any, ...] | None = None
         self._pending_horas: list[dict[str, Any]] = []
         self._pending_hora_record: int | None = None
         self._pending_pass_receipts: dict[SelfPassTrigger, None] = {}
@@ -86,8 +82,9 @@ class LiveEventProjection:
 
     def capture_self_passes(self, choices: Mapping[int, MappedAction]) -> tuple[SelfPassTrigger, ...]:
         """Side-effect-free receipts. Confirm only after atomic native submission succeeds."""
-        return tuple(self.ledgers[seat].pass_trigger() for seat, choice in choices.items()
-                     if choice.spec.action_type == "PASS")
+        return tuple(
+            self.ledgers[seat].pass_trigger() for seat, choice in choices.items() if choice.spec.action_type == "PASS"
+        )
 
     def _append(self, event: dict[str, Any], record: int) -> None:
         if event["type"] == "self_pass":
@@ -96,6 +93,9 @@ class LiveEventProjection:
         for ledger in self.ledgers:
             ledger.apply_event(event)
         self.events.append(event)
+        if event["type"] in {"start_kyoku", "reach_accepted", "hora", "ryukyoku", "end_game"}:
+            self.public_scores = self.ledgers[0].scores
+            self.public_pot = self.ledgers[0].riichi_sticks
 
     def _win_group(self, group: Sequence[dict[str, Any]], record: int) -> None:
         if self.public_scores is None or not group:
@@ -118,15 +118,18 @@ class LiveEventProjection:
                 if len(group) != 1 or view.current_draw_actor != actor or view.drawn_tile is None:
                     raise ValueError("Native tsumo lacks its visible owner draw")
                 tile = view.drawn_tile
-                hand = list(view.hand)
             else:
                 source = view.pending_kan_actor if view.pending_kan_actor is not None else view.last_discard_actor
                 tile = view.pending_kan_tile if view.pending_kan_actor is not None else view.last_discard_tile
                 if source != target or tile is None:
                     raise ValueError("Native ron lacks its public discard/kan trigger")
-                hand = [*view.hand, tile]
             if raw.get("pai") is not None and convert.mjai_to_tid(raw["pai"]) // 4 != tile // 4:
                 raise ValueError("Native winning tile conflicts with the visible trigger")
+            hand = raw.get("public_hand")
+            if not isinstance(hand, list) or any(not isinstance(item, str) or item == "?" for item in hand):
+                raise ValueError("Native win lacks its engine-resolved public hand; rebuild the extension")
+            if _points(raw.get("scores")) != scores:
+                raise ValueError("Native win resolution scores disagree with the complete window")
             event = {
                 "type": "hora",
                 "actor": actor,
@@ -134,9 +137,9 @@ class LiveEventProjection:
                 "pai": convert.tid_to_mjai(tile),
                 "deltas": list(total),
                 "scores": list(scores),
-                "public_hand": [convert.tid_to_mjai(item) for item in hand],
+                "public_hand": list(hand),
                 "visibility_complete": True,
-                "public_reveal_provenance": "winner_prior_owner_snapshot_after_public_resolution",
+                "public_reveal_provenance": "native_round_resolution_v1",
             }
             if view.riichi_accepted[actor]:
                 markers = raw.get("ura_markers")
@@ -157,26 +160,20 @@ class LiveEventProjection:
         delta = _points(raw.get("deltas"))
         if sum(delta):
             raise ValueError("A draw does not claim the public riichi pot")
-        scores = tuple(score + change for score, change in zip(self.public_scores, delta))
-        shown: list[list[str] | None] = [None for _ in range(4)]
-        if reason in {"exhaustive_draw", "nagashi_mangan"}:
-            # RiichiEnv's frozen exhaustive-draw mechanism automatically declares
-            # structural tenpai and reveals those hands. Never infer it from deltas.
-            for seat in range(4):
-                view = self.snapshot(seat)
-                evaluator = HandEvaluator(list(view.hand), [_meld(meld) for meld in view.melds[seat]])
-                if evaluator.is_tenpai():
-                    shown[seat] = [convert.tid_to_mjai(tile) for tile in view.hand]
-        elif reason == "kyushukyuhai":
-            actor = self.snapshot(0).current_draw_actor
-            if actor is None:
-                raise ValueError("Nine-terminals public reveal lacks a declaring actor")
-            view = self.snapshot(actor)
-            shown[actor] = nine_terminals_public_hand(
-                actor, [convert.tid_to_mjai(tile) for tile in view.hand],
-                current_draw_actor=view.current_draw_actor, draw_count=view.draw_counts[actor],
-                has_discarded=bool(view.discard_history[actor]), calls_seen=any(view.melds),
-            )
+        scores = _points(raw.get("scores"))
+        if scores != tuple(score + change for score, change in zip(self.public_scores, delta)):
+            raise ValueError("Native draw resolution breaks the public score chain")
+        shown = raw.get("public_hands")
+        if not isinstance(shown, list) or len(shown) != 4 or raw.get("visibility_complete") is not True:
+            raise ValueError("Native draw lacks its engine-resolved public hands; rebuild the extension")
+        if any(
+            hand is not None and (not isinstance(hand, list) or any(not isinstance(t, str) or t == "?" for t in hand))
+            for hand in shown
+        ):
+            raise ValueError("Invalid native public draw hands")
+        actor = raw.get("actor")
+        if reason == "kyushukyuhai" and (type(actor) is not int or not 0 <= actor < 4 or shown[actor] is None):
+            raise ValueError("Native nine-terminals resolution lacks its declarer reveal")
         self._append(
             {
                 "type": "ryukyoku",
@@ -186,7 +183,7 @@ class LiveEventProjection:
                 "scores": list(scores),
                 "public_hands": shown,
                 "visibility_complete": True,
-                "public_reveal_provenance": "frozen_native_public_draw_resolution",
+                "public_reveal_provenance": "native_round_resolution_v1",
             },
             record,
         )
@@ -207,45 +204,36 @@ class LiveEventProjection:
         # A receipt must come from a trigger already observed at submission.
         # Reject new invalid receipts before consuming events or queuing any.
         for trigger in confirmed_self_passes:
-            if (not isinstance(trigger, SelfPassTrigger) or type(trigger.observer_player_id) is not int
-                    or not 0 <= trigger.observer_player_id < 4):
+            if (
+                not isinstance(trigger, SelfPassTrigger)
+                or type(trigger.observer_player_id) is not int
+                or not 0 <= trigger.observer_player_id < 4
+            ):
                 raise ValueError("Invalid confirmed private Pass receipt")
             self.ledgers[trigger.observer_player_id].self_pass_ready(trigger, provenance=_NATIVE_PASS_PROVENANCE)
         if declared_ankan is not None:
+            # Compatibility validation only. The engine's rule_log must already
+            # contain the declaration; Python never synthesizes engine events.
             key = self._ankan_key(declared_ankan)
-            matching = any(event.get("type") == "ankan" and self._ankan_key(event) == key for event in raw_events)
-            if not matching:
-                if not pending_kan_window or self._delayed_ankan is not None:
-                    raise ValueError("Missing native ankan log without a new validated robbery window")
-                self._append(copy.deepcopy(declared_ankan), self._next_record())
-                self._delayed_ankan = key
+            if not any(event.get("type") == "ankan" and self._ankan_key(event) == key for event in raw_events):
+                raise ValueError("Native rule_log must include the ankan declaration; rebuild the extension")
         index = 0
         while index < len(raw_events):
             raw = copy.deepcopy(raw_events[index])
             record = self._next_record()
             kind = raw["type"]
-            if kind == "ankan" and self._delayed_ankan is not None:
-                if self._ankan_key(raw) != self._delayed_ankan:
-                    raise ValueError("Late native ankan acknowledgement is for another declaration")
-                self._append({"type": "kan_commit", "actor": raw["actor"], "kan_type": "ankan"}, record)
-                self._delayed_ankan = None
-                index += 1
-                continue
             if self._pending_horas and kind != "hora":
                 group = self._pending_horas
                 group_record = self._pending_hora_record
                 self._pending_horas, self._pending_hora_record = [], None
                 assert group_record is not None
                 self._win_group(group, group_record)
-                self._delayed_ankan = None
             if kind == "hora":
                 if not self._pending_horas:
                     self._pending_hora_record = record
                 self._pending_horas.append(raw)
                 index += 1
                 continue
-            if kind in {"start_kyoku", "ryukyoku", "end_kyoku", "end_game"}:
-                self._delayed_ankan = None
             if kind == "start_kyoku":
                 scores = _points(raw["scores"])
                 if self.public_scores is not None and scores != self.public_scores:
@@ -253,14 +241,6 @@ class LiveEventProjection:
                 self.public_scores = scores
                 self.public_pot = raw.get("kyotaku", raw.get("kyoutaku", 0))
                 self.round_instance += 1
-            elif kind == "reach_accepted":
-                if self.public_scores is None:
-                    raise ValueError("Riichi acceptance precedes public scores")
-                actor = raw["actor"]
-                self.public_scores = tuple(
-                    score - (1000 if seat == actor else 0) for seat, score in enumerate(self.public_scores)
-                )
-                self.public_pot += 1
             elif kind == "ryukyoku":
                 self._draw(raw, record)
                 index += 1
@@ -268,10 +248,12 @@ class LiveEventProjection:
             elif kind == "end_game":
                 if self.public_scores is None:
                     raise ValueError("Missing complete public final scores")
-                delta = end_game_pot(self.public_scores, self.public_pot, (0, 1, 2, 3))
-                self.public_scores = tuple(score + change for score, change in zip(self.public_scores, delta))
-                self.public_pot = 0
-                raw.update(scores=list(self.public_scores), end_game_pot_deltas=list(delta))
+                delta = _points(raw.get("end_game_pot_deltas"))
+                scores = _points(raw.get("scores"))
+                if sum(delta) != self.public_pot * 1000 or scores != tuple(
+                    score + change for score, change in zip(self.public_scores, delta)
+                ):
+                    raise ValueError("Native match-end resolution breaks the public score/pot chain")
                 self.ended = True
             self._append(raw, record)
             index += 1

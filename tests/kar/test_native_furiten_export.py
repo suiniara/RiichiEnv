@@ -47,7 +47,9 @@ def _complete_game(ep):
     normalized = normalize_records(records, game_id=game_id)
     # The native match ends on an exhaustive draw, an older legal format without
     # explicit GameEnd scores. The independent certificate must prove termination.
-    assert [item["type"] for item in normalized] == [item["type"] for item in events[:-1]]
+    assert [item["type"] for item in normalized] == [
+        item["type"] for item in events[:-1] if item["type"] != "kan_commit"
+    ]
     final_scores = events[-1]["scores"]
     assert list(ep.env.scores()) == final_scores
     metadata = {

@@ -152,11 +152,11 @@ def _run_round(kind, *, middle_winner=False, honba=0, pot=0):  # noqa: PLR0915
     env = MJSOUL_RULESET.create_env(seed=214)
     env.reset(wall=list(plan.wall), oya=plan.oya, round_wind=0, honba=honba, kyotaku=pot, scores=scores)
     projection = LiveEventProjection()
-    projection.observe_native(env.mjai_log)
+    projection.observe_native(env.rule_log)
     contexts, claims = [], []
 
     def sync(**kwargs):
-        projection.observe_native(env.mjai_log[projection.raw_cursor:], **kwargs)
+        projection.observe_native(env.rule_log[projection.raw_cursor:], **kwargs)
 
     def pass_responses():
         if env.phase == Phase.WaitResponse:
@@ -278,7 +278,7 @@ def test_native_nagashi_keeps_honba_and_riichi_pot_payment_contract():
     assert draw["deltas"] == [-2000, 8000, -4000, -2000]
     assert verifier.pot == 2 and sum(verifier.points) + 1000 * verifier.pot == 100000
     assert projection.public_pot == 2
-    next_round = [event for event in env.mjai_log if event["type"] == "start_kyoku"][-1]
+    next_round = [event for event in env.rule_log if event["type"] == "start_kyoku"][-1]
     assert next_round["honba"] == 4 and next_round["kyotaku"] == 2
 
 

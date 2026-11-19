@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from riichienv import Observation, Phase, convert
+from riichienv import Observation, Phase
 
 from .actions import MappedAction, execute_candidate, execute_joint_responses, legal_candidates
 from .contracts import MJSOUL_RULESET, content_hash
@@ -82,7 +82,7 @@ def run_match(agents: dict[int, KARAgent], *, wall_seed: int, max_decisions: int
     env = MJSOUL_RULESET.create_env(seed=wall_seed)
     observations = env.reset()
     projection = LiveEventProjection()
-    projection.observe_native(list(env.mjai_log))
+    projection.observe_native(list(env.rule_log))
     decisions = []
     started = time.perf_counter()
     while not env.done():
@@ -117,18 +117,8 @@ def run_match(agents: dict[int, KARAgent], *, wall_seed: int, max_decisions: int
                     "decision_latency_seconds": decision_latency,
                 }
             )
-        before = len(env.mjai_log)
+        before = len(env.rule_log)
         projected_before = len(projection.events)
-        declared_ankan = None
-        if env.phase == Phase.WaitAct and env.current_player in choices:
-            selected = choices[env.current_player]
-            if selected.spec.action_type == "ANKAN":
-                native = selected.actions[0]
-                declared_ankan = {
-                    "type": "ankan",
-                    "actor": env.current_player,
-                    "consumed": [convert.tid_to_mjai(tile) for tile in native.consume_tiles],
-                }
         pending_passes = projection.capture_self_passes(choices) if env.phase == Phase.WaitResponse else ()
         if env.phase == Phase.WaitResponse:
             if not choices:
@@ -142,9 +132,9 @@ def run_match(agents: dict[int, KARAgent], *, wall_seed: int, max_decisions: int
             observations = env.step({})
         else:
             raise ValueError("Native game is stuck without a legal decision or automatic transition")
-        new_events = list(env.mjai_log[before:])
+        new_events = list(env.rule_log[before:])
         projection.observe_native(
-            new_events, declared_ankan=declared_ankan, pending_kan_window=env.phase == Phase.WaitResponse,
+            new_events,
             confirmed_self_passes=pending_passes,
         )
         if len(projection.events) == projected_before:

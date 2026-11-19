@@ -8,6 +8,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from riichienv._riichienv import NATIVE_RULES_VERSION
+
 from .actions import manifest_hash
 from .calibration_quality import BRANCH_QUALITY_VERSION
 from .contracts import MJSOUL_RULESET, REFERENCE_SCHEMA_ID, RESPONSE_MASK_VERSION, SCHEMA_ID, SCHEMA_OVERLAY_SHA256
@@ -16,7 +18,7 @@ from .native_replay import NATIVE_REPLAY_VERSION
 from .schema import schema_status
 
 ARTIFACT_CONTRACT_VERSION = "kar_riichienv_contract_v4"
-INPUT_PIPELINE_VERSION = "semantic_public_clock_frozen_decisions_v6_ryanmen_pairs"
+INPUT_PIPELINE_VERSION = "semantic_public_clock_frozen_decisions_v7_native_rules"
 SCHEMA_MAPPING_VERSION = "riichienv_complete_v1_from_kar_v1_2_2_v1"
 ARCHITECTURE_ID = "kar_kl_response_value_v1"
 FEATURE_CONTRACT_VERSION = "visible_rule_features_v2_ryanmen_pairs"
@@ -28,6 +30,8 @@ TRAIN_CONFIG_VERSION = "explicit_train_split_scale_v5_decision_time"
 
 
 def artifact_contract() -> dict[str, Any]:
+    if NATIVE_RULES_VERSION != "riichienv_native_rules_v1":
+        raise ValueError("Rebuild the native extension for the active rule contract")
     schema = schema_status()
     if (
         schema["status"] != "PASS"
@@ -39,6 +43,7 @@ def artifact_contract() -> dict[str, Any]:
     return {
         "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
         "input_pipeline_version": INPUT_PIPELINE_VERSION,
+        "native_rules_version": NATIVE_RULES_VERSION,
         "native_replay_version": NATIVE_REPLAY_VERSION,
         "public_clock_version": PUBLIC_CLOCK_VERSION,
         "terminal_public_version": TERMINAL_PUBLIC_VERSION,

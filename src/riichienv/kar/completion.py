@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from riichienv._riichienv import native_round_transition
+
 from .contracts import ENGINE_COMMIT, MJSOUL_RULESET, content_hash
 from .payments import end_game_pot
 from .settlement import SETTLEMENT_VERSION
@@ -221,12 +223,17 @@ def _end_required(
             raise _EvidenceError("BLOCKED", "unsupported_terminal_draw_reason")
     else:
         raise _EvidenceError("FAIL", "unknown_terminal_settlement_kind")
-    top = min(INITIAL_SEAT_ORDER, key=lambda seat: (-scores[seat], seat))
-    all_last = wind > 1 or (wind == 1 and oya == 3)
-    next_wind = wind + int(not renchan and oya == 3)
-    agari_yame = not abortive and renchan and all_last and top == oya and scores[oya] >= 30000
-    regular_end = not abortive and not renchan and next_wind >= 2 and (max(scores) >= 30000 or next_wind > 2)
-    return min(scores) < 0 or agari_yame or regular_end
+    kind = "abortive_draw" if abortive else "win" if last_row.get("kind") == "win" else "exhaustive_draw"
+    winner_count = len(terminal_events) if kind == "win" else 1
+    honba = _integer(last_round.get("honba"), "final_honba")
+    try:
+        transition = native_round_transition(
+            scores, oya, wind, honba, 2, kind, renchan, winner_count, INITIAL_SEAT_ORDER,
+            rule=MJSOUL_RULESET.engine_rule(),
+        )
+    except (ValueError, TypeError, OverflowError) as error:
+        raise _EvidenceError("FAIL", "invalid_native_termination_context") from error
+    return transition[4]
 
 
 def observed_raw_final_scores(game: Any) -> tuple[int, ...] | None:

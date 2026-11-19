@@ -67,6 +67,9 @@ macro_rules! apply_and_log {
             }
         }
         $state.apply_mjai_event($ev);
+        if let Some(error) = &$state.last_error {
+            return Err(pyo3::exceptions::PyValueError::new_err(error.clone()));
+        }
         $state._push_mjai_event($json_val);
     };
 }
@@ -813,6 +816,22 @@ impl RiichiEnv {
         Ok(list.unbind().into())
     }
 
+    /// Complete public rule transactions, including kan declaration/commit.
+    #[getter]
+    pub fn rule_log(&self, py: Python) -> PyResult<Py<PyAny>> {
+        let GameStateVariant::FourPlayer(state) = &self.variant else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Canonical rule events require a four-player environment",
+            ));
+        };
+        let loads = py.import("json")?.getattr("loads")?;
+        let list = pyo3::types::PyList::empty(py);
+        for event in &state.rule_log {
+            list.append(loads.call1((event,))?)?;
+        }
+        Ok(list.unbind().into())
+    }
+
     #[pyo3(signature = (players=None))]
     pub fn get_observations<'py>(
         &mut self,
@@ -946,60 +965,140 @@ impl RiichiEnv {
                 "actor and responder must be distinct four-player seats",
             ));
         }
-        if state.is_done
-            || state.needs_initialize_next_round
-            || state.needs_tsumo
-            || state.phase != Phase::WaitAct
-            || state.current_player != actor
-        {
+        let responses = state
+            .preview_kan_response_window(actor, &declaration)
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        let responses = responses.get(&player_id).cloned().unwrap_or_default();
+        Ok(responses)
+    }
+
+    #[getter]
+    pub fn replay_context_version(&self) -> &'static str {
+        riichienv_core::replay_context::REPLAY_CONTEXT_VERSION
+    }
+
+    #[getter]
+    pub fn replay_kan_responses(&self) -> PyResult<Option<HashMap<u8, Vec<Action>>>> {
+        let GameStateVariant::FourPlayer(state) = &self.variant else {
             return Err(pyo3::exceptions::PyValueError::new_err(
-                "kan response preview requires the actor's pre-declaration turn",
+                "Replay context requires a four-player environment",
             ));
-        }
-        if !matches!(
-            declaration.action_type,
-            ActionType::Ankan | ActionType::Kakan
-        ) || declaration.actor.is_some_and(|seat| seat != actor)
+        };
+        Ok(state
+            .replay_context
+            .kan_window
+            .as_ref()
+            .map(|window| window.responses.clone()))
+    }
+
+    pub fn prepare_replay_kan(
+        &mut self,
+        actor: u8,
+        declaration: Action,
+    ) -> PyResult<HashMap<u8, Vec<Action>>> {
+        let GameStateVariant::FourPlayer(state) = &mut self.variant else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Replay context requires a four-player environment",
+            ));
+        };
+        state
+            .prepare_replay_kan(actor, declaration)
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        Ok(state
+            .replay_context
+            .kan_window
+            .as_ref()
+            .unwrap()
+            .responses
+            .clone())
+    }
+
+    pub fn validate_replay_event(&self, py: Python, event: Py<PyAny>) -> PyResult<()> {
+        let (event, _) = Self::parse_mjai_event(py, event)?;
+        let GameStateVariant::FourPlayer(state) = &self.variant else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Replay context requires a four-player environment",
+            ));
+        };
+        state
+            .validate_replay_kan_event(&event)
+            .map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    pub fn validate_replay_draw(&self, actor: u8) -> PyResult<()> {
+        let GameStateVariant::FourPlayer(state) = &self.variant else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Replay draw validation requires a four-player environment",
+            ));
+        };
+        state
+            .validate_replay_draw(actor)
+            .map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    /// Execute a complete declaration as one native transaction. The two
+    /// observation deltas retain the legacy reach/discard public event cutoffs;
+    /// callers can never observe or leave the environment halfway through it.
+    pub fn step_riichi_discard<'py>(
+        &mut self,
+        py: Python<'py>,
+        actor: u8,
+        declaration: Action,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        let GameStateVariant::FourPlayer(state) = &self.variant else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Complete riichi requires a four-player environment",
+            ));
+        };
+        if actor >= 4
+            || declaration.actor.is_some_and(|seat| seat != actor)
+            || declaration.action_type != ActionType::Riichi
+            || declaration.tile.is_none()
+            || !declaration.consume_tiles.is_empty()
         {
             return Err(pyo3::exceptions::PyValueError::new_err(
-                "declaration must be a complete ankan or kakan belonging to the actor",
+                "Expected a complete riichi discard belonging to its actor",
             ));
         }
         let mut declaration = declaration;
         declaration.actor = Some(actor);
-        if !state
-            ._get_legal_actions_internal(actor)
-            .contains(&declaration)
-        {
+        if !state.legal_riichi_discards(actor).contains(&declaration) {
             return Err(pyo3::exceptions::PyValueError::new_err(
-                "declaration is not a complete legal kan action",
+                "Riichi discard is not currently legal",
             ));
         }
-        let mut preview = state.as_ref().clone();
-        // WaitAct replay states can retain offers from a closed response window.
-        preview.current_claims.clear();
-        preview.step(&HashMap::from([(actor, declaration)]));
-        if preview.last_error.is_some() {
+        let mut transaction = self.clone();
+        let reach = transaction.step(
+            py,
+            HashMap::from([(
+                actor,
+                AnyAction(Action::new(ActionType::Riichi, None, vec![], Some(actor))),
+            )]),
+        )?;
+        if with_variant!(transaction, |state| state.last_error.is_some()) {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "native kan preview rejected a previously validated declaration",
+                "Validated riichi declaration failed",
             ));
         }
-        let responses = if preview.phase == Phase::WaitResponse
-            && preview.active_players.contains(&player_id)
-        {
-            preview._get_legal_actions_internal(player_id)
-        } else {
-            Vec::new()
-        };
-        if responses.iter().any(|action| {
-            !matches!(action.action_type, ActionType::Ron | ActionType::Pass)
-                || action.actor != Some(player_id)
-        }) {
+        let discard = transaction.step(
+            py,
+            HashMap::from([(
+                actor,
+                AnyAction(Action::new(
+                    ActionType::Discard,
+                    declaration.tile,
+                    vec![],
+                    Some(actor),
+                )),
+            )]),
+        )?;
+        if with_variant!(transaction, |state| state.last_error.is_some()) {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "native kan preview exposed a non-response action",
+                "Validated riichi discard failed",
             ));
         }
-        Ok(responses)
+        *self = transaction;
+        Ok((reach, discard))
     }
 
     /// Record unused Ron offers from a validated, now-closed MJAI kan preview.
@@ -1082,6 +1181,7 @@ impl RiichiEnv {
                 | MjaiEvent::StartKyoku { .. }
                 | MjaiEvent::ReachAccepted { .. }
                 | MjaiEvent::Dora { .. }
+                | MjaiEvent::KanCommit { .. }
                 | MjaiEvent::Hora { .. }
                 | MjaiEvent::Ryukyoku { .. }
                 | MjaiEvent::EndKyoku

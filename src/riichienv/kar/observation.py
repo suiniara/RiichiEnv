@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import json
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from riichienv import convert
+from riichienv._riichienv import NativeObserverState
 
 from .contracts import canonical_bytes
 from .event_semantics import PUBLIC_CLOCK_VERSION, PublicEventClock
-from .kan_transactions import COMMITTED_KAN_KINDS, pending_kan_commits
 from .rule_features import (
     current_rank_features,
     full_suji_exclusion,
@@ -99,9 +100,15 @@ PASS_NEXT_DRAW = "inferred_unique_next_draw_pass"
 PASS_KAN_REPLACEMENT = "inferred_unique_kan_replacement_pass"
 PASS_CALL_PRIORITY = "inferred_unique_call_priority_pass"
 PASS_TERMINAL_NO_RON = "inferred_unique_terminal_no_ron_pass"
-SELF_PASS_PROVENANCES = frozenset({
-    "native_committed_pass", PASS_NEXT_DRAW, PASS_KAN_REPLACEMENT, PASS_CALL_PRIORITY, PASS_TERMINAL_NO_RON,
-})
+SELF_PASS_PROVENANCES = frozenset(
+    {
+        "native_committed_pass",
+        PASS_NEXT_DRAW,
+        PASS_KAN_REPLACEMENT,
+        PASS_CALL_PRIORITY,
+        PASS_TERMINAL_NO_RON,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -122,36 +129,13 @@ class ObserverLedger:
         self._history_session = object()  # ObserverLedger owns one complete game's visible log.
         self.initial_order = tuple(initial_seat_order_player_ids)
         self.event_id = -1
-        self.have_start = False
-        self.have_round = False
-        self.own_hand_complete = False
-        self.hand: list[int] = []
-        self.scores = [25000] * 4
-        self.history: list[list[int]] = [[] for _ in range(4)]
-        self.rivers: list[list[int]] = [[] for _ in range(4)]
-        self.melds: list[list[PublicMeld]] = [[] for _ in range(4)]
-        self.dora: list[int] = []
-        self.declared = [False] * 4
-        self.accepted = [False] * 4
-        self.remaining: int | None = None
-        self.last_actor: int | None = None
-        self.last_tile: int | None = None
-        self.oya = self.honba = self.riichi_sticks = 0
+        self._native = NativeObserverState(observer_player_id)
+        self._state: dict[str, Any] = {}
+        self._refresh_state()
         self.events: list[str] = []
-        self.pending: tuple[str, int, tuple[int, ...]] | None = None
-        self.round_wind = 0
-        self.public_hand_sizes = [13] * 4
-        self.draw_counts = [0] * 4
-        self.riichi_ordinals: list[int | None] = [None, None, None, None]
-        self.current_draw_actor: int | None = None
-        self.drawn_tile: int | None = None
-        self.decision_phase = "unknown"
-        self.post_call_actor: int | None = None
-        self.interrupted = False
         self.history_positions: list[int] = []
         self.logical_clock = 0
         self._event_clock = PublicEventClock()
-        self.visibility_complete = True
         self._round_event_id = -1
         self._public_events: list[dict[str, Any]] = []
         self._public_event_indices: list[int] = []
@@ -160,17 +144,85 @@ class ObserverLedger:
         self._pass_confirmations: dict[int, int] = {}
         self._recorded_passes: set[int] = set()
 
+    # These are detached read-only projections of the Rust-owned facts. Python
+    # owns only model history, clocks, cutoff/provenance and private Pass records.
+    _ENGINE_FIELDS = frozenset(
+        {
+            "have_start",
+            "have_round",
+            "own_hand_complete",
+            "hand",
+            "scores",
+            "history",
+            "rivers",
+            "melds",
+            "dora",
+            "declared",
+            "accepted",
+            "remaining",
+            "last_actor",
+            "last_tile",
+            "oya",
+            "honba",
+            "riichi_sticks",
+            "pending",
+            "round_wind",
+            "public_hand_sizes",
+            "draw_counts",
+            "riichi_ordinals",
+            "current_draw_actor",
+            "drawn_tile",
+            "decision_phase",
+            "post_call_actor",
+            "interrupted",
+            "visibility_complete",
+        }
+    )
+
+    def _refresh_state(self) -> None:
+        state = json.loads(self._native.state_json())
+        state["melds"] = tuple(
+            tuple(PublicMeld(m["kind"], tuple(m["tiles"]), m["source"]) for m in player) for player in state["melds"]
+        )
+        for name in ("history", "rivers"):
+            state[name] = tuple(tuple(player) for player in state[name])
+        for name in (
+            "hand",
+            "scores",
+            "dora",
+            "declared",
+            "accepted",
+            "public_hand_sizes",
+            "draw_counts",
+            "riichi_ordinals",
+        ):
+            state[name] = tuple(state[name])
+        if state["pending"] is not None:
+            kind, actor, tiles = state["pending"]
+            state["pending"] = kind, actor, tuple(tiles)
+        self._state = state
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._ENGINE_FIELDS:
+            return self._state[name]
+        raise AttributeError(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in self._ENGINE_FIELDS:
+            raise AttributeError(f"{name} is owned by the native observer; apply an observed event")
+        object.__setattr__(self, name, value)
+
     def pass_trigger(self) -> SelfPassTrigger:
         """Capture owner-only response context, not a submission or approval."""
         trigger = self._pass_triggers.get(self._active_pass_trigger if self._active_pass_trigger is not None else -1)
         if (
-            trigger is None or trigger.target == self.observer
+            trigger is None
+            or trigger.target == self.observer
             or self.decision_phase not in {"discard_response", "kan_response"}
         ):
             raise ValueError("A self Pass needs this observer's current public response trigger")
         if trigger.trigger_type == "kakan" and not any(
-            meld.kind == "pon" and meld.tiles[0] // 4 == _tile(trigger.pai) // 4
-            for meld in self.melds[trigger.target]
+            meld.kind == "pon" and meld.tiles[0] // 4 == _tile(trigger.pai) // 4 for meld in self.melds[trigger.target]
         ):
             raise ValueError("A kakan response requires the existing committed pon")
         return trigger
@@ -178,9 +230,15 @@ class ObserverLedger:
     def _self_pass_confirmation(self, trigger: SelfPassTrigger, provenance: str) -> int | None:
         if (
             not isinstance(trigger, SelfPassTrigger)
-            or any(type(value) is not int for value in (
-                trigger.observer_player_id, trigger.trigger_event_id, trigger.round_event_id, trigger.target
-            ))
+            or any(
+                type(value) is not int
+                for value in (
+                    trigger.observer_player_id,
+                    trigger.trigger_event_id,
+                    trigger.round_event_id,
+                    trigger.target,
+                )
+            )
             or trigger.observer_player_id != self.observer
             or trigger.target == self.observer
             or self._pass_triggers.get(trigger.trigger_event_id) != trigger
@@ -190,8 +248,12 @@ class ObserverLedger:
             raise ValueError("Private Pass requires confirmed, supported provenance")
         kan = trigger.trigger_type in {"ankan", "kakan"}
         invalid = "An unestablished/overridden call cannot be inferred as private Pass"
-        if (provenance in {PASS_NEXT_DRAW, PASS_CALL_PRIORITY} and trigger.trigger_type != "dahai"
-                or provenance == PASS_KAN_REPLACEMENT and not kan):
+        if (
+            provenance in {PASS_NEXT_DRAW, PASS_CALL_PRIORITY}
+            and trigger.trigger_type != "dahai"
+            or provenance == PASS_KAN_REPLACEMENT
+            and not kan
+        ):
             raise ValueError(invalid)
         confirmed = self._pass_confirmations.get(trigger.trigger_event_id)
         if confirmed is None:
@@ -200,10 +262,16 @@ class ObserverLedger:
             return None
         closing = self._public_events[confirmed]
         kind = closing["type"]
-        if (provenance == PASS_NEXT_DRAW and (kind != "tsumo" or closing.get("actor") != (trigger.target + 1) % 4)
-                or provenance == PASS_KAN_REPLACEMENT and (kind != "tsumo" or closing.get("actor") != trigger.target)
-                or provenance == PASS_CALL_PRIORITY and kind not in {"chi", "pon", "kan", "daiminkan"}
-                or provenance == PASS_TERMINAL_NO_RON and kind not in ({"hora"} if kan else {"hora", "ryukyoku"})):
+        if (
+            provenance == PASS_NEXT_DRAW
+            and (kind != "tsumo" or closing.get("actor") != (trigger.target + 1) % 4)
+            or provenance == PASS_KAN_REPLACEMENT
+            and (kind != "tsumo" or closing.get("actor") != trigger.target)
+            or provenance == PASS_CALL_PRIORITY
+            and kind not in {"chi", "pon", "kan", "daiminkan"}
+            or provenance == PASS_TERMINAL_NO_RON
+            and kind not in ({"hora"} if kan else {"hora", "ryukyoku"})
+        ):
             raise ValueError(invalid)
         return confirmed
 
@@ -223,10 +291,18 @@ class ObserverLedger:
             raise ValueError("Private Pass trigger has no observed closing event")
         if trigger.trigger_event_id in self._recorded_passes:
             return False
-        marker = {"type": "self_pass", "actor": self.observer, "target": trigger.target, "pai": trigger.pai,
-                  "trigger_type": trigger.trigger_type, "trigger_event_id": trigger.trigger_event_id,
-                  "round_event_id": trigger.round_event_id, "confirmed_at_event_id": confirmed,
-                  "confirmed": True, "provenance": provenance}
+        marker = {
+            "type": "self_pass",
+            "actor": self.observer,
+            "target": trigger.target,
+            "pai": trigger.pai,
+            "trigger_type": trigger.trigger_type,
+            "trigger_event_id": trigger.trigger_event_id,
+            "round_event_id": trigger.round_event_id,
+            "confirmed_at_event_id": confirmed,
+            "confirmed": True,
+            "provenance": provenance,
+        }
         anchor = self._public_event_indices[confirmed]
         index = anchor + 1
         self.events.insert(index, canonical_bytes(marker).decode("utf-8"))
@@ -261,7 +337,8 @@ class ObserverLedger:
                 closed = public["actor"] == target
             elif typ in {"chi", "pon", "kan", "daiminkan"}:
                 closed = (
-                    current.trigger_type == "dahai" and public["target"] == current.target
+                    current.trigger_type == "dahai"
+                    and public["target"] == current.target
                     and public["pai"] == current.pai
                 )
             elif typ == "hora":
@@ -281,222 +358,13 @@ class ObserverLedger:
             self._pass_triggers[self.event_id] = trigger
             self._active_pass_trigger = self.event_id
 
-    def _remove_hand(self, tile: int) -> None:
-        if tile in self.hand:
-            self.hand.remove(tile)
-        elif self.own_hand_complete:
-            raise ValueError("Public event consumes a tile absent from the observer's hand")
-
-    def _commit_kan(self) -> None:
-        if self.pending is None:
-            return
-        kind, actor, tiles = self.pending
-        if kind == "kakan":
-            slots = [i for i, m in enumerate(self.melds[actor]) if m.kind == "pon" and m.tiles[0] // 4 == tiles[0] // 4]
-            if len(slots) != 1:
-                raise ValueError("Kakan must update exactly one committed pon")
-            slot = slots[0]
-            old = self.melds[actor][slot]
-            self.melds[actor][slot] = PublicMeld("kakan", (*old.tiles, tiles[0]), old.source)
-        else:
-            self.melds[actor].append(PublicMeld("ankan", tiles))
-        if actor == self.observer:
-            for tile in tiles:
-                self._remove_hand(tile)
-        self.public_hand_sizes[actor] -= len(tiles)
-        self.interrupted = True
-        self.decision_phase = "await_draw"
-        self.pending = None
-
-    def apply_event(self, event: dict[str, Any]) -> None:  # noqa: PLR0915
-        typ = event["type"]
-        if typ == "self_pass":
+    def apply_event(self, event: dict[str, Any]) -> None:
+        if event["type"] == "self_pass":
             self._apply_self_pass(event)
             return
+        public = json.loads(self._native.apply_event_json(canonical_bytes(event).decode("utf-8")))
+        self._refresh_state()
         self.event_id += 1
-        if self.pending is not None and pending_kan_commits(
-            event,
-            actor=self.pending[1],
-            committed_kans=sum(meld.kind in COMMITTED_KAN_KINDS for player in self.melds for meld in player),
-            indicators=len(self.dora),
-        ):
-            if typ == "kan_commit" and event.get("kan_type") != self.pending[0]:
-                raise ValueError("Native acknowledgement belongs to another kan type")
-            self._commit_kan()
-        elif typ == "kan_commit":
-            raise ValueError("Kan commitment lacks a pending declaration")
-        public: dict[str, Any] = {"type": typ}
-        if typ == "start_game":
-            self.have_start = True
-        elif typ == "start_kyoku":
-            hands = event["tehais"]
-            if len(hands) != 4 or len(event["scores"]) != 4:
-                raise ValueError("KAR requires four-player rounds")
-            own = hands[self.observer]
-            self.own_hand_complete = len(own) == 13 and all(t != "?" for t in own)
-            self.hand = [_tile(t) for t in own if t != "?"]
-            self.scores = list(event["scores"])
-            self.history = [[] for _ in range(4)]
-            self.rivers = [[] for _ in range(4)]
-            self.melds = [[] for _ in range(4)]
-            self.declared = [False] * 4
-            self.accepted = [False] * 4
-            self.dora = [_tile(event["dora_marker"])]
-            self.remaining = 70
-            self.last_actor = self.last_tile = None
-            self.pending = None
-            self.have_round = True
-            self.oya = event["oya"]
-            self.round_wind = ("E", "S", "W", "N").index(event["bakaze"])
-            self.public_hand_sizes = [13] * 4
-            self.draw_counts = [0] * 4
-            self.riichi_ordinals = [None, None, None, None]
-            self.current_draw_actor = None
-            self.drawn_tile = None
-            self.decision_phase = "await_draw"
-            self.post_call_actor = None
-            self.interrupted = False
-            self.honba = event["honba"]
-            self.riichi_sticks = event.get("kyotaku", event.get("kyoutaku", 0))
-            public.update({k: event[k] for k in ("bakaze", "kyoku", "honba", "oya", "scores", "dora_marker")})
-            public["tehais"] = [list(own) if i == self.observer else ["?"] * 13 for i in range(4)]
-            public["kyotaku"] = self.riichi_sticks
-        elif typ == "kan_commit":
-            public.update(actor=event["actor"], kan_type=event["kan_type"])
-        elif typ == "tsumo":
-            actor = event["actor"]
-            self.public_hand_sizes[actor] += 1
-            self.draw_counts[actor] += 1
-            self.current_draw_actor = actor
-            self.drawn_tile = _tile(event["pai"]) if actor == self.observer and event["pai"] != "?" else None
-            self.decision_phase = "own_act"
-            self.post_call_actor = None
-            public.update(actor=actor, pai=_public_tile(event["pai"]) if actor == self.observer else "?")
-            if actor == self.observer:
-                if event["pai"] == "?":
-                    self.own_hand_complete = False
-                else:
-                    self.hand.append(_tile(event["pai"]))
-            if self.remaining is not None:
-                self.remaining -= 1
-        elif typ == "dahai":
-            actor, tile = event["actor"], _tile(event["pai"])
-            self.public_hand_sizes[actor] -= 1
-            self.current_draw_actor = None
-            self.drawn_tile = None
-            self.decision_phase = "discard_response"
-            self.post_call_actor = None
-            if actor == self.observer:
-                self._remove_hand(tile)
-            self.history[actor].append(tile)
-            self.rivers[actor].append(tile)
-            self.last_actor, self.last_tile = actor, tile
-            public.update(actor=actor, pai=_public_tile(event["pai"]), tsumogiri=bool(event["tsumogiri"]))
-        elif typ in {"chi", "pon", "kan", "daiminkan"}:
-            actor, source, called = event["actor"], event["target"], _tile(event["pai"])
-            consumed = tuple(_tile(t) for t in event["consumed"])
-            self.public_hand_sizes[actor] -= len(consumed)
-            self.current_draw_actor = None
-            self.drawn_tile = None
-            self.interrupted = True
-            self.decision_phase = "await_draw" if typ in {"kan", "daiminkan"} else "own_act"
-            self.post_call_actor = None if typ in {"kan", "daiminkan"} else actor
-            if actor == source or not self.rivers[source] or self.rivers[source][-1] != called:
-                raise ValueError("A call must consume the triggering public river tile")
-            self.rivers[source].pop()
-            if actor == self.observer:
-                for tile in consumed:
-                    self._remove_hand(tile)
-            kind = "daiminkan" if typ == "kan" else typ
-            self.melds[actor].append(PublicMeld(kind, (called, *consumed), source))
-            public.update(
-                actor=actor,
-                target=source,
-                pai=_public_tile(event["pai"]),
-                consumed=[_public_tile(t) for t in event["consumed"]],
-            )
-        elif typ in {"kakan", "ankan"}:
-            if self.pending is not None:
-                raise ValueError("Unresolved kan declaration")
-            actor = event["actor"]
-            if typ == "kakan":
-                tiles = (_tile(event["pai"]),)
-                public.update(actor=actor, pai=_public_tile(event["pai"]))
-            else:
-                values = list(event["consumed"])
-                if actor != self.observer:
-                    values = [
-                        convert.tid_to_mjai((_tile(t) // 4) * 4 + (1 if _tile(t) // 4 in {4, 13, 22} else 0))
-                        for t in values
-                    ]
-                tiles = tuple(_tile(t) for t in values)
-                public.update(actor=actor, consumed=values)
-            self.pending = (typ, actor, tiles)
-            self.current_draw_actor = None
-            self.drawn_tile = None
-            self.decision_phase = "kan_response"
-            self.post_call_actor = None
-        elif typ == "reach":
-            actor = event["actor"]
-            self.declared[actor] = True
-            self.riichi_ordinals[actor] = len(self.history[actor]) + 1
-            public["actor"] = actor
-        elif typ == "reach_accepted":
-            actor = event["actor"]
-            if not self.declared[actor] or self.accepted[actor]:
-                raise ValueError("Riichi acceptance must follow one unaccepted declaration")
-            self.accepted[actor] = True
-            self.scores[actor] -= 1000
-            self.riichi_sticks += 1
-            public["actor"] = actor
-        elif typ == "dora":
-            tile = _tile(event["dora_marker"])
-            self.dora.append(tile)
-            public["dora_marker"] = _public_tile(event["dora_marker"])
-        elif typ in {"hora", "ryukyoku"}:
-            public.update(
-                {
-                    k: event[k]
-                    for k in (
-                        "actor",
-                        "target",
-                        "pai",
-                        "reason",
-                        "scores",
-                        "deltas",
-                        "delta",
-                        "public_hand",
-                        "public_hands",
-                        "visibility_complete",
-                        "visibility_gap",
-                        "public_reveal_provenance",
-                        "settlement_provenance",
-                        "declaring_actor_provenance",
-                    )
-                    if k in event
-                }
-            )
-            if event.get("visibility_complete") is False:
-                self.visibility_complete = False
-            if typ == "hora" and self.accepted[event["actor"]] and "ura_markers" in event:
-                public["public_ura_markers"] = [_public_tile(value) for value in event["ura_markers"]]
-            if "scores" in event:
-                if len(event["scores"]) != 4:
-                    raise ValueError("Settlement scores must have four entries")
-                self.scores = list(event["scores"])
-            self.pending = None
-            self.current_draw_actor = None
-            self.drawn_tile = None
-            self.decision_phase = "closed"
-            self.post_call_actor = None
-        elif typ not in {"end_kyoku", "end_game"}:
-            raise ValueError(f"Unsupported public event: {typ}")
-        if "remaining_draws" in event:
-            remaining = event["remaining_draws"]
-            if not isinstance(remaining, int) or not 0 <= remaining <= 70:
-                raise ValueError("Invalid public live-wall count")
-            self.remaining = remaining
-            public["remaining_draws"] = remaining
         self.logical_clock = self._event_clock.advance(public)
         self.history_positions.append(self.logical_clock)
         self._public_event_indices.append(len(self.events))
