@@ -1,5 +1,5 @@
 <!-- kar-module: riichienv.kar.learning.training_config -->
-<!-- api: ProductionTrainConfig, training_recipe_sha256, main_model_registration, validate_main_model_registration, third_epoch_allowed -->
+<!-- api: ProductionTrainConfig, training_recipe_sha256, main_model_registration, registered_main_model_ledger, validate_main_model_registration, third_epoch_allowed -->
 # learning.training_config — 正式配方、登记和第三轮条件
 
 源码：[training_config.py](../../../../src/riichienv/kar/learning/training_config.py) · [learning 索引](../README.md)
@@ -15,6 +15,8 @@
 `main_model_registration(dataset_sha, config, output_root, prerequisites=None)` 生成 v3 登记，固定实际 training 输出、M2 共享账本、配方和前置证据。没有 prerequisites 的草稿 `execution_ready=false`。
 
 `validate_main_model_registration(...)` 校验全部身份/路径，并重读真实 M1/验证来源。原始 trainer 也执行它，因此不能绕开上层调度器换目录重置预算或跳过 M1。
+
+`registered_main_model_ledger(...)` 仅从已签名登记校验数据/配方、唯一输出及账本路径和非草稿状态，供 trainer 在完整前置验证之前绑定原费用账本；它不代表前置证据已经核验。trainer 持久登记 compute attempt 后仍必须调用完整 `validate_main_model_registration(...)`，因此重读检查点的费用归入该 attempt，任何验证失败都会在模型分配前终止。
 
 ## 第三轮 gate
 

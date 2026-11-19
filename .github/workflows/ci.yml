@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, kar/riichienv-v1-20261117]
   pull_request:
 
 jobs:
@@ -51,6 +51,17 @@ jobs:
 
       - name: Run KAR functional tests
         run: uv run --locked --python 3.14 --all-extras --dev --group kar-ml pytest tests/kar
+
+      - name: Run bounded KAR CPU gradient and resume tests
+        run: >-
+          uv run --locked --python 3.14 --all-extras --dev --group kar-ml
+          pytest --allow-parameter-updates -m parameter_updates
+          tests/kar/m1/test_losses.py
+          tests/kar/m1/test_model.py
+          tests/kar/m1/test_training.py
+          tests/kar/production/test_full_trainer.py
+          tests/kar/production/test_training_contracts.py
+          -k 'not real_gloo and not real_production_global_sum'
 
   py-lint:
     name: ruff and ty

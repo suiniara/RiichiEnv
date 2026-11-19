@@ -26,6 +26,10 @@ M1/M2/M3 分别不超过 USD100/650/250，总额1000。`spent_usd` 是已记账�
 
 开始计算前调用 `reserve_next(seconds)`，先以 fsync 持久化一个唯一 compute attempt。没有可依据的初始化耗时预测时可用 `reserve_next(0.0)`：金额为零，但仍是未结束的计算，不能在硬中断后被当作已证明的零费用。`record_compute(reference)` 会自动开这个零金额标记，并在正常退出或可捕获异常时调用 `finish_compute`。
 
+正式 trainer 的 attempt 从完整数据 manifest/SQLite 读取前开始，覆盖全文件 SHA、索引及长度物化、M2 注册前置验证、设备/进程组和模型初始化。数据身份先取自已核验授权，完整数据合同随后在已记账的区间内复核；失配同样保留已发生费用。预处理结算后仍保持 pending 状态，费用超限则停止后续 group/model 分配。多 rank 必须先获得绑定本次 launch 和全部 rank nonce 的 primary 收据，才能进入预处理。
+
+M1/M2 调度器的设备/进程组 bootstrap 使用同一 phase 账本和既有 forecast/job 身份，交给 trainer 前关闭该短 attempt；内层再开新 attempt，固定费不重复预留，时钟区间也不重叠。调度器的 `.phase-startup/startup.json` 保存身份和账本锚点。此范围不追溯外部调用方已建立进程组的历史费用，也不覆盖调度器在启动阶段前已执行的证据预检。
+
 同一活跃 attempt 多次 `reserve_next` 不累加整份预测：保留额更新为 `max(原余额, 当前未结算elapsed费用 + 下一段预计费用)`。已持有足够余额时无需追加记录。`fixed_usd` 仍只是额外的准入余量检查；需要持久保存的非计算费用使用 plan 的固定预留及真实固定收据。
 
 `settle_elapsed(reference)` 用**一条日志事件**同时写入已测费用并扣减计算预留，保持 attempt 未结束。这样在两个结算边界之间被强制终止，仍会留下未结束标记。`finish_compute(reference)` 用一条事件结算最后一段并关闭当前实例拥有的 attempt；只有完成或可捕获的终止才能调用。已测实际超支先入账再抛错，时钟也随已提交事件推进，避免 abort 路径重复收费。

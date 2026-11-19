@@ -81,7 +81,7 @@ def validate_frozen_policy(
         or selection.get("diagnostic_fixture") is not False
     ):
         raise ValueError("Missing production validation-policy selection")
-    validate_finite_tau_selection(selection)
+    validate_finite_tau_selection(selection, expected_game_ids=calibration.split.fit_games)
     unsigned = {key: value for key, value in selection.items() if key != "tau_selection_sha256"}
     if (
         selection.get("tau_selection_sha256") != content_hash(unsigned)
@@ -99,9 +99,6 @@ def validate_frozen_policy(
         or selection.get("calibration_split_salt") != calibration.split.salt
     ):
         raise ValueError("Tau selection uses another validation partition")
-    games = selection.get("game_ids", [])
-    if not games or len(games) != len(set(games)) or not set(games) <= set(calibration.split.fit_games):
-        raise ValueError("Tau choice must use distinct cal_fit scenarios only")
 
 
 def save_frozen_release(

@@ -20,7 +20,7 @@ from .runtime_contracts import (
     runtime_contract,
     sha256_value,
 )
-from .selection_quality import TAU_SELECTION_VERSION, TauSelectionPolicy, paired_tau_evidence
+from .selection_quality import TAU_SELECTION_VERSION, TauSelectionPolicy, cal_fit_scenario_manifest, paired_tau_evidence
 from .statistics import (
     RESPONSE_EVENT_CALIBRATION_FIELD,
     STATISTICS_VERSION,
@@ -137,7 +137,9 @@ def choose_validation_tau(
     """Select a frozen validation-fit grid from supplied outcomes, never cal_check/test.
 
     This interface does not run matches, update weights, or turn validation wins into
-    an error-bound certificate. A complete M3 paired-match scheduler is separate.
+    a statewise error-bound certificate. The simultaneous gain bound assumes
+    the complete preregistered independent scenarios; a separate M3 evaluates
+    the frozen policy without using its test outcomes for selection.
     """
     split.validate()
     if not diagnostic_fixture and split.validation_manifest_sha256 is None:
@@ -162,6 +164,8 @@ def choose_validation_tau(
     game_ids = tuple(sorted(outcomes[temperatures[0]]))
     if not game_ids or not set(game_ids) <= set(split.fit_games):
         raise ValueError("Tau selection cannot use cal_check, test or foreign games")
+    if not diagnostic_fixture and game_ids != tuple(sorted(split.fit_games)):
+        raise ValueError("Production tau selection requires the complete registered cal_fit scenario manifest")
     means = {}
     for tau in temperatures:
         if tuple(sorted(outcomes[tau])) != game_ids:
@@ -194,6 +198,11 @@ def choose_validation_tau(
         "calibration_split_salt": split.salt,
         "selection_partition": "cal_fit",
         "game_ids": list(game_ids),
+        "scenario_manifest": cal_fit_scenario_manifest(
+            split.fit_games,
+            validation_manifest_sha256=split.validation_manifest_sha256,
+            calibration_split_salt=split.salt,
+        ),
         "grid": [key(tau) for tau in temperatures],
         "mean_utility": {key(tau): means[tau] for tau in temperatures},
         "selected_tau": key(selected),
@@ -340,10 +349,13 @@ def _response_branch_metrics(diagnostics: Mapping[str, Any]) -> dict[str, dict[s
             raise ValueError("Calibration response event statistics are incomplete")
         count, positives, games = (metrics[key] for key in keys[:3])
         reliability = metrics.get("reliability")
-        if (any(type(value) is not int for value in (count, positives, games))
-                or not 0 <= games <= positives <= count
-                or not isinstance(reliability, Mapping) or reliability.get("count") != count
-                or reliability.get("ece") != metrics["ece"]):
+        if (
+            any(type(value) is not int for value in (count, positives, games))
+            or not 0 <= games <= positives <= count
+            or not isinstance(reliability, Mapping)
+            or reliability.get("count") != count
+            or reliability.get("ece") != metrics["ece"]
+        ):
             raise ValueError("Calibration response event counts or reliability differ")
         result[event] = {key: metrics[key] for key in keys}
     return result
@@ -391,7 +403,10 @@ def calibration_metrics(
                 # whereas this separate classifier describes the true class.
                 assert row.response_allowed is not None
                 diagnostics.add_response_event_calibration(
-                    game=row.game_id, logs=logs, allowed=row.response_allowed, target=target,
+                    game=row.game_id,
+                    logs=logs,
+                    allowed=row.response_allowed,
+                    target=target,
                 )
                 response_classification[str(target)].add(probabilities, target, log_probability=logs[target])
                 if train_supported is not None:
@@ -428,15 +443,23 @@ def calibration_metrics(
     report["branch_metrics"] = {
         "response": _response_branch_metrics(details),
         "rank": {
-            event: {"count": values["count"], "independent_games": len(rank_games[event]),
-                    "nll": values["nll"], "brier": values["brier"], "ece": values["confidence_reliability"]["ece"]}
+            event: {
+                "count": values["count"],
+                "independent_games": len(rank_games[event]),
+                "nll": values["nll"],
+                "brier": values["brier"],
+                "ece": values["confidence_reliability"]["ece"],
+            }
             for event, values in details["rank_by_response"].items()
         },
     }
     report["response_classification_by_true_event"] = {
-        event: {"count": table.count, "top_label_ece": table.confidence.report()["ece"],
-                "nll": table.nll / table.count if table.count else None,
-                "brier": table.brier / table.count if table.count else None}
+        event: {
+            "count": table.count,
+            "top_label_ece": table.confidence.report()["ece"],
+            "nll": table.nll / table.count if table.count else None,
+            "brier": table.brier / table.count if table.count else None,
+        }
         for event, table in response_classification.items()
     }
     report.update(
@@ -564,9 +587,11 @@ class CalibrationArtifact:
             if type(response_count) is not int or response_count < 0:
                 raise ValueError("Calibration response mass requires a valid response observation count")
             by_event = _response_branch_metrics(details)
-            if (metrics.get("branch_metrics", {}).get("response") != by_event
-                    or sum(value["positive_count"] for value in by_event.values()) != response_count
-                    or any(value["count"] > response_count for value in by_event.values())):
+            if (
+                metrics.get("branch_metrics", {}).get("response") != by_event
+                or sum(value["positive_count"] for value in by_event.values()) != response_count
+                or any(value["count"] > response_count for value in by_event.values())
+            ):
                 raise ValueError("Calibration response branch evidence does not match its observations")
             for field, basis, covered in expected:
                 histogram = ResponseMassHistogram(basis)
@@ -574,8 +599,9 @@ class CalibrationArtifact:
                     histogram.merge(details.get(field, {}))
                 except ValueError as error:
                     raise ValueError(f"Calibration response mass histogram differs: {field}") from error
-                if (sum(histogram.counts) != response_count
-                        or histogram.event_supported != (covered if response_count else None)):
+                if sum(histogram.counts) != response_count or histogram.event_supported != (
+                    covered if response_count else None
+                ):
                     raise ValueError(f"Calibration response mass does not match its observations or support: {field}")
 
     def validate(self, binding: RuntimeBinding, support: EventSupport, *, allow_diagnostic: bool = False) -> None:
@@ -687,15 +713,25 @@ def validate_policy_identity(record: Mapping[str, Any], binding: RuntimeBinding)
     ):
         raise ValueError("Calibrated-policy identity integrity or model mismatch")
     fields = {
-        "version", "binding_sha256", "calibration_sha256", "support_sha256",
-        "branch_quality_policy_sha256", "value_branch_statuses", "inference_device_type",
-        "mode", "sampling", "max_prior_amplification", "policy_identity_sha256",
+        "version",
+        "binding_sha256",
+        "calibration_sha256",
+        "support_sha256",
+        "branch_quality_policy_sha256",
+        "value_branch_statuses",
+        "inference_device_type",
+        "mode",
+        "sampling",
+        "max_prior_amplification",
+        "policy_identity_sha256",
     }
     if set(record) != fields:
         raise ValueError("Calibrated-policy identity requires its full branch-quality contract")
     states = record["value_branch_statuses"]
-    if not isinstance(states, (list, tuple)) or len(states) != 21 or any(
-        state not in {"passed", "failed", "unavailable"} for state in states
+    if (
+        not isinstance(states, (list, tuple))
+        or len(states) != 21
+        or any(state not in {"passed", "failed", "unavailable"} for state in states)
     ):
         raise ValueError("Invalid calibrated-policy branch quality states")
     if record["branch_quality_policy_sha256"] is not None:

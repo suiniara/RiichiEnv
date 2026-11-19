@@ -2,6 +2,9 @@
 
 # ruff: noqa: E402 -- Torch is optional outside the ML test environment.
 import json
+import os
+import subprocess
+import sys
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -9,11 +12,12 @@ import pytest
 
 torch = pytest.importorskip("torch")
 from test_full_trainer import FullSyntheticDataset, _full_config
+from test_stage_prerequisites import m2_config
 
 from riichienv.kar import budget as budget_module
 from riichienv.kar.budget import BudgetLedger
 from riichienv.kar.contracts import content_hash
-from riichienv.kar.learning import orchestration, trainer
+from riichienv.kar.learning import orchestration, prerequisites, trainer
 from riichienv.kar.learning.config import ModelConfig
 from riichienv.kar.learning.distributed import DistributedStageError
 from riichienv.kar.learning.model import KARTransformer
@@ -22,6 +26,7 @@ from riichienv.kar.learning.production_checkpoint import (
     create_training_directory,
     read_training_startup,
 )
+from riichienv.kar.learning.training_config import main_model_registration
 
 
 @pytest.fixture
@@ -41,9 +46,15 @@ def startup_driver(tmp_path, monkeypatch):
     monkeypatch.setattr(trainer, "KARTransformer", lambda config: KARTransformer(tiny))
     settings = _full_config("synthetic startup fault injection, no measured training evidence")
     output = tmp_path / "run"
+    # This metadata stub cannot pass the real authorization boundary.
+    authorization = SimpleNamespace(
+        document={
+            "dataset_manifest_sha256": FullSyntheticDataset(tmp_path / "data", "train").manifest["manifest_sha256"],
+        }
+    )
 
     def run(*, resume=False, config=settings):
-        return trainer.train_production(tmp_path / "data", output, config, resume=resume)
+        return trainer.train_production(tmp_path / "data", output, config, authorization=authorization, resume=resume)
 
     return run, output, settings
 
@@ -287,3 +298,292 @@ def test_startup_phase_cannot_rewind_after_checkpoint_commit(tmp_path):
         advance_training_startup(output, committed, phase="initializing", budget_ledger={})
     unsigned = {key: value for key, value in committed.items() if key != "startup_sha256"}
     assert committed["startup_sha256"] == content_hash(unsigned)
+
+
+def _metered_config(settings, monkeypatch):
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(budget_module, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    forecast = replace(settings.budget.forecast, resource_usd_per_hour=36.0)
+    return replace(settings, budget=replace(settings.budget, forecast=forecast)), clock
+
+
+def _assert_metered(output, settings):
+    assert json.loads((output / "startup.json").read_text())["phase"] == "initializing"
+    ledger = BudgetLedger(output / "costs.jsonl", settings.budget, allow_create=False)
+    assert ledger.pending_compute
+
+
+def _stop_before_model(*args, **kwargs):
+    raise RuntimeError("synthetic stop before model allocation")
+
+
+def test_dataset_lengths_and_context_creation_are_inside_durable_compute(startup_driver, monkeypatch):
+    run, output, base = startup_driver
+    settings, clock = _metered_config(base, monkeypatch)
+    visits = []
+
+    class MeteredIndices(list):
+        def __iter__(self):
+            _assert_metered(output, settings)
+            visits.append("lengths")
+            clock.now += 15.0
+            return super().__iter__()
+
+    def dataset(directory, split):
+        _assert_metered(output, settings)
+        visits.append(split)
+        clock.now += 60.0
+        result = FullSyntheticDataset(directory, split)
+        if split == "train":
+            result.indices = MeteredIndices(result.indices)
+        return result
+
+    original_open = trainer.DistributedContext.open
+
+    def context(*args, **kwargs):
+        _assert_metered(output, settings)
+        visits.append("context")
+        clock.now += 30.0
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(trainer, "DecisionDataset", dataset)
+    monkeypatch.setattr(trainer.DistributedContext, "open", context)
+    monkeypatch.setattr(trainer, "_model_components", _stop_before_model)
+    with pytest.raises(DistributedStageError, match="before model allocation"):
+        run(config=settings)
+    assert visits == ["train", "validation", "lengths", "context"]
+    ledger = BudgetLedger(output / "costs.jsonl", settings.budget, allow_create=False)
+    assert ledger.spent_usd == pytest.approx(1.65) and not ledger.pending_compute
+    settlements = [json.loads(line) for line in ledger.path.read_text().splitlines()]
+    assert sum(row.get("elapsed_seconds", 0.0) for row in settlements) == 165.0
+
+
+def test_preprocessing_memory_error_is_charged_and_retries_keep_history(startup_driver, monkeypatch):
+    run, output, base = startup_driver
+    settings, clock = _metered_config(base, monkeypatch)
+
+    def dataset(directory, split):
+        _assert_metered(output, settings)
+        clock.now += 60.0
+        if split == "validation":
+            raise MemoryError("synthetic index allocation failure")
+        return FullSyntheticDataset(directory, split)
+
+    monkeypatch.setattr(trainer, "DecisionDataset", dataset)
+    monkeypatch.setattr(trainer, "_model_components", _stop_before_model)
+    with pytest.raises(DistributedStageError, match="index allocation failure"):
+        run(config=settings)
+    ledger = BudgetLedger(output / "costs.jsonl", settings.budget, allow_create=False)
+    previous = ledger.path.read_bytes()
+    assert ledger.spent_usd == pytest.approx(1.2) and not ledger.pending_compute
+    assert not (output / "checkpoint.json").exists() and (output / "aborted.jsonl").is_file()
+    with pytest.raises(DistributedStageError, match="index allocation failure"):
+        run(config=settings, resume=True)
+    ledger = BudgetLedger(ledger.path, settings.budget, allow_create=False)
+    assert ledger.path.read_bytes().startswith(previous)
+    assert ledger.spent_usd == pytest.approx(2.4) and not ledger.pending_compute
+
+
+def test_process_group_creation_failure_is_charged_without_model_allocation(startup_driver, monkeypatch):
+    run, output, base = startup_driver
+    settings, clock = _metered_config(base, monkeypatch)
+
+    def fail_context(*args, **kwargs):
+        _assert_metered(output, settings)
+        clock.now += 45.0
+        raise RuntimeError("synthetic group initialization failure")
+
+    monkeypatch.setattr(trainer.DistributedContext, "open", fail_context)
+    monkeypatch.setattr(trainer, "_model_components", _stop_before_model)
+    with pytest.raises(DistributedStageError, match="group initialization failure"):
+        run(config=settings)
+    ledger = BudgetLedger(output / "costs.jsonl", settings.budget, allow_create=False)
+    assert ledger.spent_usd == pytest.approx(0.45) and not ledger.pending_compute
+
+
+def test_preprocessing_overrun_is_settled_before_group_or_model_allocation(startup_driver, monkeypatch):
+    run, output, base = startup_driver
+    settings, clock = _metered_config(base, monkeypatch)
+
+    def expensive_dataset(directory, split):
+        _assert_metered(output, settings)
+        clock.now += 6000.0
+        return FullSyntheticDataset(directory, split)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Preprocessing exhausted the budget; no group or model may be allocated")
+
+    monkeypatch.setattr(trainer, "DecisionDataset", expensive_dataset)
+    monkeypatch.setattr(trainer.DistributedContext, "open", forbidden)
+    monkeypatch.setattr(trainer, "_model_components", forbidden)
+    with pytest.raises(DistributedStageError, match="preprocessing budget settlement"):
+        run(config=settings)
+    ledger = BudgetLedger(output / "costs.jsonl", settings.budget, allow_create=False)
+    assert ledger.spent_usd == pytest.approx(120.0) and not ledger.pending_compute
+    before = ledger.path.read_bytes()
+    monkeypatch.setattr(trainer, "DecisionDataset", forbidden)
+    with pytest.raises(DistributedStageError, match="production startup accounting"):
+        run(config=settings, resume=True)
+    assert ledger.path.read_bytes().startswith(before)
+
+
+def test_authorized_identity_is_bound_before_loading_and_checked_before_model(startup_driver, monkeypatch):
+    run, output, base = startup_driver
+    settings, clock = _metered_config(base, monkeypatch)
+    loaded = []
+
+    def changed_dataset(directory, split):
+        _assert_metered(output, settings)
+        clock.now += 20.0
+        loaded.append(split)
+        result = FullSyntheticDataset(directory, split)
+        result.manifest["manifest_sha256"] = "e" * 64
+        return result
+
+    monkeypatch.setattr(trainer, "DecisionDataset", changed_dataset)
+    monkeypatch.setattr(trainer, "_model_components", _stop_before_model)
+    with pytest.raises(DistributedStageError, match="changed after startup authorization"):
+        run(config=settings)
+    assert loaded == ["train"]
+    assert not (output / "checkpoint.json").exists()
+    ledger = BudgetLedger(output / "costs.jsonl", settings.budget, allow_create=False)
+    assert ledger.spent_usd == pytest.approx(0.2) and not ledger.pending_compute
+
+
+def test_hard_exit_during_preprocessing_blocks_reload_until_reconciled(startup_driver, monkeypatch, tmp_path):
+    run, output, settings = startup_driver
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(settings.to_record()))
+    authorized_sha = FullSyntheticDataset(tmp_path / "data", "train").manifest["manifest_sha256"]
+    script = """
+import json, os, sys
+from pathlib import Path
+from types import SimpleNamespace
+from riichienv.kar.learning import trainer
+from riichienv.kar.learning.training_config import ProductionTrainConfig
+trainer.require_parameter_updates = lambda *a, **k: None
+def hard_exit(*args, **kwargs):
+    os._exit(73)
+trainer.DecisionDataset = hard_exit
+trainer._model_components = lambda *a, **k: (_ for _ in ()).throw(AssertionError('no model'))
+config = ProductionTrainConfig.from_record(json.loads(Path(sys.argv[1]).read_text()))
+trainer.train_production(Path(sys.argv[2]), Path(sys.argv[3]), config,
+    authorization=SimpleNamespace(document={'dataset_manifest_sha256': sys.argv[4]}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(config_path), str(tmp_path / "data"), str(output), authorized_sha],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+        env=dict(os.environ),
+    )
+    assert result.returncode == 73, result.stderr
+    ledger = BudgetLedger(output / "costs.jsonl", settings.budget, allow_create=False)
+    assert len(ledger.pending_compute) == 1
+    previous = ledger.path.read_bytes()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("An old pending attempt must be rejected before any data processing")
+
+    monkeypatch.setattr(trainer, "DecisionDataset", forbidden)
+    monkeypatch.setattr(trainer, "_model_components", forbidden)
+    with pytest.raises(DistributedStageError, match="previous owner requires reconcile_compute"):
+        run(resume=True)
+    assert ledger.path.read_bytes() == previous
+    attempt_id = ledger.pending_compute[0]["attempt_id"]
+    ledger.reconcile_compute(
+        attempt_id,
+        usd=0.0,
+        receipt_id="synthetic-zero-rate-exit-receipt",
+        reference="Synthetic CPU test rate is zero",
+    )
+    monkeypatch.setattr(trainer, "DecisionDataset", FullSyntheticDataset)
+    monkeypatch.setattr(trainer, "_model_components", _stop_before_model)
+    with pytest.raises(DistributedStageError, match="before model allocation"):
+        run(resume=True)
+    assert ledger.path.read_bytes().startswith(previous)
+    assert not BudgetLedger(ledger.path, settings.budget, allow_create=False).pending_compute
+
+
+def test_phase_bootstrap_is_metered_and_does_not_double_bill_inner_work(tmp_path, monkeypatch):
+    settings, clock = _metered_config(_full_config("synthetic phase bootstrap"), monkeypatch)
+    root = tmp_path / "phase"
+    ledger_path = root / "M1-costs.jsonl"
+    original_open = trainer.DistributedContext.open
+
+    def metered_open(*args, **kwargs):
+        assert (root / ".phase-startup" / "startup.json").is_file()
+        assert BudgetLedger(ledger_path, settings.budget, allow_create=False).pending_compute
+        clock.now += 30.0
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(trainer.DistributedContext, "open", metered_open)
+    with orchestration._phase_job(root, settings, dataset_sha256="a" * 64):
+        ledger = BudgetLedger(ledger_path, settings.budget, allow_create=False)
+        assert ledger.spent_usd == pytest.approx(0.3) and not ledger.pending_compute
+        with ledger.record_compute("synthetic inner job"):
+            clock.now += 20.0
+    ledger = BudgetLedger(ledger_path, settings.budget, allow_create=False)
+    assert ledger.spent_usd == pytest.approx(0.5) and not ledger.pending_compute
+    rows = [json.loads(line) for line in ledger_path.read_text().splitlines()]
+    assert len([row for row in rows if row["kind"] == "fixed_reservation"]) == 1
+
+
+def test_phase_bootstrap_group_failure_is_settled_before_retry(tmp_path, monkeypatch):
+    settings, clock = _metered_config(_full_config("synthetic failed phase bootstrap"), monkeypatch)
+    root = tmp_path / "phase"
+
+    def fail_open(*args, **kwargs):
+        clock.now += 25.0
+        raise RuntimeError("synthetic phase group failure")
+
+    monkeypatch.setattr(trainer.DistributedContext, "open", fail_open)
+    for _ in range(2):
+        with pytest.raises(DistributedStageError, match="phase group failure"):
+            with orchestration._phase_job(root, settings, dataset_sha256="a" * 64):
+                raise AssertionError("Failed initialization cannot yield")
+    ledger = BudgetLedger(root / "M1-costs.jsonl", settings.budget, allow_create=False)
+    assert ledger.spent_usd == pytest.approx(0.5) and not ledger.pending_compute
+
+
+def test_m2_complete_prerequisite_verification_runs_inside_original_ledger(startup_driver, tmp_path, monkeypatch):
+    settings, clock = _metered_config(m2_config(games=3), monkeypatch)
+    root = tmp_path / "m2"
+    output, ledger_path = root / "training", root / "M2-costs.jsonl"
+    authorized_sha = FullSyntheticDataset(tmp_path / "data", "train").manifest["manifest_sha256"]
+    registry = tmp_path / "main-model.json"
+    registry.write_text(
+        json.dumps(
+            main_model_registration(
+                authorized_sha,
+                settings,
+                root,
+                prerequisites={"synthetic": "verification must reject before computation"},
+            )
+        )
+    )
+
+    def fail_prerequisites(*args, **kwargs):
+        assert (output / "startup.json").is_file()
+        assert BudgetLedger(ledger_path, settings.budget, allow_create=False).pending_compute
+        clock.now += 80.0
+        raise ValueError("synthetic full prerequisite verification failure")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("No data/model may be processed after prerequisite rejection")
+
+    monkeypatch.setattr(prerequisites, "verify_prerequisites", fail_prerequisites)
+    monkeypatch.setattr(trainer, "DecisionDataset", forbidden)
+    monkeypatch.setattr(trainer, "_model_components", forbidden)
+    with pytest.raises(DistributedStageError, match="full prerequisite verification failure"):
+        trainer.train_production(
+            tmp_path / "data",
+            output,
+            settings,
+            authorization=SimpleNamespace(document={"dataset_manifest_sha256": authorized_sha}),
+            main_model_registry=registry,
+        )
+    ledger = BudgetLedger(ledger_path, settings.budget, allow_create=False)
+    assert ledger.spent_usd == pytest.approx(0.8) and not ledger.pending_compute
+    assert not (output / "costs.jsonl").exists() and not (output / "checkpoint.json").exists()

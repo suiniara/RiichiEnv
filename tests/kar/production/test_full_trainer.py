@@ -26,14 +26,19 @@ class FullSyntheticDataset(SyntheticDataset):
         available = {"train": 3, "validation": 3, "test": 0}
         self.manifest.update(game_count_contract(available))
         self.manifest.update(
+            status="PASS",
+            complete=True,
+            database_sha256="d" * 64,
             is_probe_subset=True,
-            counts={role: {"games": count} for role, count in available.items()},
+            counts={role: {"games": count, "examples": count} for role, count in available.items()},
             scope={
                 **learning_contract(),
                 "split_salt": "synthetic-production-contract-test",
                 "available_split_counts": available,
             },
         )
+        self.manifest.pop("manifest_sha256")
+        self.manifest["manifest_sha256"] = content_hash(self.manifest)
 
 
 def _full_config(reference):
@@ -68,7 +73,9 @@ def test_full_synthetic_fixture_satisfies_current_production_contract(tmp_path):
     assert all(manifest["scope"].get(key) == value for key, value in learning_contract().items())
     _dataset_contract(train, validation, settings)
     release = complete_release_contract(
-        training=settings.to_record(), data_manifest=manifest, budget=settings.budget.to_record(),
+        training=settings.to_record(),
+        data_manifest=manifest,
+        budget=settings.budget.to_record(),
     )
     assert release["N_eligible_half_games"] == 6 and release["N_train_half_games"] == 3
 
@@ -85,6 +92,7 @@ def test_full_epoch_runs_all_validation_and_has_no_diagnostic_update_cap(tmp_pat
     doc = dict(_authorization().document)
     doc["allowed_operations"] = ["train_production", "production_update"]
     doc["allowed_recipe_sha256"] = [recipe]
+    doc["dataset_manifest_sha256"] = FullSyntheticDataset(tmp_path / "data", "train").manifest["manifest_sha256"]
     doc.pop("authorization_sha256")
     doc["authorization_sha256"] = content_hash(doc)
     result = train_production(tmp_path / "data", tmp_path / "run", settings, authorization=UpdateAuthorization(doc))
@@ -136,6 +144,7 @@ def test_completed_checkpoint_recovers_publication_without_another_optimizer_upd
     doc.pop("authorization_sha256")
     doc["allowed_operations"] = ["train_production", "production_update"]
     doc["allowed_recipe_sha256"] = [recipe]
+    doc["dataset_manifest_sha256"] = FullSyntheticDataset(tmp_path / "data", "train").manifest["manifest_sha256"]
     auth = UpdateAuthorization({**doc, "authorization_sha256": content_hash(doc)})
 
     def fail_publish(*args, **kwargs):

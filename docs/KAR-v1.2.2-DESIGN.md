@@ -44,6 +44,8 @@
 | runtime / finite policy identity | `restricted_kl_runtime_v3_event_ovr` / `calibrated_policy_identity_v3_event_ovr`，KL 数学不变 | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
 | training configuration | `explicit_train_split_scale_v5_decision_time`，配方绑定当前输入版本 | [versioning.py](../src/riichienv/kar/versioning.py) |
 | training startup / cost ledger | `kar_training_startup_v1` / `durable_compute_cost_ledger_v3` | [learning/production_checkpoint.py](../src/riichienv/kar/learning/production_checkpoint.py) / [budget.py](../src/riichienv/kar/budget.py) |
+| validation tau selection / gain bound | `frozen_validation_tau_grid_v4` / `paired_rank_hoeffding_union_v1` | [selection_quality.py](../src/riichienv/kar/selection_quality.py) |
+| tau preregistration / evaluation plan | `preregistered_tau_selection_v2` / `registered_validation_tau_matches_v4` | [selection_quality.py](../src/riichienv/kar/selection_quality.py) / [learning/validation_policy.py](../src/riichienv/kar/learning/validation_policy.py) |
 | training plan / loss / decision bound | `budget_ladder_v1` / `sentinel_safe_v1_2_1` / `one_sided_v1_2_1` | [versioning.py](../src/riichienv/kar/versioning.py) / [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
 | model tier basis | `N_train_half_games` | [versioning.py](../src/riichienv/kar/versioning.py) |
 
@@ -559,6 +561,10 @@ Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sam
 
 输出目录与 `startup.json` 身份一起原子发布；身份绑定数据、配方、实现内容、运行布局、原登记及原账本路径。`--resume` 在首份 checkpoint 前仅允许核验过的初始化重入，保留原账本；创建时已有的共享账本还必须保留原始前缀。模型初始化后先保存 step 0 checkpoint，再执行初始完整验证。已提交标记、更新日志或非零 step 代际证据存在时，不得因 checkpoint 缺失而重新初始化；无 startup 记录的既有 checkpoint 仍走原精确恢复校验。
 
+正式 trainer 先从已核验的授权记录取得数据 manifest 摘要，绑定启动身份并持久化原账本中的 compute attempt，然后才读取和校验完整 manifest、计算 SQLite 文件 SHA、加载索引、构造长度表、复验 M2 前置证据，以及初始化线程、设备和进程组。实际加载数据必须与授权摘要一致；授权摘要不能替代完整数据校验。预处理失败也保留启动与失败记录，并按本次计时结算；未核销的旧 attempt 在任何新数据加载前拒绝继续。
+
+多进程在设备和进程组建立前，通过共享输出文件系统协调启动。torchrun 的独立 run ID（含 `--standalone`）或其他 launcher 显式提供的 `KAR_DISTRIBUTED_RUN_ID` 与 restart count 绑定一次启动；放行收据必须绑定本次 primary 和各 rank 的新 nonce，旧成功记录不能放行新 worker。所有 rank 等 primary 的账本登记完成才开始数据预处理，普通失败使各 rank 一起退出。M1/M2 外层创建进程组使用同一阶段账本的独立启动计时间隔，结算后再由 trainer 接续，避免重复收费；调用方自行提前创建进程组的既有成本不能由后进入的 trainer 回溯计时。
+
 总云资源USD1000独立封顶：M0/M1=100，M2=650，M3=250，包括CPU/GPU、存储、快照和传输。实际spent、未对账fixed reservations及未完成compute reservations分别记录。计算前持久化attempt，阶段内实测结算递减预留但保持attempt，正常结束或可捕获异常才关闭；没有独立初始化预测时，零金额预留仍是未完成标记。硬中断后不把新进程时钟当成旧计算为零的证据，必须通过外部实际费用凭据核销未记账余款后才能继续。收据唯一ID幂等，checkpoint绑定账本锚点，拒绝费用回退；旧账本版本和不完整尾部要求显式审计迁移，不自动重写。不能跨阶段挪用、缩M3样本或隐费用凑预算。
 
 ## 15. 计算与缓存成本
@@ -574,6 +580,16 @@ Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sam
 完整验证分片覆盖所有合格行。只有 primary 汇总各 rank 的统计并构造全局报表；先协调错误，再广播同一结果。聚类 bootstrap 只在有相同有序合格 game ID 集的指标间复用固定种子抽样；每指标保留自己的游戏权重、分母与分位数，逐轮分配索引而不是缓存整张抽样矩阵。分别报告最大 rank 的本地 `forward` 墙钟（含该循环的数据准备与累加）、primary `aggregation` 和 `bootstrap` 时间；不缩小验证集。
 
 同checkpoint比较τ∞先验与验证冻结finite策略，固定规则/对手版本/配置、座位轮换、成对初始牌山seed；策略采样RNG独立记录，轨迹分叉后不声称相同反事实。M3为10,000 paired seed blocks、共20,000半庄、四个初始座位平衡；按整场/paired block聚类区间，报告顺位/一四位率/点数/和放铳/覆盖/延迟/费用。未获可重复验证收益保留prior-only，不靠扩模型试错。
+
+有限 τ 的准入使用预登记固定网格的全部有限候选数 $K$，以及完整 `cal_fit` 场景清单；清单的内容、数量和摘要随计划与选型证据一起保存。每个候选必须在同一组 $n$ 个独立模拟场景上与 τ∞ 配对。名次效用 $U=2.5-\mathrm{rank}\in[-1.5,1.5]$，故配对差 $D_i=U_{\tau,i}-U_{\infty,i}\in[-3,3]$。对预登记置信度 $1-\alpha$，使用单侧 Hoeffding 下界与网格联合界：
+
+$$L_\tau=\max\!\left(-3,\overline D_\tau-\sqrt{\frac{18\log(K/\alpha)}{n}}\right).$$
+
+只有独立场景数达到预登记下限，且 $L_\tau$ 严格超过预登记最小收益，候选才可通过；否则选择 τ∞。$K$ 不能只数事后表现较好的候选；仅含 τ∞ 时不计算有限策略下界。不同候选共享牌山产生的相关性不妨碍联合界，但不同场景之间的独立性、看结果前冻结网格和场景数是该置信解释的前提。该判据不支持看完结果再换子集、增加样本直到通过，或把多次重新选型当成同一次预登记试验。
+
+配对整场 bootstrap 区间仍用于描述经验分布，不再单独批准有限策略或扩模型。两局配对收益都为正会产生退化的正 bootstrap 区间，却不足以使默认 95% 的上述下界为正。发布与 M2 规模门槛均核验完整场景清单，并从候选均值、样本数、网格和预登记策略重新计算收益下界；不能只信任序列化的 `reproducible_gain`。该分布无关下界较保守，未通过只表示当前证据不足，不等于真实收益为负；评测工作量和预算不因此自动增加。这里得到的是固定评测设计下的平均收益证据，不是逐状态误差证书，也不改变第 10 节的 `certified` 条件。
+
+新选型证据有独立版本；旧证据必须按新契约重新生成，不能仅改版本或摘要继续使用。本次修复不改数据格式、Token 布局、模型参数形状或损失函数；实现内容指纹仍正常变化，旧 checkpoint 的精确续训和冻结发布须遵守原有来源一致性检查，不能据此宣称跨实现版本兼容。
 
 ## 17. 阶段顺序与运行许可
 

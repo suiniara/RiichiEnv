@@ -13,9 +13,10 @@ from ..budget import BudgetLedger, CostForecast, choose_training_tier
 from ..contracts import content_hash
 from ..evaluation_authorization import exclusive_job
 from ..versioning import validate_artifact_contract
-from .distributed import DistributedContext
+from .distributed import DistributedContext, StartupCoordinator
 from .prerequisites import m2_prerequisites
-from .trainer import train_production
+from .production_checkpoint import advance_training_startup, create_training_directory, read_training_startup
+from .trainer import _startup_identity, train_production
 from .training_config import ProductionTrainConfig, main_model_registration
 
 
@@ -53,28 +54,94 @@ def _read_run(path: Path, config: ProductionTrainConfig, dataset_sha256: str) ->
 
 
 @contextmanager
-def _phase_job(root: Path, config: ProductionTrainConfig) -> Iterator[DistributedContext]:
-    context = DistributedContext.open(
-        config.device, backend=config.distributed_backend, gloo_bind_host=config.gloo_bind_host
-    )
+def _phase_job(  # noqa: PLR0915 -- coordinated bootstrap and lease cleanup are one lifecycle
+    root: Path, config: ProductionTrainConfig, *, dataset_sha256: str
+) -> Iterator[DistributedContext]:
+    coordinator = StartupCoordinator.open(root / ".phase-startup")
+    context = None
     lease = None
+    ledger = None
     error = None
     entered = False
-    if context.primary:
+    try:
+        if coordinator.primary:
+            try:
+                root.mkdir(parents=True, exist_ok=True)
+                lease = exclusive_job(root / "phase.lock")
+                lease.__enter__()
+                entered = True
+                directory, ledger_path = root / ".phase-startup", root / (config.phase + "-costs.jsonl")
+                identity = _startup_identity(
+                    {"manifest_sha256": dataset_sha256},
+                    config,
+                    coordinator,
+                    output_dir=root,
+                    ledger_path=ledger_path,
+                    registration=None,
+                )
+                if not directory.exists():
+                    create_training_directory(directory, identity=identity, ledger_path=ledger_path)
+                startup = read_training_startup(
+                    directory, identity=identity, ledger_path=ledger_path, checkpoint_exists=False
+                )
+                assert startup is not None
+                ledger = BudgetLedger(
+                    ledger_path,
+                    config.budget,
+                    allow_create=startup["phase"] == "preparing" and startup["ledger_origin"] is None,
+                )
+                if startup["budget_ledger"] is not None:
+                    ledger.verify_state(startup["budget_ledger"])
+                startup = advance_training_startup(
+                    directory, startup, phase="initializing", budget_ledger=ledger.state_dict()
+                )
+                ledger.reserve_next(0.0)
+            except Exception as caught:
+                error = caught
+        coordinator.coordinate(error, "phase startup accounting/lease")
+        error = None
         try:
-            root.mkdir(parents=True, exist_ok=True)
-            lease = exclusive_job(root / "phase.lock")
-            lease.__enter__()
-            entered = True
+            if config.device == "cuda":
+                # Make an ordinary CUDA setup failure visible before peers enter group initialization.
+                import torch  # noqa: PLC0415
+
+                torch.cuda.set_device(coordinator.local_rank)
         except Exception as caught:
             error = caught
-    try:
-        context.coordinate(error, "phase registration/lease")
+        coordinator.coordinate(error, "phase device initialization")
+        error = None
+        try:
+            context = DistributedContext.open(
+                config.device, backend=config.distributed_backend, gloo_bind_host=config.gloo_bind_host
+            )
+        except Exception as caught:
+            error = caught
+        coordinator.coordinate(error, "phase distributed initialization")
+        assert context is not None
+        error = None
+        if coordinator.primary:
+            try:
+                assert ledger is not None
+                assert startup is not None
+                ledger.finish_compute("phase_distributed_startup")
+                advance_training_startup(directory, startup, phase="initializing", budget_ledger=ledger.state_dict())
+                ledger = None  # The trainer takes over this same ledger with a new measured interval.
+            except Exception as caught:
+                error = caught
+        context.coordinate(error, "phase startup settlement")
         yield context
     finally:
+        if ledger is not None:
+            # Only owns the bootstrap interval; the inner trainer opens a separate attempt in this same ledger.
+            # Reopening here would double-charge inner training or claim another owner's pending attempt.
+            try:
+                ledger.finish_compute("aborted_phase_startup")
+            except Exception:
+                pass
         if lease is not None and entered:
             lease.__exit__(None, None, None)
-        context.close()
+        if context is not None:
+            context.close()
 
 
 def run_m1_ablation(
@@ -117,7 +184,7 @@ def run_m1_ablation(
     data_manifest = json.loads((dataset / "manifest.json").read_text(encoding="utf-8"))
     dataset_sha = data_manifest["manifest_sha256"]
     require_parameter_updates(authorization, operation="run_m1_ablation", dataset_hash=dataset_sha)
-    with _phase_job(output, on) as context:
+    with _phase_job(output, on, dataset_sha256=dataset_sha) as context:
         results = {}
         for name, config in (("feature-on", on), ("feature-off", off)):
             directory = output / name
@@ -211,7 +278,7 @@ def run_m2(
     registration = main_model_registration(
         manifest["manifest_sha256"], config, output, prerequisites=prerequisite_evidence
     )
-    with _phase_job(output, config) as context:
+    with _phase_job(output, config, dataset_sha256=manifest["manifest_sha256"]) as context:
         error = None
         if context.primary:
             try:

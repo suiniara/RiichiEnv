@@ -14,7 +14,7 @@ from ..evaluation_authorization import require_evaluation_authorization
 from ..experiments import independent_seed
 from ..policy import PolicyOptions, fixed_tau_grid
 from ..runtime import RuntimePolicy
-from ..selection_quality import TauSelectionPolicy
+from ..selection_quality import TAU_MATCH_PLAN_VERSION, TauSelectionPolicy, cal_fit_scenario_manifest
 from .deployment import FrozenRelease
 from .inference import FrozenModelPredictor
 
@@ -47,7 +47,7 @@ def validation_tau_plan(
         max_prior_amplification=subject.options.max_prior_amplification,
     )
     record = {
-        "version": "registered_validation_tau_matches_v3",
+        "version": TAU_MATCH_PLAN_VERSION,
         "selection_policy": (selection_policy or TauSelectionPolicy()).to_record(),
         "policy_identity": identity,
         "source_sha256": update_implementation_sha256(),
@@ -56,6 +56,11 @@ def validation_tau_plan(
         "validation_manifest_sha256": split.validation_manifest_sha256,
         "calibration_split_salt": split.salt,
         "scenario_game_ids": list(split.fit_games),
+        "scenario_manifest": cal_fit_scenario_manifest(
+            split.fit_games,
+            validation_manifest_sha256=split.validation_manifest_sha256,
+            calibration_split_salt=split.salt,
+        ),
         "grid": ["infinity" if math.isinf(value) else value for value in values],
         "master_seed": seed,
         "inference_device_type": next(subject.model.parameters()).device.type,

@@ -21,6 +21,8 @@
 
 正式有限发布拒绝 diagnostic argmax，diagnostic 校准 fixture 不能冒充生产。没有有效逐状态上界不声称 certified；标准冻结 M3 使用有限随机经验策略。
 
+tau v4 的完整场景清单、数量和摘要必须与实际 `calibration.split.fit_games` 一致；只计算部分 cal_fit 即使重新签名也会拒绝。消费者对全部登记网格项重新计算有多重比较校正的 Hoeffding 配对均值下界，不信任单独的 PASS 布尔值或 bootstrap 正下端。该下界依赖独立且预先固定的场景，不提供逐状态价值误差保证。
+
 ## 文件与迁移
 
 release 保存模型配置、真实 weights 文件 hash、RuntimeBinding、训练/构建身份、calibration/support/selection、policy 与明确证据状态。加载使用受限 weights_only；只能加载可信来源。目录已存在、版本不符、权重/元数据被改或把 CUDA 标定改标 CPU 都会拒绝。

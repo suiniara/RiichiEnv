@@ -94,9 +94,9 @@ class ProductionTrainConfig:
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> ProductionTrainConfig:
-        allowed = set(cls.__dataclass_fields__) | set(_config_versions()) | {
-            "recipe_sha256", "rule_feature_mask_probability"
-        }
+        allowed = (
+            set(cls.__dataclass_fields__) | set(_config_versions()) | {"recipe_sha256", "rule_feature_mask_probability"}
+        )
         if set(record) - allowed:
             raise ValueError("Unknown training configuration field")
         if any(record.get(key) != value for key, value in _config_versions().items()):
@@ -166,7 +166,7 @@ def main_model_registration(
     return {**record, "registration_sha256": content_hash(record)}
 
 
-def validate_main_model_registration(
+def registered_main_model_ledger(
     record: dict[str, Any],
     *,
     dataset_sha256: str,
@@ -174,6 +174,7 @@ def validate_main_model_registration(
     output_dir: Path,
     ledger_path: Path | None,
 ) -> Path:
+    """Resolve the signed canonical ledger before metered prerequisite verification."""
     unsigned = {key: value for key, value in record.items() if key != "registration_sha256"}
     if record.get("version") != "unique_main_model_registration_v3" or record.get(
         "registration_sha256"
@@ -198,6 +199,20 @@ def validate_main_model_registration(
         raise ValueError("Cannot reuse M2 registration in another output or fresh budget ledger")
     if record.get("execution_ready") is not True or not isinstance(record.get("prerequisites"), dict):
         raise ValueError("A draft main-model registration cannot bypass completed M1 prerequisites")
+    return registered_ledger
+
+
+def validate_main_model_registration(
+    record: dict[str, Any],
+    *,
+    dataset_sha256: str,
+    config: ProductionTrainConfig,
+    output_dir: Path,
+    ledger_path: Path | None,
+) -> Path:
+    registered_ledger = registered_main_model_ledger(
+        record, dataset_sha256=dataset_sha256, config=config, output_dir=output_dir, ledger_path=ledger_path
+    )
     from .prerequisites import verify_prerequisites  # noqa: PLC0415
 
     verify_prerequisites(record["prerequisites"], config=config, dataset_sha256=dataset_sha256)

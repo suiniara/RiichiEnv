@@ -6,7 +6,7 @@
 
 ## 接口与登记
 
-`validation_tau_plan(subject, opponents, seed, grid=(infinity,1,.5,.25), selection_policy=None)` 固定实际校准策略身份、三个对手、cal_fit scenario IDs、网格、后端和收益判据。
+`validation_tau_plan(subject, opponents, seed, grid=(infinity,1,.5,.25), selection_policy=None)` 使用 `registered_validation_tau_matches_v4`，固定实际校准策略身份、三个对手、完整 cal_fit scenario ID 清单/数量/摘要、全部网格项、后端和收益判据。
 
 `select_validation_tau(...)` 验证独立许可、plan/预算和数据角色后，对每个预登记 scenario/grid 项执行完整半庄。subject 必须有通过独立质量检查的标定与 train 支持，不从 cal_check/test 补场景。
 
@@ -20,7 +20,7 @@ infinity 为同 checkpoint 的校准先验，有限项为 empirical_only 的受�
 
 ## 收益 gate 与产物
 
-[selection_quality](../../selection_quality/README.md)政策在对局前入 plan hash。均值较高但缺独立 clusters 或配对区间下端不足，保留 infinity，不强迫发布有限策略。
+[selection_quality](../../selection_quality/README.md)政策在对局前入 plan hash。准入根据 [-3,3] 配对差的单侧 Hoeffding 均值下界，对全部预登记有限候选作 union bound；bootstrap 区间只报告。均值较高但独立数量或该下界不足时，保留 infinity。场景数和候选须在结果出现前固定，不能挑有利子集、可选停止或自动追加对局。
 
 新目录写 `validation_matches.jsonl`、费用账本、`tau-selection.json`，记录 frozen plan、完整选择、RNG/seed 与不使用 test/cal_check 的声明。异常结算最后实际计算段，不将失败免费丢弃。
 

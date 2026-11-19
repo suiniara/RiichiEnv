@@ -23,7 +23,7 @@ from ..versioning import MODEL_TIER_BASIS
 from .batch import feature_mask_draw, rule_feature_view
 from .config import ModelConfig
 from .dataset import DecisionDataset, TrainingBatch, collate_examples
-from .distributed import DistributedContext, dist
+from .distributed import DistributedContext, StartupCoordinator, dist, selected_backend
 from .evaluation import evaluate_complete
 from .inference import model_weights_sha256
 from .losses import Labels, loss_sums
@@ -40,7 +40,12 @@ from .production_checkpoint import (
 from .run_publication import completed_run_record, publish_run_manifest
 from .sampling import GlobalEpochSampler, UpdateGroup, validation_updates
 from .train import create_optimizer, create_scheduler
-from .training_config import ProductionTrainConfig, third_epoch_allowed, validate_main_model_registration
+from .training_config import (
+    ProductionTrainConfig,
+    registered_main_model_ledger,
+    third_epoch_allowed,
+    validate_main_model_registration,
+)
 
 
 def _training_batch(
@@ -255,9 +260,9 @@ def _append_record(path: Path, record: dict[str, Any]) -> None:
 
 
 def _startup_identity(
-    dataset: DecisionDataset,
+    manifest: dict[str, Any],
     config: ProductionTrainConfig,
-    context: DistributedContext,
+    context: DistributedContext | StartupCoordinator,
     *,
     output_dir: Path,
     ledger_path: Path,
@@ -265,16 +270,29 @@ def _startup_identity(
 ) -> dict[str, Any]:
     implementation = implementation_release_identity()
     return {
-        "dataset_manifest_sha256": dataset.manifest["manifest_sha256"],
+        "dataset_manifest_sha256": manifest["manifest_sha256"],
         "training": config.to_record(),
         # Creating run journals must not invalidate initialization through Git's dirty flag.
-        "implementation": {key: implementation[key] for key in (
-            "source_sha256", "native_extension_sha256", "python_version", "python_implementation", "platform"
-        )},
+        "implementation": {
+            key: implementation[key]
+            for key in (
+                "source_sha256",
+                "native_extension_sha256",
+                "python_version",
+                "python_implementation",
+                "platform",
+            )
+        },
         "torch_version": str(torch.__version__),
         "numpy_version": np.__version__,
         "world_size": context.world_size,
-        "backend": str(dist.get_backend()) if context.world_size > 1 else "single",
+        "backend": (
+            str(dist.get_backend())
+            if dist.is_initialized()
+            else selected_backend(config.device, config.distributed_backend, config.gloo_bind_host)
+        )
+        if context.world_size > 1
+        else "single",
         "output_dir": str(output_dir.resolve()),
         "ledger_path": str(ledger_path.resolve()),
         "main_model_registration_sha256": registration["registration_sha256"] if registration is not None else None,
@@ -396,105 +414,183 @@ def train_production(  # noqa: PLR0915
     require_parameter_updates(
         authorization, operation="train_production", phase=config.phase, recipe_sha256=config.recipe_sha256
     )
-    if resume and (
-        not output_dir.is_dir()
-        or not any((output_dir / name).is_file() for name in ("checkpoint.json", "startup.json"))
-    ):
-        raise ValueError("Resume requires a committed checkpoint or a recorded initialization; never restart silently")
-    torch.set_num_threads(config.cpu_threads)
-    train = DecisionDataset(dataset_dir, "train")
-    validation = DecisionDataset(dataset_dir, "validation")
-    require_parameter_updates(
-        authorization, operation="train_production", dataset_hash=train.manifest["manifest_sha256"]
-    )
-    _dataset_contract(train, validation, config)
-    registration = None
-    if config.phase == "M2":
-        if main_model_registry is None:
-            raise ValueError("M2 must use its unique registered main model, not an unregistered raw trainer")
-        registration = json.loads(main_model_registry.read_text(encoding="utf-8"))
-        ledger_path = validate_main_model_registration(
-            registration,
-            dataset_sha256=train.manifest["manifest_sha256"],
-            config=config,
-            output_dir=output_dir,
-            ledger_path=ledger_path,
-        )
-    lengths = [int(history) + 65 for _, history in train.indices]
-    updates = math.ceil(len(train) / config.effective_batch_size)
-    validation_passes = 1 + len(validation_updates(updates)) * config.planned_epochs
-    planned_work = len(train) * config.planned_epochs + len(validation) * validation_passes
-    if config.budget.forecast.work_units < planned_work or config.budget.forecast.recipe_sha256 != config.recipe_sha256:
-        raise ValueError("Cost forecast must cover this exact recipe, all training and periodic full validation")
-    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-    context = DistributedContext.open(
-        config.device, backend=config.distributed_backend, gloo_bind_host=config.gloo_bind_host
-    )
+    coordinator = StartupCoordinator.open(output_dir)
+    context = None
     ledger = None
     startup = None
+    registration = None
     restore_checkpoint = False
     run_lease = None
     lease_entered = False
-    error = None
     try:
-        if config.device == "cuda" and config.precision == "bf16" and not torch.cuda.is_bf16_supported():
-            raise ValueError("Registered BF16 recipe is unsupported; do not silently change precision")
-        torch.use_deterministic_algorithms(config.deterministic_algorithms)
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cuda.matmul.allow_tf32 = False
-        random.seed(config.seed)
-        np.random.seed(config.seed)
-        torch.manual_seed(config.seed)
-        if context.device.type == "cuda":
-            torch.cuda.manual_seed(config.seed)
-            torch.cuda.reset_peak_memory_stats(context.device)
-        if context.primary:
-            actual_ledger_path = ledger_path or output_dir / "costs.jsonl"
-            identity = _startup_identity(
-                train, config, context,
-                output_dir=output_dir, ledger_path=actual_ledger_path, registration=registration,
-            )
-            if not resume:
-                create_training_directory(output_dir, identity=identity, ledger_path=actual_ledger_path)
-            run_lease = exclusive_job(output_dir / "training.lock")
-            run_lease.__enter__()
-            lease_entered = True
-            restore_checkpoint = (output_dir / "checkpoint.json").is_file()
-            startup = read_training_startup(
-                output_dir, identity=identity, ledger_path=actual_ledger_path, checkpoint_exists=restore_checkpoint
-            )
-            may_create_ledger = (
-                not restore_checkpoint and startup is not None
-                and startup["phase"] == "preparing" and startup["ledger_origin"] is None
-            )
-            ledger = BudgetLedger(actual_ledger_path, config.budget, allow_create=may_create_ledger)
-            if startup is not None and startup["budget_ledger"] is not None:
-                ledger.verify_state(startup["budget_ledger"])
-            if not restore_checkpoint:
-                assert startup is not None
-                startup = advance_training_startup(
-                    output_dir, startup, phase="initializing", budget_ledger=ledger.state_dict()
+        # Only bounded identity/authorization metadata may precede the durable attempt.
+        error = None
+        try:
+            if resume and (
+                not output_dir.is_dir()
+                or not any((output_dir / name).is_file() for name in ("checkpoint.json", "startup.json"))
+            ):
+                raise ValueError(
+                    "Resume requires a committed checkpoint or a recorded initialization; never restart silently"
                 )
-            if not restore_checkpoint:
-                ledger.assert_room(config.budget.forecast.seconds * config.budget.forecast.resource_usd_per_hour / 3600)
-            # Initialization has no separate measured forecast. Even a zero-sized
-            # attempt stays pending after a hard interruption until it is reconciled.
-            ledger.reserve_next(0.0)
-    except Exception as caught:
-        error = caught
-    try:
-        context.coordinate(error, "production startup")
-    except Exception:
-        if context.primary and ledger is not None:
+            assert authorization is not None  # Already validated before opening startup coordination.
+            dataset_sha256 = authorization.document["dataset_manifest_sha256"]
+            if config.phase == "M2":
+                if main_model_registry is None:
+                    raise ValueError("M2 must use its unique registered main model, not an unregistered raw trainer")
+                if main_model_registry.stat().st_size > 1024**2:
+                    raise ValueError("Oversized main-model registration")
+                registration = json.loads(main_model_registry.read_text(encoding="utf-8"))
+                ledger_path = registered_main_model_ledger(
+                    registration,
+                    dataset_sha256=dataset_sha256,
+                    config=config,
+                    output_dir=output_dir,
+                    ledger_path=ledger_path,
+                )
+        except Exception as caught:
+            error = caught
+        coordinator.coordinate(error, "production startup identity")
+        error = None
+        if coordinator.primary:
+            try:
+                actual_ledger_path = ledger_path or output_dir / "costs.jsonl"
+                identity = _startup_identity(
+                    {"manifest_sha256": dataset_sha256},
+                    config,
+                    coordinator,
+                    output_dir=output_dir,
+                    ledger_path=actual_ledger_path,
+                    registration=registration,
+                )
+                if not resume:
+                    create_training_directory(output_dir, identity=identity, ledger_path=actual_ledger_path)
+                run_lease = exclusive_job(output_dir / "training.lock")
+                run_lease.__enter__()
+                lease_entered = True
+                restore_checkpoint = (output_dir / "checkpoint.json").is_file()
+                startup = read_training_startup(
+                    output_dir, identity=identity, ledger_path=actual_ledger_path, checkpoint_exists=restore_checkpoint
+                )
+                may_create_ledger = (
+                    not restore_checkpoint
+                    and startup is not None
+                    and startup["phase"] == "preparing"
+                    and startup["ledger_origin"] is None
+                )
+                ledger = BudgetLedger(actual_ledger_path, config.budget, allow_create=may_create_ledger)
+                if startup is not None and startup["budget_ledger"] is not None:
+                    ledger.verify_state(startup["budget_ledger"])
+                if not restore_checkpoint:
+                    assert startup is not None
+                    startup = advance_training_startup(
+                        output_dir, startup, phase="initializing", budget_ledger=ledger.state_dict()
+                    )
+                # This also refuses an unreconciled attempt before either dataset constructor.
+                ledger.assert_room(
+                    0.0
+                    if restore_checkpoint
+                    else config.budget.forecast.seconds * config.budget.forecast.resource_usd_per_hour / 3600
+                )
+                ledger.reserve_next(0.0)
+            except Exception as caught:
+                error = caught
+        coordinator.coordinate(error, "production startup accounting")
+
+        error = None
+        try:
+            torch.set_num_threads(config.cpu_threads)
+            if registration is not None:
+                validate_main_model_registration(
+                    registration,
+                    dataset_sha256=dataset_sha256,
+                    config=config,
+                    output_dir=output_dir,
+                    ledger_path=ledger_path,
+                )
+            train = DecisionDataset(dataset_dir, "train")
+            require_parameter_updates(
+                authorization, operation="train_production", dataset_hash=train.manifest["manifest_sha256"]
+            )
+            if train.manifest["manifest_sha256"] != dataset_sha256:
+                raise ValueError("Dataset manifest changed after startup authorization")
+            validation = DecisionDataset(dataset_dir, "validation")
+            if validation.manifest != train.manifest:
+                raise ValueError("Dataset manifest changed after startup authorization")
+            _dataset_contract(train, validation, config)
+            lengths = [int(history) + 65 for _, history in train.indices]
+            updates = math.ceil(len(train) / config.effective_batch_size)
+            passes = 1 + len(validation_updates(updates)) * config.planned_epochs
+            planned_work = len(train) * config.planned_epochs + len(validation) * passes
+            if (
+                config.budget.forecast.work_units < planned_work
+                or config.budget.forecast.recipe_sha256 != config.recipe_sha256
+            ):
+                raise ValueError(
+                    "Cost forecast must cover this exact recipe, all training and periodic full validation"
+                )
+            os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+            # Device errors are coordinated before any peer enters process-group creation.
+            if config.device == "cuda":
+                torch.cuda.set_device(coordinator.local_rank)
+                if config.precision == "bf16" and not torch.cuda.is_bf16_supported():
+                    raise ValueError("Registered BF16 recipe is unsupported; do not silently change precision")
+            torch.use_deterministic_algorithms(config.deterministic_algorithms)
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cuda.matmul.allow_tf32 = False
+            random.seed(config.seed)
+            np.random.seed(config.seed)
+            torch.manual_seed(config.seed)
+            if config.device == "cuda":
+                torch.cuda.manual_seed(config.seed)
+                torch.cuda.reset_peak_memory_stats(coordinator.local_rank)
+        except Exception as caught:
+            error = caught
+        coordinator.coordinate(error, "dataset/device preprocessing")
+        error = None
+        if coordinator.primary:
+            try:
+                assert ledger is not None
+                ledger.settle_elapsed("dataset_device_preprocessing")
+                ledger.assert_room(
+                    0.0
+                    if restore_checkpoint
+                    else config.budget.forecast.seconds * config.budget.forecast.resource_usd_per_hour / 3600
+                )
+            except Exception as caught:
+                error = caught
+        coordinator.coordinate(error, "preprocessing budget settlement")
+        error = None
+        try:
+            context = DistributedContext.open(
+                config.device, backend=config.distributed_backend, gloo_bind_host=config.gloo_bind_host
+            )
+        except Exception as caught:
+            error = caught
+        coordinator.coordinate(error, "distributed initialization")
+        assert context is not None
+        restore_checkpoint = context.gather(restore_checkpoint)[0]
+    except BaseException as failure:
+        if coordinator.primary and ledger is not None:
             try:
                 ledger.finish_compute("aborted_production_startup")
             except Exception:
                 pass
+            try:
+                _append_record(
+                    output_dir / "aborted.jsonl",
+                    {
+                        "reason": f"{type(failure).__name__}: {failure}",
+                        "budget": ledger.state_dict(),
+                    },
+                )
+            except OSError:
+                pass
         if run_lease is not None and lease_entered:
             run_lease.__exit__(None, None, None)
-        context.close()
+        if context is not None:
+            context.close()
         raise
-    restore_checkpoint = context.gather(restore_checkpoint)[0]
     attempt_id = 0
 
     def primary_log(name: str, record: dict[str, Any]) -> None:
@@ -671,7 +767,9 @@ def train_production(  # noqa: PLR0915
             # Recover the narrow gap between the first pointer commit and its startup marker.
             caught = None
             if (
-                context.primary and ledger is not None and startup is not None
+                context.primary
+                and ledger is not None
+                and startup is not None
                 and startup["phase"] != "checkpoint_committed"
             ):
                 try:

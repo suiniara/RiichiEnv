@@ -7,17 +7,25 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..budget import BudgetLedger
+from ..calibration_roles import CALIBRATION_SPLIT_SALT
 from ..contracts import content_hash
+from ..policy import fixed_tau_grid
 from ..release import implementation_release_identity
 from ..runtime_contracts import RuntimeBinding
-from ..selection_quality import TAU_SELECTION_VERSION, TauSelectionPolicy, validate_finite_tau_selection
+from ..selection_quality import (
+    TAU_MATCH_PLAN_VERSION,
+    TAU_SELECTION_VERSION,
+    TauSelectionPolicy,
+    cal_fit_scenario_manifest,
+    validate_finite_tau_selection,
+)
 from ..versioning import validate_artifact_contract
 from .config import ModelConfig, frozen_inference_recipe_sha256
 
 if TYPE_CHECKING:
     from .training_config import ProductionTrainConfig
 
-PREREQUISITE_VERSION = "completed_m1_to_m2_gate_v1"
+PREREQUISITE_VERSION = "completed_m1_to_m2_gate_v2"
 
 
 def _read_signed(path: Path, field: str) -> dict[str, Any]:
@@ -107,25 +115,58 @@ def m2_prerequisites(  # noqa: PLR0915
             or choice.get("diagnostic_fixture") is not False
         ):
             raise ValueError("Growth evidence is not production paired validation selection")
-        policy = TauSelectionPolicy.from_record(choice["selection_policy"])
-        selected = float(choice["selected_tau"])
-        if math.isfinite(selected):
-            validate_finite_tau_selection(choice)
-            interval = choice["paired_validation_evidence"][str(selected)]["paired_utility_interval"]
-            if (
-                choice.get("reproducible_gain") is not True
-                or interval["independent_games"] < policy.minimum_game_clusters
-                or interval["lower"] is None
-                or interval["lower"] <= policy.minimum_utility_gain
-            ):
-                raise ValueError("Finite validation evidence failed its preregistered repeatability gate")
         arm = report["results"]["feature-on" if config.use_rule_features else "feature-off"]
         recipe = frozen_inference_recipe_sha256(
-            ModelConfig.from_preset("small"), use_rule_features=config.use_rule_features,
+            ModelConfig.from_preset("small"),
+            use_rule_features=config.use_rule_features,
         )
         binding = RuntimeBinding.current(arm["final_weights_sha256"], dataset_sha256, inference_recipe_sha256=recipe)
         if choice.get("binding_sha256") != binding.digest:
             raise ValueError("Growth evidence used another M1 checkpoint or feature mode")
+        model_selection = arm["final_validation"]["report"].get("model_selection", {})
+        if (
+            model_selection.get("partition") != "cal_fit"
+            or model_selection.get("full_cal_fit_evaluated") is not True
+            or model_selection.get("cal_check_used") is not False
+            or model_selection.get("calibration_split_salt") != CALIBRATION_SPLIT_SALT
+            or not model_selection.get("game_ids")
+        ):
+            raise ValueError("Growth evidence requires the actual M1 complete cal_fit scenario list")
+        expected_games = model_selection["game_ids"]
+        manifest = cal_fit_scenario_manifest(
+            expected_games,
+            validation_manifest_sha256=choice.get("validation_manifest_sha256"),
+            calibration_split_salt=CALIBRATION_SPLIT_SALT,
+        )
+        policy = TauSelectionPolicy.from_record(choice["selection_policy"])
+        plan = job.get("plan", {})
+        plan_body = {key: value for key, value in plan.items() if key != "plan_sha256"}
+        grid = fixed_tau_grid([float(value) for value in plan.get("grid", [])])
+        if (
+            plan.get("version") != TAU_MATCH_PLAN_VERSION
+            or plan.get("plan_sha256") != content_hash(plan_body)
+            or plan.get("partition") != "cal_fit"
+            or plan.get("selection_policy") != policy.to_record()
+            or choice["selection_policy"] != policy.to_record()
+            or plan.get("subject_binding_sha256") != binding.digest
+            or plan.get("policy_identity") != choice.get("policy_identity")
+            or plan.get("validation_manifest_sha256") != choice.get("validation_manifest_sha256")
+            or plan.get("calibration_split_salt") != CALIBRATION_SPLIT_SALT
+            or choice.get("calibration_split_salt") != CALIBRATION_SPLIT_SALT
+            or plan.get("scenario_manifest") != manifest
+            or choice.get("scenario_manifest") != manifest
+            or plan.get("scenario_game_ids") != manifest["game_ids"]
+            or choice.get("game_ids") != manifest["game_ids"]
+            or choice.get("grid") != ["infinity" if math.isinf(value) else str(value) for value in grid]
+            or plan.get("grid") != ["infinity" if math.isinf(value) else value for value in grid]
+            or plan.get("matches") != len(expected_games) * len(grid)
+        ):
+            raise ValueError("Growth evidence must retain the registered full cal_fit scenarios, tau grid and criteria")
+        selected = float(choice["selected_tau"])
+        if math.isnan(selected) or selected <= 0:
+            raise ValueError("Growth evidence contains an invalid selected tau")
+        if math.isfinite(selected):
+            validate_finite_tau_selection(choice, expected_game_ids=expected_games)
         selection_sha = job["selection_job_sha256"]
     growth = (
         choice is not None and choice.get("reproducible_gain") is True and math.isfinite(float(choice["selected_tau"]))

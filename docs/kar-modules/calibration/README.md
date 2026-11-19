@@ -29,6 +29,8 @@
 
 这里的温度选择对调用方已经提供的静态数组工作，不创建网络或优化器；真实 logits 收集由 [learning/calibration_job](../learning/calibration_job/README.md)执行。生产有限 tau 还需 [selection_quality](../selection_quality/README.md)的登记收益政策；实际对局由 `validation_policy` 运行。
 
+生产 `choose_validation_tau` 要求全部登记网格项均使用完整 `split.fit_games`，不接受其子集。产物同时保存实际场景 ID 和完整预登记清单/数量/摘要。有限项按有网格多重比较校正的 Hoeffding 配对均值下界准入，bootstrap 区间只作描述；无合格有限项或只登记 infinity 时保留 infinity。
+
 ## 测试与状态
 
 对应 [core/test_calibration.py](../../../tests/kar/core/test_calibration.py)、[core/test_artifact_contracts.py](../../../tests/kar/core/test_artifact_contracts.py)、[production/test_selection_and_roles.py](../../../tests/kar/production/test_selection_and_roles.py)。本轮未进行真实模型校准或阶段评测；合成静态数组、质量三态与版本拒绝单元的实际结果见[修复报告](../../kar-semantic-branch-repair.md)。
