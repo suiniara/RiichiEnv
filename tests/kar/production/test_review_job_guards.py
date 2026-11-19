@@ -141,7 +141,12 @@ def test_frozen_job_failures_settle_last_work_without_any_model_execution(job, m
             predictor = SimpleNamespace(
                 _unchanged=lambda: None, binding=SimpleNamespace(train_manifest_sha256="d" * 64)
             )
-            fake = SimpleNamespace(
+
+            class ValidationMetadata(SimpleNamespace):
+                def __len__(self):
+                    return 4
+
+            fake = ValidationMetadata(
                 manifest={"manifest_sha256": "d" * 64, "games": [{"game_id": "v", "split": "validation"}]}
             )
             monkeypatch.setattr(calibration_job, "DecisionDataset", lambda *args: fake)

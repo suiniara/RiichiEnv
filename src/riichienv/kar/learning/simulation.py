@@ -26,12 +26,12 @@ from ..statistics import GameClusters, LatencyDistribution, percentile
 from .deployment import FrozenRelease
 
 
-def _atomic_record(path: Path, record: dict[str, Any]) -> dict[str, Any]:
-    signed = {**record, "receipt_sha256": content_hash(record)}
+def _publish_record(path: Path, record: dict[str, Any]) -> None:
+    """Publish a fully written record without replacing an existing identity."""
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
         with temporary.open("x", encoding="utf-8") as stream:
-            json.dump(signed, stream, sort_keys=True, allow_nan=False)
+            json.dump(record, stream, sort_keys=True, allow_nan=False)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -39,6 +39,11 @@ def _atomic_record(path: Path, record: dict[str, Any]) -> dict[str, Any]:
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def _atomic_record(path: Path, record: dict[str, Any]) -> dict[str, Any]:
+    signed = {**record, "receipt_sha256": content_hash(record)}
+    _publish_record(path, signed)
     return signed
 
 
@@ -147,7 +152,7 @@ class M3Config:
 
 
 def register_m3_run(config: M3Config) -> bool:
-    """Bind the one frozen test plan to its output and phase ledger before work."""
+    """Publish the unique run only after its original ledger is durable."""
     if not config.test_registry.parent.is_dir():
         raise ValueError("An explicit shared test registry directory must already exist")
     record = {
@@ -170,11 +175,13 @@ def register_m3_run(config: M3Config) -> bool:
                     "M3 is already registered; do not change policy/output/pricing or reset its phase ledger"
                 )
         else:
-            with config.test_registry.open("x", encoding="utf-8") as stream:
-                json.dump(signed, stream, sort_keys=True, allow_nan=False)
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
+            # Hold the shared registry lock across initialization: a competing
+            # output/price must not acquire this test plan in between. A crash
+            # before publication leaves an unregistered but reusable ledger;
+            # once registration exists, a missing ledger is never recreated.
+            config.output.mkdir(parents=True, exist_ok=True)
+            open_m3_ledger(config, update_implementation_sha256())
+            _publish_record(config.test_registry, signed)
     return existed
 
 
@@ -203,6 +210,40 @@ def open_m3_ledger(config: M3Config, source_sha256: str, *, allow_create: bool =
     return ledger
 
 
+def _cached_m3_receipts(config: M3Config, source_sha256: str) -> dict[str, dict[str, Any]]:
+    """Reconcile all durable artifacts before opening a new compute attempt."""
+    receipts = config.output / "receipts"
+    replays = config.output / "replays"
+    paths = {path.name: path for path in receipts.glob("pair-*.json")}
+    for replay in replays.glob("pair-*.json.gz"):
+        if replay.name.removesuffix(".gz") not in paths:
+            raise ValueError("Orphan replay without receipt; preserve it for explicit recovery, never overwrite")
+    expected = {
+        f"pair-{block['pair_index']:05d}-{arm}.json": (block, arm)
+        for block in config.paired_seed_manifest["blocks"]
+        for arm in ("baseline", "candidate")
+    }
+    if paths.keys() - expected.keys():
+        raise ValueError("Paired receipt belongs to another seed/seat/arm")
+    cached = {}
+    for name, path in paths.items():
+        receipt = _read_record(path, config.paired_seed_manifest["paired_seed_manifest_sha256"])
+        block, arm = expected[name]
+        if receipt.get("source_sha256") != source_sha256:
+            raise ValueError("Evaluation receipt belongs to another source build")
+        if (
+            receipt.get("block_sha256") != block["block_sha256"]
+            or receipt.get("arm") != arm
+            or receipt.get("subject_seat") != block["subject_seat"]
+            or receipt.get("replay_file") != name + ".gz"
+        ):
+            raise ValueError("Paired receipt belongs to another seed/seat/arm or replay")
+        if not (replays / receipt["replay_file"]).is_file():
+            raise ValueError("Archived replay is missing; preserve its receipt for explicit recovery")
+        cached[name] = receipt
+    return cached
+
+
 def run_m3(config: M3Config, *, authorization: dict[str, Any] | None = None) -> dict[str, Any]:  # noqa: PLR0915
     plan = config.paired_seed_manifest
     digest = plan["paired_seed_manifest_sha256"]
@@ -211,8 +252,9 @@ def run_m3(config: M3Config, *, authorization: dict[str, Any] | None = None) -> 
     config.validate()
     config.output.mkdir(parents=True, exist_ok=True)
     with exclusive_job(config.output / "job.lock"):
-        registered = register_m3_run(config)
-        ledger = open_m3_ledger(config, authorization["source_sha256"], allow_create=not registered)
+        cached_receipts = _cached_m3_receipts(config, authorization["source_sha256"])
+        register_m3_run(config)
+        ledger = open_m3_ledger(config, authorization["source_sha256"], allow_create=False)
         completed_path = config.output / "report.json"
         if completed_path.exists():
             completed_record = _read_record(completed_path, digest)
@@ -222,6 +264,12 @@ def run_m3(config: M3Config, *, authorization: dict[str, Any] | None = None) -> 
                 raise ValueError("Completed evaluation belongs to another source build")
             return completed_record
         with ledger.record_compute("M3_load_and_validate"):
+            # Hashing large archives is accounted for, but corrupt cached work
+            # still fails before any model/agent construction or new match.
+            for receipt in cached_receipts.values():
+                replay = config.output / "replays" / receipt["replay_file"]
+                if hashlib.sha256(replay.read_bytes()).hexdigest() != receipt["replay_sha256"]:
+                    raise ValueError("Archived replay changed")
             assert config.benchmark_report is not None
             torch.set_num_threads(config.benchmark_report["runtime_identity"]["cpu_threads"])
             subject = FrozenRelease(config.subject_release, device=config.device)
@@ -272,15 +320,16 @@ def run_m3(config: M3Config, *, authorization: dict[str, Any] | None = None) -> 
                 pair = []
                 for arm in ("baseline", "candidate"):
                     path = receipts / f"pair-{block['pair_index']:05d}-{arm}.json"
-                    if path.exists():
-                        receipt = _read_record(path, digest)
+                    if path.name in cached_receipts:
+                        receipt = cached_receipts[path.name]
                         ledger.verify_anchor(
                             receipt.get("budget_ledger_head"), entries=receipt.get("budget_ledger_entries")
                         )
-                        replay = replays / receipt["replay_file"]
-                        if hashlib.sha256(replay.read_bytes()).hexdigest() != receipt["replay_sha256"]:
-                            raise ValueError("Archived replay changed")
                     else:
+                        replay_name = f"pair-{block['pair_index']:05d}-{arm}.json.gz"
+                        replay = replays / replay_name
+                        if replay.exists() or path.exists():
+                            raise ValueError("Evaluation artifacts changed after recovery preflight")
                         ledger.reserve_next(
                             config.budget.forecast.safety_multiplier / config.budget.forecast.measured_units_per_second
                         )
@@ -290,8 +339,6 @@ def run_m3(config: M3Config, *, authorization: dict[str, Any] | None = None) -> 
                             max_decisions=config.max_decisions,
                         )
                         statistics = _match_statistics(report, block["subject_seat"])
-                        replay_name = f"pair-{block['pair_index']:05d}-{arm}.json.gz"
-                        replay = replays / replay_name
                         if replay.exists():
                             raise ValueError(
                                 "Orphan replay without receipt; preserve it for explicit recovery, never overwrite"

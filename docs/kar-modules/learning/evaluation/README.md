@@ -22,8 +22,10 @@
 
 `response_valid` 行的 `unsupported_mass_histogram` 用冻结温度、公开 mask 与运行时相同的标量概率计算，再按 `EventSupport.value_supported(...)` 求和。逐事件 `response_event_calibration` 在公开允许该事件的行上记录正负例、正例独立游戏数和概率指标；不在 evaluation 重新判定准入。没有绑定的校准时有效未支持质量为 `unavailable`；可单列 `train_only_unsupported_mass_histogram`。报告及分布式合并状态使用 `whole_game_cluster_statistics_v4_event_ovr`，拒绝旧格式。
 
+校准后的动作 gate 复用 calibration/runtime 的 `legal_prior` 标量归一化和 `support_discards`，按包含非舍牌动作的完整合法先验筛选，并以 `math.fsum` 累计支持质量；阈值处仍使用原有的包含边界比较，不添加容差。FP32 `log_softmax` 继续用于原有损失诊断，但其舍入结果不再决定 gate 成员或支持质量。
+
 数据必须是 validation；test 不能传给训练选择接口。全量报告只证明该调用实际覆盖的已核验数据，不把 probe subset 冒充正式全数据。
 
 ## 测试与状态
 
-对应 [production/test_full_trainer.py](../../../../tests/kar/production/test_full_trainer.py)、[test_selection_and_roles.py](../../../../tests/kar/production/test_selection_and_roles.py)、[test_diagnostic_distributions.py](../../../../tests/kar/production/test_diagnostic_distributions.py)。本轮未做真实模型校准或训练；synthetic logits 的诊断对照见[本轮报告](../../../kar-pass-rho-math-repair.md)。无独立 CLI，由已授权 trainer 调用。
+对应 [production/test_full_trainer.py](../../../../tests/kar/production/test_full_trainer.py)、[test_selection_and_roles.py](../../../../tests/kar/production/test_selection_and_roles.py)、[test_diagnostic_distributions.py](../../../../tests/kar/production/test_diagnostic_distributions.py)。[test_calibrated_gate_parity.py](../../../../tests/kar/production/test_calibrated_gate_parity.py) 用合成 logits 验证等概率阈值、非单位温度、非法动作遮罩及非舍牌先验质量在校准、验证、实际 RuntimePolicy 三条路径中的一致性。本轮未做真实模型校准或训练；synthetic logits 的诊断对照见[本轮报告](../../../kar-pass-rho-math-repair.md)。无独立 CLI，由已授权 trainer 调用。
