@@ -4,6 +4,7 @@
 import json
 import multiprocessing
 import os
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -132,6 +133,48 @@ def test_workers_wait_for_primary_accounting_release(tmp_path, process_factory):
     assert release["nonces"] == [participants[rank]["nonce"] for rank in (0, 1)]
     assert (tmp_path / "synthetic-attempt.json").is_file()
     assert len(list(tmp_path.glob("expensive-*.marker"))) == 2
+
+
+def test_release_published_during_incomplete_scan_is_rechecked(tmp_path, monkeypatch):
+    output, run_id = tmp_path / "run", uuid.uuid4().hex
+    primary = _manual_coordinator(output, 0, run_id, monkeypatch)
+    secondary = _manual_coordinator(output, 1, run_id, monkeypatch)
+    primary.timeout_seconds = secondary.timeout_seconds = 3.0
+    missing_report_observed, primary_released = threading.Event(), threading.Event()
+    primary_errors = []
+    original_read = secondary._read
+
+    def read_with_publication_between_report_and_release(name):
+        record = original_read(name)
+        if name == "stage-0-rank-0.json" and record is None:
+            # Retain the real missing-file observation while the primary publishes
+            # its report and the complete release before this scan continues.
+            missing_report_observed.set()
+            assert primary_released.wait(3)
+        return record
+
+    def release_from_primary():
+        try:
+            assert missing_report_observed.wait(3)
+            primary.coordinate(None, STAGE)
+        except Exception as error:
+            primary_errors.append(error)
+        finally:
+            primary_released.set()
+
+    monkeypatch.setattr(secondary, "_read", read_with_publication_between_report_and_release)
+    worker = threading.Thread(target=release_from_primary, daemon=True)
+    worker.start()
+    try:
+        secondary.coordinate(None, STAGE)
+    finally:
+        missing_report_observed.set()
+        worker.join(timeout=6)
+    assert not worker.is_alive()
+    assert not primary_errors
+    release = json.loads((primary.directory / "stage-0-release.json").read_text(encoding="utf-8"))
+    assert release == {"stage": STAGE, "nonces": [primary.nonce, secondary.nonce]}
+    assert not list(primary.directory.glob("stage-0-failure-*.json"))
 
 
 @pytest.mark.parametrize("failing_rank", (0, 1))

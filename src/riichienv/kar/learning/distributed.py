@@ -168,11 +168,13 @@ class StartupCoordinator:
                 if self.primary and len(nonces) == self.world_size:
                     self._publish(release_name, {"stage": stage, "nonces": nonces})
                 release = self._read(release_name)
-                if release is not None:
+                # The files are not an atomic snapshot: a peer report and the
+                # release may appear after this scan already missed that report.
+                # Re-scan before comparing a complete release with partial nonces.
+                if release is not None and len(nonces) == self.world_size:
                     if (
                         release.get("stage") != stage
                         or release.get("nonces") != nonces
-                        or len(nonces) != self.world_size
                         or nonces[self.rank] != self.nonce
                     ):
                         raise ValueError("Distributed startup release belongs to another launch")
