@@ -28,8 +28,13 @@ class BranchQualityCriterion:
         if self.head not in BRANCH_HEADS or type(self.event_id) is not int or not 0 <= self.event_id < 21:
             raise ValueError("Branch criteria require response/rank and a frozen response event ID")
         for value, upper in ((self.max_nll, None), (self.max_brier, 2.0), (self.max_ece, 1.0)):
-            if (isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value)
-                    or value < 0 or (upper is not None and value > upper)):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (float, int))
+                or not math.isfinite(value)
+                or value < 0
+                or (upper is not None and value > upper)
+            ):
                 raise ValueError("Explicit finite branch quality thresholds are required")
         if type(self.minimum_independent_games) is not int or self.minimum_independent_games < 1:
             raise ValueError("Branch evidence requires a positive independent validation-game minimum")
@@ -38,6 +43,7 @@ class BranchQualityCriterion:
 @dataclass(frozen=True)
 class BranchQualityPolicy:
     """Explicit preregistration only. There are deliberately no production thresholds."""
+
     criteria: tuple[BranchQualityCriterion, ...]
     source_reference: str
 
@@ -182,8 +188,11 @@ def evaluate_branch_quality(metrics: Mapping[str, Any], policy: BranchQualityPol
                 missing.append("preregistered_branch_criterion_missing")
             else:
                 if type(games) is not int or games < criterion.minimum_independent_games:
-                    missing.append("positive_independent_validation_games" if head == "response"
-                                   else "independent_validation_games")
+                    missing.append(
+                        "positive_independent_validation_games"
+                        if head == "response"
+                        else "independent_validation_games"
+                    )
                 if type(count) is not int or type(positives) is not int or not 1 <= positives <= count:
                     missing.append("positive_observations" if head == "response" else "observations")
                 elif type(games) is int and games > positives:
@@ -192,24 +201,37 @@ def evaluate_branch_quality(metrics: Mapping[str, Any], policy: BranchQualityPol
                     value = values.get(metric)
                     if value is None:
                         missing.append(metric)
-                    elif (isinstance(value, bool) or not isinstance(value, (float, int))
-                          or not math.isfinite(value) or value < 0 or value > getattr(criterion, "max_" + metric)):
+                    elif (
+                        isinstance(value, bool)
+                        or not isinstance(value, (float, int))
+                        or not math.isfinite(value)
+                        or value < 0
+                        or value > getattr(criterion, "max_" + metric)
+                    ):
                         failed.append(metric)
             heads[head] = {
                 "status": "unavailable" if missing else "failed" if failed else "passed",
                 "reasons": sorted(set(missing + failed)),
                 "observations": count,
-                **({"positive_observations": positives, "positive_independent_games": games}
-                   if head == "response" else {"independent_games": games}),
+                **(
+                    {"positive_observations": positives, "positive_independent_games": games}
+                    if head == "response"
+                    else {"independent_games": games}
+                ),
             }
         states = [value["status"] for value in heads.values()]
         branches[str(event)] = {
             "status": "failed" if "failed" in states else "unavailable" if "unavailable" in states else "passed",
             "heads": heads,
         }
-    return {"version": BRANCH_QUALITY_VERSION, "partition": "cal_check", "branches": branches,
-            "branch_quality_policy_sha256": None if policy is None else policy.digest,
-            "fallback": BRANCH_FALLBACK, "uniform_error_certificate": False}
+    return {
+        "version": BRANCH_QUALITY_VERSION,
+        "partition": "cal_check",
+        "branches": branches,
+        "branch_quality_policy_sha256": None if policy is None else policy.digest,
+        "fallback": BRANCH_FALLBACK,
+        "uniform_error_certificate": False,
+    }
 
 
 def evaluate_quality(metrics: Mapping[str, Any], policy: CalibrationQualityPolicy | None) -> dict[str, Any]:

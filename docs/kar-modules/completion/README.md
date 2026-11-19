@@ -12,6 +12,8 @@
 
 ## 证据合同
 
+当前 `frozen_mjsoul_hanchan_completion_v2` 证书包含 `protocol_identity_version`、顶层源协议 `protocol_sha256` 和含 imports 的 `protocol_descriptor_sha256`。缺少完整描述符身份会 BLOCKED；仅依赖协议发生变化，也会产生不同证书摘要。来源身份由解码器传入，不能用旧证书字段重新签名替代重放。
+
 旧牌谱可能没有显式 `end_game`。仅当初局/回合链完整、全部事件消费、合法动作/响应、独立款项和实际终局条件都满足，才能签发派生终局结果；保留 `explicit_end_game=false`，不补造原始事件。
 
 固定起家东/南/西/北破同分，当前 `oya` 不改变映射。header 原始分只能用于核对，不能替代缺失的独立计分链；未知里宝或未消费事件不能靠 header 排名修复。KAR 雀魂西入普通荒牌达标时结束，途中流局及庄家双荣和等已有例外单独处理；天凤的普遍连庄优先不能沿用到此证书。两平台由 `extension_dealer_repeat_priority` 区分，见[官方来源与差异表](../../kar-native-rule-boundary.md#3-平台差异与-kar-雀魂修复)。

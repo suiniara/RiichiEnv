@@ -1,6 +1,7 @@
 """Forward-only LEGAL_SET wiring tests; mixed manifest sets are vector unit cases,
 not claims that all of those actions can occur in one real response window.
 """
+
 from dataclasses import replace
 
 import pytest
@@ -15,8 +16,18 @@ from riichienv.kar.observation import ObserverLedger
 from riichienv.kar.tokenize import append_action, encode_prefix
 
 TABLES = ("action_ids", "action_type_ids", "action_tile37", "action_tsumogiri", "action_riichi")
-FAMILIES = {"DISCARD": 1, "ANKAN": 2, "KAKAN": 3, "TSUMO": 4, "KYUSHU_KYUHAI": 5,
-            "PASS": 6, "CHI": 7, "PON": 8, "DAIMINKAN": 9, "RON": 10}
+FAMILIES = {
+    "DISCARD": 1,
+    "ANKAN": 2,
+    "KAKAN": 3,
+    "TSUMO": 4,
+    "KYUSHU_KYUHAI": 5,
+    "PASS": 6,
+    "CHI": 7,
+    "PON": 8,
+    "DAIMINKAN": 9,
+    "RON": 10,
+}
 
 
 def _batch(ids, *, action=None):
@@ -26,10 +37,17 @@ def _batch(ids, *, action=None):
         ledger.apply_event(event)
     prefix = encode_prefix(ledger.snapshot(), ids)
     sequence = prefix if action is None else append_action(prefix, action)
-    batch = collate_inputs([{"tokens": sequence.to_bytes()[108:], "candidates": prefix.candidates,
-                             "decide_index": prefix.decide_index,
-                             "action_index": -1 if action is None else prefix.decide_index + 1,
-                             "decision_row_id": "fixed-input-context"}])
+    batch = collate_inputs(
+        [
+            {
+                "tokens": sequence.to_bytes()[108:],
+                "candidates": prefix.candidates,
+                "decide_index": prefix.decide_index,
+                "action_index": -1 if action is None else prefix.decide_index + 1,
+                "decision_row_id": "fixed-input-context",
+            }
+        ]
+    )
     return batch, prefix
 
 
@@ -41,8 +59,9 @@ def controlled():
             parameter.zero_()
         for index, name in enumerate(TABLES):
             weight = model.embedding.scalar[name].weight
-            weight.copy_(torch.arange(weight.shape[0])[:, None] * ((index + 1) * 1000)
-                         + torch.arange(weight.shape[1])[None, :])
+            weight.copy_(
+                torch.arange(weight.shape[0])[:, None] * ((index + 1) * 1000) + torch.arange(weight.shape[1])[None, :]
+            )
             weight[546 if name == "action_ids" else 0].zero_()
     return model
 
@@ -125,8 +144,12 @@ def test_candidate_pool_validates_nonempty_unique_and_capacity(controlled, bad):
 def test_single_action_suffix_does_not_repeat_legal_pool(controlled):
     prefix_batch, _ = _batch((0, 4))
     dense, _ = _batch((0, 4), action=4)
-    suffix = replace(dense, fields={key: value[:, -1:] for key, value in dense.fields.items()},
-                     decide_index=torch.zeros(1, dtype=torch.int64), action_index=torch.zeros(1, dtype=torch.int64))
+    suffix = replace(
+        dense,
+        fields={key: value[:, -1:] for key, value in dense.fields.items()},
+        decide_index=torch.zeros(1, dtype=torch.int64),
+        action_index=torch.zeros(1, dtype=torch.int64),
+    )
     captured = []
     with torch.no_grad():
         cache = controlled.encode_prefix(prefix_batch)
@@ -149,8 +172,12 @@ def test_dense_and_prefix_cache_share_pool_and_teacher_action_cannot_reach_decid
         a, b = miniature(first), miniature(second)
         torch.testing.assert_close(a.policy_logits, b.policy_logits, atol=0, rtol=0)
         cache = miniature.encode_prefix(prefix)
-        suffix = replace(first, fields={key: value[:, -1:] for key, value in first.fields.items()},
-                         decide_index=torch.zeros(1, dtype=torch.int64), action_index=torch.zeros(1, dtype=torch.int64))
+        suffix = replace(
+            first,
+            fields={key: value[:, -1:] for key, value in first.fields.items()},
+            decide_index=torch.zeros(1, dtype=torch.int64),
+            action_index=torch.zeros(1, dtype=torch.int64),
+        )
         response, rank = miniature.score_actions(cache, suffix)
         torch.testing.assert_close(cache.policy_logits, a.policy_logits, atol=2e-6, rtol=2e-5)
         torch.testing.assert_close(response, a.response_logits, atol=2e-6, rtol=2e-5)
@@ -161,8 +188,12 @@ def test_cache_binds_complete_candidate_set_not_just_context_string(miniature):
     miniature.eval()
     prefix, _ = _batch((0, 4))
     action, _ = _batch((0, 8), action=0)
-    suffix = replace(action, fields={key: value[:, -1:] for key, value in action.fields.items()},
-                     decide_index=torch.zeros(1, dtype=torch.int64), action_index=torch.zeros(1, dtype=torch.int64))
+    suffix = replace(
+        action,
+        fields={key: value[:, -1:] for key, value in action.fields.items()},
+        decide_index=torch.zeros(1, dtype=torch.int64),
+        action_index=torch.zeros(1, dtype=torch.int64),
+    )
     with torch.no_grad():
         cache = miniature.encode_prefix(prefix)
         with pytest.raises(ValueError, match="candidate|input|contract"):
@@ -182,8 +213,12 @@ def test_cache_rejects_old_input_version_and_changed_manifest_buffer(miniature, 
     miniature.eval()
     prefix, _ = _batch((0, 4))
     dense, _ = _batch((0, 4), action=0)
-    suffix = replace(dense, fields={key: value[:, -1:] for key, value in dense.fields.items()},
-                     decide_index=torch.zeros(1, dtype=torch.int64), action_index=torch.zeros(1, dtype=torch.int64))
+    suffix = replace(
+        dense,
+        fields={key: value[:, -1:] for key, value in dense.fields.items()},
+        decide_index=torch.zeros(1, dtype=torch.int64),
+        action_index=torch.zeros(1, dtype=torch.int64),
+    )
     with torch.no_grad():
         cache = miniature.encode_prefix(prefix)
         with pytest.raises(ValueError, match="input/model contract"):

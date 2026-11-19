@@ -14,6 +14,8 @@
 
 默认校验数据库 hash、导出完成性、scope、Schema/规则/特征/损失/角色版本和分区信息。现在还要求显式设计映射、`rule_feature_mask_version`、`training_plan_version` 与计数口径；SQLite 内部 scope 必须等于 manifest，实际 games 表的 split 计数必须等于导出计数。真实最终 rank 从外部 1..4 明确转换到训练 0..3。action/response/value 有效位及响应 allowed mask 分开保存。
 
+协议身份要求 `protobuf_source_and_descriptor_v1`，且 scope 必须同时存在有效的顶层 source SHA 和含 imports 的 descriptor SHA。只填当前版本、缺少任一摘要的旧导出不能进入训练；需要重新审计、导出来源数据。
+
 SQLite 以只读方式使用；每个进程自己的连接与有限历史缓存不应在 fork/worker 之间错误复用。`verify_hash=False` 不是生产迁移办法，不能以省时理由信任未知数据库。
 
 ## 使用与接线

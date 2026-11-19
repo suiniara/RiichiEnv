@@ -67,6 +67,7 @@ def _game(events, records, final_scores, *, game_id="synthetic/completion"):
         records=records,
         source_sha256=content_hash({"synthetic_event_source": events}),
         protocol_sha256="b" * 64,
+        protocol_descriptor_sha256="c" * 64,
         metadata={
             "category": 2,
             "mode": 2,
@@ -147,6 +148,22 @@ def test_explicit_end_also_requires_the_independent_hanchan_rule():
     assert result["evidence_kind"] == "explicit_server_gameend"
     early, early_replay = _win_game(early=True, explicit=True)
     assert certify_completion(early, early_replay)["status"] == "FAIL"
+
+
+def test_completion_binds_imported_descriptor_and_refuses_missing_identity():
+    game, replay = _win_game()
+    before = certify_completion(game, replay)
+    assert before["status"] == "PASS"
+    game.protocol_descriptor_sha256 = "d" * 64
+    after = certify_completion(game, replay)
+    assert after["status"] == "PASS"
+    assert before["protocol_sha256"] == after["protocol_sha256"]
+    assert before["certificate_sha256"] != after["certificate_sha256"]
+    assert after["protocol_descriptor_sha256"] == game.protocol_descriptor_sha256
+    del game.protocol_descriptor_sha256
+    missing = certify_completion(game, replay)
+    assert missing["status"] == "BLOCKED"
+    assert missing["reason"] == "missing_protocol_descriptor_sha256"
 
 
 def test_complete_header_and_matching_early_scores_are_not_completion_evidence():

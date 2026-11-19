@@ -1,4 +1,5 @@
 """Pure metadata checks against the frozen design and explicit user count ruling."""
+
 from dataclasses import replace
 
 import pytest
@@ -67,24 +68,38 @@ def test_every_missing_or_mismatched_artifact_identity_is_rejected(field, change
 
 
 def _config(train, eligible, tier="small"):
-    arguments = {"phase": "M2", "model_tier": tier, "N_train_half_games": train,
-                 "N_eligible_half_games": eligible, "planned_epochs": 2, "device": "cpu", "precision": "fp32"}
+    arguments = {
+        "phase": "M2",
+        "model_tier": tier,
+        "N_train_half_games": train,
+        "N_eligible_half_games": eligible,
+        "planned_epochs": 2,
+        "device": "cpu",
+        "precision": "fp32",
+    }
     recipe = training_recipe_sha256(arguments)
     forecast = CostForecast("M2", 100, 100.0, 0.0, 0.0, "synthetic unit metadata,not measured production", recipe)
     return ProductionTrainConfig(**arguments, budget=BudgetPlan("M2", 650.0, 0.0, forecast))
 
 
-@pytest.mark.parametrize("train,eligible,tier", [(29999, 40000, "small"), (30000, 40000, "medium"),
-                                                (49999, 70000, "medium"), (50000, 70000, "large")])
+@pytest.mark.parametrize(
+    "train,eligible,tier",
+    [(29999, 40000, "small"), (30000, 40000, "medium"), (49999, 70000, "medium"), (50000, 70000, "large")],
+)
 def test_one_train_split_count_drives_tier_configuration_forecast_and_publication(train, eligible, tier):
     # The user explicitly chose design section 17's train basis over 7.5/14.2.
     assert MODEL_TIER_BASIS == "N_train_half_games" and model_tier(train) == tier
     config = _config(train, eligible, tier)
     assert choose_training_tier(train, {tier: config.budget.forecast}, budget_spent_usd=0.0) == tier
     assert ProductionTrainConfig.from_record(config.to_record()) == config
-    manifest = {"scope": {**learning_contract(), "split_salt": "synthetic-split"},
-                "manifest_sha256": "d" * 64, "rho_E": 1.0, "rho_V": 1.0,
-                "N_train_half_games": train, "N_eligible_half_games": eligible}
+    manifest = {
+        "scope": {**learning_contract(), "split_salt": "synthetic-split"},
+        "manifest_sha256": "d" * 64,
+        "rho_E": 1.0,
+        "rho_V": 1.0,
+        "N_train_half_games": train,
+        "N_eligible_half_games": eligible,
+    }
     release = complete_release_contract(
         training=config.to_record(), data_manifest=manifest, budget=config.budget.to_record()
     )
@@ -95,8 +110,9 @@ def test_one_train_split_count_drives_tier_configuration_forecast_and_publicatio
     assert release["rule_feature_mask_probability"] == 0.25
     with pytest.raises(ValueError, match="scale or recipe"):
         complete_release_contract(
-            training=config.to_record(), data_manifest={**manifest, "N_train_half_games": train - 1},
-            budget=config.budget.to_record()
+            training=config.to_record(),
+            data_manifest={**manifest, "N_train_half_games": train - 1},
+            budget=config.budget.to_record(),
         )
 
 

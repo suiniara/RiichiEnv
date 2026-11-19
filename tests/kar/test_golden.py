@@ -61,6 +61,7 @@ def _game(events):
         records=(),
         source_sha256=content_hash(events),
         protocol_sha256="b" * 64,
+        protocol_descriptor_sha256="c" * 64,
         metadata={"record_provenance": "synthetic_fixture"},
     )
 

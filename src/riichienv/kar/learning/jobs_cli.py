@@ -92,17 +92,21 @@ def main() -> int:  # noqa: PLR0915
         if "quality_policy" not in record:
             raise ValueError("Register heldout calibration-quality criteria before computing logits")
         quality = CalibrationQualityPolicy.from_record(record["quality_policy"])
-        model, metadata = load_training_model(Path(record["checkpoint"]), device=device)
-        contract = metadata["release_contract"]
-        predictor = FrozenModelPredictor(
-            model, contract["data_manifest_sha256"], use_rule_features=contract["training"]["use_rule_features"]
-        )
+        budget = BudgetPlan.from_record(record["budget"])
+
+        def load_predictor():
+            model, metadata = load_training_model(Path(record["checkpoint"]), device=device)
+            contract = metadata["release_contract"]
+            return FrozenModelPredictor(
+                model, contract["data_manifest_sha256"], use_rule_features=contract["training"]["use_rule_features"]
+            )
+
         collect_and_calibrate(
-            predictor,
+            load_predictor,
             Path(record["dataset"]),
             _read(record["validation_manifest"]),
             output,
-            budget=BudgetPlan.from_record(record["budget"]),
+            budget=budget,
             plan_sha256=digest,
             authorization=authorization,
             temperatures=tuple(record.get("temperatures", [0.5, 1.0, 2.0])),
@@ -110,17 +114,17 @@ def main() -> int:  # noqa: PLR0915
             quality_policy=quality,
         )
     elif args.job == "select-tau":
-        subject = FrozenRelease(Path(record["subject_release"]), device=device)
-        opponents = tuple(FrozenRelease(path, device=device) for path in _opponents(record))
+        budget = BudgetPlan.from_record(record["budget"])
+        opponent_paths = _opponents(record)
         grid = tuple(
             math.inf if value == "infinity" else float(value)
             for value in record.get("tau_grid", ["infinity", 1.0, 0.5, 0.25])
         )
         select_validation_tau(
-            subject,
-            opponents,
+            lambda: FrozenRelease(Path(record["subject_release"]), device=device),
+            lambda: tuple(FrozenRelease(path, device=device) for path in opponent_paths),
             output,
-            budget=BudgetPlan.from_record(record["budget"]),
+            budget=budget,
             seed=record["seed"],
             plan_sha256=digest,
             authorization=authorization,

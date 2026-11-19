@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ..agent import KARAgent, run_match
 from ..authorization import update_implementation_sha256
@@ -16,6 +17,7 @@ from ..policy import PolicyOptions, fixed_tau_grid
 from ..runtime import RuntimePolicy
 from ..selection_quality import TAU_MATCH_PLAN_VERSION, TauSelectionPolicy, cal_fit_scenario_manifest
 from .deployment import FrozenRelease
+from .evaluation_startup import evaluation_job
 from .inference import FrozenModelPredictor
 
 
@@ -126,8 +128,8 @@ def _tau_outcomes(
 
 
 def select_validation_tau(
-    subject: FrozenRelease,
-    opponents: tuple[FrozenRelease, ...],
+    subject: FrozenRelease | Callable[[], FrozenRelease],
+    opponents: tuple[FrozenRelease, ...] | Callable[[], tuple[FrozenRelease, ...]],
     output: Path,
     *,
     budget: BudgetPlan,
@@ -138,22 +140,25 @@ def select_validation_tau(
     selection_policy: TauSelectionPolicy | None = None,
 ) -> dict[str, Any]:
     require_evaluation_authorization(authorization, operation="select_validation_tau", plan_sha256=plan_sha256)
-    plan = validation_tau_plan(subject, opponents, seed=seed, grid=grid, selection_policy=selection_policy)
-    if (
-        plan["plan_sha256"] != plan_sha256
-        or budget.forecast.recipe_sha256 != plan_sha256
-        or budget.forecast.work_units < plan["matches"]
-    ):
+    if budget.forecast.recipe_sha256 != plan_sha256:
         raise ValueError("Tau selection must use preregistered validation-only work and cost")
-    if budget.phase not in {"M1", "M2"} or len(opponents) != 3:
+    if budget.phase not in {"M1", "M2"}:
         raise ValueError("Validation selection cannot consume test/M3 budget")
-    assert subject.calibration is not None and subject.support is not None
-    split = subject.calibration.split
-    if not split.fit_games:
-        raise ValueError("No validation-fit scenarios; never substitute cal_check/test")
-    output.mkdir(parents=True, exist_ok=False)
-    ledger = BudgetLedger(output / "costs.jsonl", budget)
-    with ledger.record_compute("validation_tau_selection"):
+    with evaluation_job(
+        output, budget, operation="select_validation_tau", plan_sha256=plan_sha256, authorization=authorization
+    ) as ledger:
+        subject = cast(Callable[[], FrozenRelease], subject)() if callable(subject) else subject
+        opponents = cast(Callable[[], tuple[FrozenRelease, ...]], opponents)() if callable(opponents) else opponents
+        if len(opponents) != 3:
+            raise ValueError("Validation selection requires three fixed opponents")
+        plan = validation_tau_plan(subject, opponents, seed=seed, grid=grid, selection_policy=selection_policy)
+        if plan["plan_sha256"] != plan_sha256 or budget.forecast.work_units < plan["matches"]:
+            raise ValueError("Tau selection must use preregistered validation-only work and cost")
+        assert subject.calibration is not None and subject.support is not None
+        split = subject.calibration.split
+        if not split.fit_games:
+            raise ValueError("No validation-fit scenarios; never substitute cal_check/test")
+        ledger.settle_elapsed("validation_tau_startup")
         values = fixed_tau_grid(grid, max_prior_amplification=subject.options.max_prior_amplification)
         outcomes = _tau_outcomes(subject, opponents, output, ledger=ledger, seed=seed, values=values)
         choice = choose_validation_tau(

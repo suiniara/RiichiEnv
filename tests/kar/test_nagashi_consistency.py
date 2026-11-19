@@ -6,6 +6,7 @@ Own calls/kans do not disqualify; middle discards and called-away discards do.
 Every live action below must be offered by the native engine, using a full
 permutation of 136 physical tiles. No hands/melds/eligibility flags are injected.
 """
+
 from dataclasses import dataclass, replace
 
 import pytest
@@ -51,8 +52,12 @@ def _plan(kind, *, middle_winner=False):  # noqa: PLR0915
     needs_call = kind in {"chi", "pon", "daiminkan", "kakan"}
     called = _take(pool, "1m" if kind == "chi" else "E") if needs_call else None
     consumed_names = {
-        "none": (), "chi": ("2m", "3m"), "pon": ("E", "E"),
-        "daiminkan": ("E",) * 3, "ankan": ("E",) * 4, "kakan": ("E", "E"),
+        "none": (),
+        "chi": ("2m", "3m"),
+        "pon": ("E", "E"),
+        "daiminkan": ("E",) * 3,
+        "ankan": ("E",) * 4,
+        "kakan": ("E", "E"),
     }[kind]
     consumed = tuple(_take(pool, name) for name in consumed_names)
     spare = _take(pool, "9p")
@@ -137,7 +142,7 @@ def _plan(kind, *, middle_winner=False):  # noqa: PLR0915
     for packet in range(3):
         for relative in range(4):
             hand = initial_hands[(2 + relative) % 4]
-            wall.extend(hand[packet * 4:packet * 4 + 4])
+            wall.extend(hand[packet * 4 : packet * 4 + 4])
     wall.extend(initial_hands[(2 + relative) % 4][12] for relative in range(4))
     wall.extend(normal)
     wall.extend(tail)
@@ -156,7 +161,7 @@ def _run_round(kind, *, middle_winner=False, honba=0, pot=0):  # noqa: PLR0915
     contexts, claims = [], []
 
     def sync(**kwargs):
-        projection.observe_native(env.rule_log[projection.raw_cursor:], **kwargs)
+        projection.observe_native(env.rule_log[projection.raw_cursor :], **kwargs)
 
     def pass_responses():
         if env.phase == Phase.WaitResponse:
@@ -169,9 +174,13 @@ def _run_round(kind, *, middle_winner=False, honba=0, pot=0):  # noqa: PLR0915
         observation = env.get_observation(actor)
         offered = observation.legal_actions()
         selected = next(
-            (action for action in offered
-             if action.action_type == NATIVE_KINDS[kind_name] and action.tile == tile
-             and (not consumed or tuple(sorted(action.consume_tiles)) == tuple(sorted(consumed)))),
+            (
+                action
+                for action in offered
+                if action.action_type == NATIVE_KINDS[kind_name]
+                and action.tile == tile
+                and (not consumed or tuple(sorted(action.consume_tiles)) == tuple(sorted(consumed)))
+            ),
             None,
         )
         assert selected is not None, (kind, kind_name, actor, tile, env.phase)
@@ -179,7 +188,8 @@ def _run_round(kind, *, middle_winner=False, honba=0, pot=0):  # noqa: PLR0915
         if kind_name == "discard":
             snapshot = projection.snapshot(actor)
             identifiers = [
-                candidate.global_id for candidate in legal_candidates(observation, drawn_tile=env.drawn_tile)
+                candidate.global_id
+                for candidate in legal_candidates(observation, drawn_tile=env.drawn_tile)
                 if len(candidate.actions) == 1 and candidate.actions[0].to_dict() == selected.to_dict()
             ]
             assert len(identifiers) == 1
@@ -188,19 +198,21 @@ def _run_round(kind, *, middle_winner=False, honba=0, pot=0):  # noqa: PLR0915
             before_claim = projection.snapshot(actor)
         declared = None
         if kind_name == "ankan":
-            declared = {"type": "ankan", "actor": actor,
-                        "consumed": [convert.tid_to_mjai(value) for value in consumed]}
+            declared = {"type": "ankan", "actor": actor, "consumed": [convert.tid_to_mjai(value) for value in consumed]}
         env.step({actor: selected})
         sync(declared_ankan=declared, pending_kan_window=env.phase == Phase.WaitResponse)
         if kind_name == "discard":
-            trigger = next(index for index in range(before_count, len(projection.events))
-                           if projection.events[index]["type"] == "dahai")
+            trigger = next(
+                index
+                for index in range(before_count, len(projection.events))
+                if projection.events[index]["type"] == "dahai"
+            )
             contexts.append((*context, trigger))
         elif kind_name in CALLS:
             claims.append((before_claim, projection.snapshot(actor)))
     pass_responses()
     end = next(index for index, event in enumerate(projection.events) if event["type"] == "end_kyoku")
-    events = projection.events[:end + 1]
+    events = projection.events[: end + 1]
     draw_event = next(event for event in events if event["type"] == "ryukyoku")
     # A legal seeded round is not claimed to be a complete hanchan. Initialize
     # the independent verifier with exactly the same public pre-round context.
@@ -214,10 +226,13 @@ def _run_round(kind, *, middle_winner=False, honba=0, pot=0):  # noqa: PLR0915
             verifier.observe(event, index)
     assert not verifier.errors and len(verifier.rows) == 1
     assert verifier.rows[0]["status"] == "PASS", verifier.rows
-    assert all(len(hand) + 3 * len(melds) == 13 for hand, melds in zip(
-        [ledger.snapshot().hand for ledger in verifier.views],
-        [ledger.snapshot().melds[seat] for seat, ledger in enumerate(verifier.views)],
-    ))
+    assert all(
+        len(hand) + 3 * len(melds) == 13
+        for hand, melds in zip(
+            [ledger.snapshot().hand for ledger in verifier.views],
+            [ledger.snapshot().melds[seat] for seat, ledger in enumerate(verifier.views)],
+        )
+    )
     return env, projection, events, draw_event, verifier, contexts, claims
 
 

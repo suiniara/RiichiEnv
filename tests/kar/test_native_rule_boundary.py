@@ -235,8 +235,9 @@ def test_replayed_ankan_can_resume_native_responses_without_redeclaring_in_rule_
     projection = LiveEventProjection()
     projection.observe_native(env.rule_log)
     before = len(env.rule_log)
-    env.apply_event({"type": "ankan", "actor": 0,
-                     "consumed": [convert.tid_to_mjai(tile) for tile in action.consume_tiles]})
+    env.apply_event(
+        {"type": "ankan", "actor": 0, "consumed": [convert.tid_to_mjai(tile) for tile in action.consume_tiles]}
+    )
     env.step({seat: Action(ActionType.PASS) for seat in env.active_players})
     delta = env.rule_log[before:]
     assert [event["type"] for event in delta] == ["ankan", "kan_commit", "dora", "tsumo"]

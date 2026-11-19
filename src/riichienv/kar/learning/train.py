@@ -324,7 +324,7 @@ def train_cpu(  # noqa: PLR0915
         "N_train_half_games": train.manifest["N_train_half_games"],
         "cpu_threads": config.threads,
         "unsupported_value_branches_promoted": False,
-        "checkpoint": str(checkpoint),
+        "checkpoint": str(checkpoint.with_suffix(".json")),
         "test_split_used_for_tuning": False,
         "calibration_fitted": False,
     }

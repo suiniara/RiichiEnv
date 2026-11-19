@@ -13,6 +13,7 @@ import torch
 from torch.utils.data import Dataset
 
 from ..contracts import content_hash
+from ..mjsoul import validate_protocol_identity
 from ..schema import TOKEN_BYTE_SIZE
 from ..versioning import game_count_contract
 from .batch import ModelBatch, collate_inputs
@@ -66,6 +67,7 @@ class DecisionDataset(Dataset[dict[str, Any]]):
         current = learning_contract()
         if any(self.manifest["scope"].get(key) != value for key, value in current.items()):
             raise ValueError("Dataset schema/rules/feature/loss contract differs")
+        validate_protocol_identity(self.manifest["scope"], context="Training dataset")
         counts = self.manifest.get("counts", {})
         scale = game_count_contract(
             self.manifest["scope"].get("available_split_counts", {}),

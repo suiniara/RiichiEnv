@@ -156,10 +156,11 @@ def test_eligibility_requires_explicit_real_origin_and_hanchan_metadata(
     game = SimpleNamespace(
         game_id="gate-unit-fixture",
         source_sha256="fixture",
-        protocol_sha256="fixture",
+        protocol_sha256="a" * 64,
+        protocol_descriptor_sha256="b" * 64,
         metadata={"category": 2, "mode": mode, "mode_id": 12, "account_seats": [0, 1, 2, 3]},
     )
-    monkeypatch.setattr(mjsoul, "load_protocol", lambda _: object())
+    monkeypatch.setattr(mjsoul, "load_protocol", lambda _: mjsoul.Protocol("a" * 64, "b" * 64, "fixture", None))
     monkeypatch.setattr(mjsoul, "decode_record_bytes", lambda *args, **kwargs: game)
     monkeypatch.setattr(audit, "replay_game", lambda _: {"status": "PASS", "response_categories_observed": [0]})
     report = run_audit(proto_path=proto, records=(raw,), cohort_mode_ids=(12,), record_provenance=provenance)

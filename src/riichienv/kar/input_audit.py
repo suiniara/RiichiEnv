@@ -24,7 +24,12 @@ class InputAudit:
         self.phases: dict[str, int] = {}
 
     def inspect(
-        self, snapshot: PublicSnapshot, candidates: Sequence[int], target: int, *, provenance: str = "explicit",
+        self,
+        snapshot: PublicSnapshot,
+        candidates: Sequence[int],
+        target: int,
+        *,
+        provenance: str = "explicit",
         response_evidence: ResponseEvidence | None = None,
     ) -> None:
         try:
@@ -48,8 +53,11 @@ class InputAudit:
         if self.on_decision is not None:
             if self.trigger_event_id is None:
                 raise ValueError("Training export requires an explicit source trigger event")
-            source = (response_evidence.window_trigger_event_id
-                      if response_evidence is not None and provenance != "explicit" else self.trigger_event_id)
+            source = (
+                response_evidence.window_trigger_event_id
+                if response_evidence is not None and provenance != "explicit"
+                else self.trigger_event_id
+            )
             self.on_decision(
                 ReplayDecision(snapshot, prefix, conditional, target, source, provenance, response_evidence)
             )

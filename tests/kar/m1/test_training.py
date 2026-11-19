@@ -257,8 +257,10 @@ def test_real_trainer_interrupt_resume_matches_clean_run(tmp_path, monkeypatch):
     assert resumed["train_history"] == clean["train_history"]
     assert resumed["validation_before"] == clean["validation_before"]
     assert resumed["validation_after"] == clean["validation_after"]
-    left = torch.load(tmp_path / "resumed" / "checkpoint.pt", weights_only=True)
-    right = torch.load(tmp_path / "clean" / "checkpoint.pt", weights_only=True)
+    left_pointer = json.loads((tmp_path / "resumed" / "checkpoint.json").read_text())
+    right_pointer = json.loads((tmp_path / "clean" / "checkpoint.json").read_text())
+    left = torch.load(tmp_path / "resumed" / left_pointer["checkpoint_file"], weights_only=True)
+    right = torch.load(tmp_path / "clean" / right_pointer["checkpoint_file"], weights_only=True)
     for name, value in left["model"].items():
         torch.testing.assert_close(value, right["model"][name], rtol=0, atol=0)
 

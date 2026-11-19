@@ -99,7 +99,12 @@ class GameClusters:
         return self.intervals((key,), seed=seed, replicates=replicates, confidence=confidence)[key]
 
     def intervals(
-        self, keys: Sequence[str], *, seed: int = 17, replicates: int = 2000, confidence: float = 0.95,
+        self,
+        keys: Sequence[str],
+        *,
+        seed: int = 17,
+        replicates: int = 2000,
+        confidence: float = 0.95,
     ) -> dict[str, dict[str, Any]]:
         """Share seeded draws only for the identical ordered eligible game IDs.
 
@@ -118,9 +123,13 @@ class GameClusters:
         for key, games in eligible.items():
             sums = tuple(counts[0] for counts in games.values())
             weights = tuple(counts[1] for counts in games.values())
-            reports[key] = {"mean": math.fsum(sums) / math.fsum(weights) if weights else None,
-                            "lower": None, "upper": None, "independent_games": len(games),
-                            "status": "insufficient_independent_games"}
+            reports[key] = {
+                "mean": math.fsum(sums) / math.fsum(weights) if weights else None,
+                "lower": None,
+                "upper": None,
+                "independent_games": len(games),
+                "status": "insufficient_independent_games",
+            }
             if len(games) >= 2:
                 groups.setdefault(tuple(games), {}).setdefault(weights, {})[key] = sums
         tail = (1 - confidence) / 2
@@ -136,8 +145,11 @@ class GameClusters:
                         samples[key].append(math.fsum(sums[index] for index in draw) / denominator)
             for key, values in samples.items():
                 reports[key].update(
-                    lower=percentile(values, tail), upper=percentile(values, 1 - tail),
-                    bootstrap_replicates=replicates, seed=seed, confidence=confidence,
+                    lower=percentile(values, tail),
+                    upper=percentile(values, 1 - tail),
+                    bootstrap_replicates=replicates,
+                    seed=seed,
+                    confidence=confidence,
                     resampling_unit="whole_game_or_paired_seed_block",
                     status="empirical_interval_not_error_certificate",
                 )
@@ -452,17 +464,24 @@ class ResponseMassHistogram:
         self.counts[min(100, int(mass * 100))] += 1
 
     def merge(self, record: Mapping[str, Any]) -> None:
-        if (not isinstance(record, Mapping) or record.get("support_basis") != self.support_basis
-                or record.get("bin_width") != 0.01):
+        if (
+            not isinstance(record, Mapping)
+            or record.get("support_basis") != self.support_basis
+            or record.get("bin_width") != 0.01
+        ):
             raise ValueError("Response mass histogram basis differs")
         counts = record.get("counts")
-        if not isinstance(counts, (list, tuple)) or len(counts) != 101 or any(
-            type(value) is not int or value < 0 for value in counts
+        if (
+            not isinstance(counts, (list, tuple))
+            or len(counts) != 101
+            or any(type(value) is not int or value < 0 for value in counts)
         ):
             raise ValueError("Invalid response mass histogram counts")
         count = sum(counts)
-        if type(record.get("observations")) is not int or record["observations"] != count or record.get("status") != (
-            "available" if count else "unavailable"
+        if (
+            type(record.get("observations")) is not int
+            or record["observations"] != count
+            or record.get("status") != ("available" if count else "unavailable")
         ):
             raise ValueError("Response mass status or observation count differs")
         flags = record.get("event_supported")
@@ -559,10 +578,22 @@ class FullDiagnostics:
             _add_gate(self.gate_slices[name], retained=retained, support_size=support_size, mass=mass)
 
     def add_response_event_calibration(
-        self, *, game: str, logs: Sequence[float], allowed: Sequence[bool], target: int,
+        self,
+        *,
+        game: str,
+        logs: Sequence[float],
+        allowed: Sequence[bool],
+        target: int,
     ) -> None:
-        if (not game or len(logs) != 21 or len(allowed) != 21 or any(type(flag) is not bool for flag in allowed)
-                or type(target) is not int or not 0 <= target < 21 or not allowed[target]):
+        if (
+            not game
+            or len(logs) != 21
+            or len(allowed) != 21
+            or any(type(flag) is not bool for flag in allowed)
+            or type(target) is not int
+            or not 0 <= target < 21
+            or not allowed[target]
+        ):
             raise ValueError("Expected a valid observed response and its public mask")
         events = [(event, logs[event]) for event, flag in enumerate(allowed) if flag]
         if any(not math.isfinite(value) or value > 0 for _, value in events):
@@ -583,7 +614,10 @@ class FullDiagnostics:
             self.response_event_calibration[str(event)].add(game, probability, positive, log_observed)
 
     def add_response_mass(
-        self, probabilities: Sequence[float], *, train_supported: Sequence[bool],
+        self,
+        probabilities: Sequence[float],
+        *,
+        train_supported: Sequence[bool],
         value_supported: Sequence[bool] | None = None,
     ) -> None:
         self.train_only_mass.add(probabilities, train_supported)
@@ -640,7 +674,10 @@ class FullDiagnostics:
             _merge_gate(self.gate_slices[name], gate)
 
     def report(
-        self, *, bootstrap_seed: int = 17, bootstrap_replicates: int = 2000,
+        self,
+        *,
+        bootstrap_seed: int = 17,
+        bootstrap_replicates: int = 2000,
         timings: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         response_metrics = ("nll", "brier")
@@ -653,7 +690,8 @@ class FullDiagnostics:
                 *(f"response_event_{event}_{metric}" for event in range(21) for metric in response_metrics),
                 *(f"rank_event_{event}_{metric}" for event in range(21) for metric in rank_metrics),
             ],
-            seed=bootstrap_seed, replicates=bootstrap_replicates,
+            seed=bootstrap_seed,
+            replicates=bootstrap_replicates,
         )
         if timings is not None:
             timings["bootstrap"] = perf_counter() - start

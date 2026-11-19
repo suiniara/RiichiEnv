@@ -188,6 +188,74 @@ pub struct YakuResult {
     pub yakuman_count: u8,
 }
 
+impl YakuResult {
+    pub(crate) fn is_higher_scoring(
+        &self,
+        other: &Self,
+        is_oya: bool,
+        is_tsumo: bool,
+        num_players: u8,
+    ) -> bool {
+        let key = |result: &Self| {
+            // Bonus han cannot make a hand legal, and counted yakuman is
+            // capped at one unit, just as in HandEvaluator's final payment.
+            let has_yaku = result
+                .yaku_ids
+                .iter()
+                .any(|id| !matches!(*id, ID_DORA | ID_AKADORA | ID_URADORA | ID_NUKIDORA));
+            let scoring_han = if result.yakuman_count == 0 {
+                result.han.min(13)
+            } else {
+                result.han
+            };
+            let payment = if has_yaku || result.yakuman_count > 0 {
+                crate::score::calculate_score(
+                    scoring_han,
+                    result.fu,
+                    is_oya,
+                    is_tsumo,
+                    0,
+                    num_players,
+                )
+                .total
+            } else {
+                0
+            };
+            // Preserve a true yakuman on equal payment; its yaku identity is
+            // needed by the later rule-profile and responsibility adjustments.
+            (payment, result.yakuman_count, result.han, result.fu)
+        };
+        key(self) > key(other)
+    }
+}
+
+pub(crate) fn winning_interpretations(
+    division: &Division,
+    win_tile: u8,
+    tenhou: bool,
+) -> Vec<(Option<usize>, u8)> {
+    let mut interpretations = Vec::new();
+    if tenhou || division.head == win_tile {
+        interpretations.push((None, division.head));
+    }
+    for (idx, meld) in division.body.iter().enumerate() {
+        let (start, end) = match meld {
+            Mentsu::Koutsu(tile) => (*tile, *tile),
+            Mentsu::Shuntsu(tile) => (*tile, *tile + 2),
+        };
+        if tenhou {
+            // A Tenhou hand has no distinguished winning tile. Enumerating
+            // each possible tile/group also covers tanki and nine-sided waits.
+            for tile in start..=end {
+                interpretations.push((Some(idx), tile));
+            }
+        } else if (start..=end).contains(&win_tile) {
+            interpretations.push((Some(idx), win_tile));
+        }
+    }
+    interpretations
+}
+
 #[derive(Debug)]
 pub struct YakuContext {
     pub is_menzen: bool,
@@ -310,36 +378,14 @@ pub fn calculate_yaku(hand: &Hand, melds: &[Meld], ctx: &YakuContext, win_tile: 
         return best_res;
     }
 
+    let tenhou = ctx.is_tsumo_first_turn && ctx.is_menzen && ctx.is_tsumo && ctx.seat_wind == 27;
     for div in &divisions {
-        let mut win_group_indices = Vec::new();
-        if div.head == win_tile {
-            win_group_indices.push(None);
-        }
-        for (idx, m) in div.body.iter().enumerate() {
-            match m {
-                Mentsu::Koutsu(t) => {
-                    if *t == win_tile {
-                        win_group_indices.push(Some(idx));
-                    }
-                }
-                Mentsu::Shuntsu(t) => {
-                    if win_tile >= *t && win_tile <= *t + 2 {
-                        win_group_indices.push(Some(idx));
-                    }
-                }
-            }
-        }
-
-        if win_group_indices.is_empty() {
-            continue;
-        }
-
-        for wg_idx in win_group_indices {
+        for (wg_idx, win_tile) in winning_interpretations(div, win_tile, tenhou) {
             let mut res = YakuResult::default();
 
             apply_yakuman(&mut res, hand, melds, ctx, div, wg_idx, win_tile);
             if res.han >= 13 {
-                if res.han > best_res.han {
+                if res.is_higher_scoring(&best_res, ctx.seat_wind == 27, ctx.is_tsumo, 4) {
                     best_res = res;
                 }
                 continue;
@@ -564,7 +610,7 @@ pub fn calculate_yaku(hand: &Hand, melds: &[Meld], ctx: &YakuContext, win_tile: 
 
             // Static Yaku and Dora are handled by apply_static_yaku (already called at start of loop)
 
-            if res.han > best_res.han || (res.han == best_res.han && res.fu > best_res.fu) {
+            if res.is_higher_scoring(&best_res, ctx.seat_wind == 27, ctx.is_tsumo, 4) {
                 best_res = res;
             }
         }
@@ -1292,4 +1338,75 @@ fn is_sanshoku_doukou(div: &Division, melds: &[Meld]) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod scoring_selection_tests {
+    use super::*;
+
+    #[test]
+    fn higher_payment_beats_higher_han() {
+        // Nondealer: 3 han / 70 fu pays 8000 ron or 4000/2000 tsumo;
+        // 4 han / 30 fu pays 7700 ron or 3900/2000 tsumo.
+        let mangan = YakuResult {
+            han: 3,
+            fu: 70,
+            yaku_ids: vec![ID_RIICHI, ID_SANANKOU],
+            ..Default::default()
+        };
+        let four_han = YakuResult {
+            han: 4,
+            fu: 30,
+            yaku_ids: vec![ID_RIICHI, ID_PINFU, ID_SANSHOKU],
+            ..Default::default()
+        };
+        for players in [3, 4] {
+            for tsumo in [false, true] {
+                assert!(mangan.is_higher_scoring(&four_han, false, tsumo, players));
+                assert!(!four_han.is_higher_scoring(&mangan, false, tsumo, players));
+            }
+        }
+    }
+
+    #[test]
+    fn true_yakuman_is_preserved_on_equal_payment() {
+        let natural = YakuResult {
+            han: 13,
+            yakuman_count: 1,
+            yaku_ids: vec![ID_SUANKO],
+            ..Default::default()
+        };
+        let counted = YakuResult {
+            han: 34,
+            fu: 30,
+            yaku_ids: vec![ID_RIICHI, ID_DORA],
+            ..Default::default()
+        };
+        for players in [3, 4] {
+            for dealer in [false, true] {
+                for tsumo in [false, true] {
+                    assert!(natural.is_higher_scoring(&counted, dealer, tsumo, players));
+                    assert!(!counted.is_higher_scoring(&natural, dealer, tsumo, players));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bonus_han_cannot_replace_a_legal_interpretation() {
+        let legal = YakuResult {
+            han: 1,
+            fu: 30,
+            yaku_ids: vec![ID_PINFU],
+            ..Default::default()
+        };
+        let bonus_only = YakuResult {
+            han: 12,
+            fu: 50,
+            yaku_ids: vec![ID_DORA, ID_AKADORA, ID_URADORA, ID_NUKIDORA],
+            ..Default::default()
+        };
+        assert!(legal.is_higher_scoring(&bonus_only, false, false, 4));
+        assert!(!bonus_only.is_higher_scoring(&legal, false, false, 4));
+    }
 }

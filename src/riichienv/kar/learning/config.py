@@ -8,20 +8,22 @@ from ..versioning import FEATURE_CONTRACT_VERSION, LOSS_CONTRACT_VERSION, RULE_F
 MODEL_VERSION = "kar_transformer_v3_semantic_inputs"
 FEATURE_VERSION = FEATURE_CONTRACT_VERSION
 LOSS_VERSION = LOSS_CONTRACT_VERSION
-FROZEN_INFERENCE_PRECISION = "fp32_no_autocast_v1"
+FROZEN_INFERENCE_PRECISION = "fp32_no_autocast_single_prefix_v2"
 
 
 def frozen_inference_recipe_sha256(model_config: ModelConfig, *, use_rule_features: bool) -> str:
     if type(use_rule_features) is not bool:
         raise ValueError("Inference feature mode must be explicit boolean metadata")
-    return content_hash({
-        "model_config_hash": model_config.contract_hash,
-        "feature_version": FEATURE_VERSION,
-        "rule_feature_mask_version": RULE_FEATURE_MASK_VERSION,
-        "use_rule_features": use_rule_features,
-        "inference_feature_dropout": 0,
-        "inference_precision": FROZEN_INFERENCE_PRECISION,
-    })
+    return content_hash(
+        {
+            "model_config_hash": model_config.contract_hash,
+            "feature_version": FEATURE_VERSION,
+            "rule_feature_mask_version": RULE_FEATURE_MASK_VERSION,
+            "use_rule_features": use_rule_features,
+            "inference_feature_dropout": 0,
+            "inference_precision": FROZEN_INFERENCE_PRECISION,
+        }
+    )
 
 
 @dataclass(frozen=True)

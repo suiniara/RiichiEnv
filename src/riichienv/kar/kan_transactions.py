@@ -19,5 +19,8 @@ def pending_kan_commits(event: Mapping[str, Any], *, actor: int, committed_kans:
     An explicit native commit acknowledgement or the actor's replacement draw can.
     """
     return native_pending_kan_commits(
-        canonical_bytes(dict(event)).decode("utf-8"), actor, committed_kans, indicators,
+        canonical_bytes(dict(event)).decode("utf-8"),
+        actor,
+        committed_kans,
+        indicators,
     )

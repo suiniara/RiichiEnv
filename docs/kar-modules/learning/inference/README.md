@@ -10,9 +10,13 @@
 
 `policy(snapshot, candidates, context)` 构造本家 prefix、创建 K/V cache并返回原始546 logits；`candidates(snapshot, candidates, supported_discards, context)` 对全部 S ACTION 分支返回21响应及21×4名次 logits。
 
+`policy_logits_from_rows(rows)` 为冻结校准读取同一条策略路径：每行按 DECIDE 边界裁掉 teacher ACTION 和尾部 padding，再以 batch size 1 调用 `encode_prefix` 和 policy 读出。它保留完整合法动作检查，不用批量 dense policy 输出替代。两种调用对相同前缀采用相同 Tensor 形状，避免 FP32 舍入差异改变严格门控边界。
+
 ## 模型与缓存合同
 
-两条路径 `no_grad`、显式关闭完整模型调用的 autocast、要求 FP32 参数/浮点缓冲；推理 recipe 绑定 `fp32_no_autocast_v1`。推理随机规则置空为零；特征模式不改变模型尺寸。原生 K/V 另记录 autocast 模式，不能跨精度给后缀使用。温度、公开响应 mask、支持罚项、KL 与采样由 [runtime](../../runtime/README.md) 协调，不用真实 E/R 标签挑分支。
+冻结路径 `no_grad`、显式关闭完整模型调用的 autocast、要求 FP32 参数/浮点缓冲；推理 recipe 绑定 `fp32_no_autocast_single_prefix_v2`。旧 dense 校准的 recipe 身份与当前绑定不同，必须重新收集和校准，不能改字段或 hash 冒充兼容。推理随机规则置空为零；特征模式不改变模型尺寸。原生 K/V 另记录 autocast 模式，不能跨精度给后缀使用。温度、公开响应 mask、支持罚项、KL 与采样由 [runtime](../../runtime/README.md) 协调，不用真实 E/R 标签挑分支。
+
+相等承诺针对相同权重、输入、设备和实现上的策略前缀计算；不承诺跨硬件或 Torch/kernel 版本逐位相同。response/rank 校准仍可批量读取 teacher ACTION 条件头，与部署候选后缀仅有数值容差内的一致性，不宣称三头都逐位相等。
 
 单次决策 K/V 同时绑定 context ID、snapshot 字节身份、本地历史会话以及完整合法动作集合。模型参数/缓冲、配置、特征模式和训练模式的冻结检查仍在。
 
@@ -24,4 +28,4 @@
 
 ## 测试与状态
 
-对应 [core/test_frozen_inference.py](../../../../tests/kar/core/test_frozen_inference.py)、[core/test_frozen_history_cache.py](../../../../tests/kar/core/test_frozen_history_cache.py) 与 [m1/test_model.py](../../../../tests/kar/m1/test_model.py)。合成 CPU 前向和缓存实测见[性能报告](../../../kar-history-sampler-performance.md)，不作棋力证据。
+对应 [core/test_frozen_inference.py](../../../../tests/kar/core/test_frozen_inference.py)、[core/test_frozen_history_cache.py](../../../../tests/kar/core/test_frozen_history_cache.py)、[production/test_calibration_prefix_parity.py](../../../../tests/kar/production/test_calibration_prefix_parity.py) 与 [m1/test_model.py](../../../../tests/kar/m1/test_model.py)。真实小模型的 CPU 前向回归使用三个真实开局，校验 microbatch 1/3 下归档与部署 logits 完全相等以及严格阈值支持集合一致。历史合成 CPU 前向和缓存实测见[性能报告](../../../kar-history-sampler-performance.md)，不作棋力证据。

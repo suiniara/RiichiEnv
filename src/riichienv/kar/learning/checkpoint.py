@@ -15,8 +15,9 @@ from ..contracts import content_hash
 from .config import MODEL_VERSION
 from .export import learning_contract
 from .model import KARTransformer
+from .production_checkpoint import _generation, _publish_checkpoint
 
-CHECKPOINT_VERSION = "kar_exact_resume_v1"
+CHECKPOINT_VERSION = "kar_exact_resume_v2"
 
 
 def implementation_identity() -> dict[str, Any]:
@@ -31,6 +32,7 @@ def implementation_identity() -> dict[str, Any]:
             "metrics.py",
             "train.py",
             "checkpoint.py",
+            "production_checkpoint.py",
             "dataset.py",
         )
     }
@@ -111,15 +113,7 @@ def save_checkpoint(
         "sampler": sampler_state,
         "rng": _rng_state(),
     }
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    torch.save(payload, temporary)
-    temporary.replace(path)
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    sidecar = {"metadata": metadata, "checkpoint_sha256": digest, "metadata_sha256": content_hash(metadata)}
-    temporary_json = path.with_suffix(".json.tmp")
-    temporary_json.write_text(json.dumps(sidecar, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary_json.replace(path.with_suffix(".json"))
-    return sidecar
+    return _publish_checkpoint(path, payload, metadata, step=step)
 
 
 def load_checkpoint(
@@ -131,11 +125,14 @@ def load_checkpoint(
     run_contract: dict[str, Any],
     restore_rng: bool = True,
 ) -> dict[str, Any]:
-    if not path.is_file() or path.stat().st_size > 2 * 1024**3:
-        raise ValueError("Missing or oversized checkpoint")
     sidecar = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
     metadata = sidecar["metadata"]
-    if sidecar.get("checkpoint_sha256") != hashlib.sha256(path.read_bytes()).hexdigest() or sidecar.get(
+    if metadata.get("checkpoint_version") != CHECKPOINT_VERSION:
+        raise ValueError("Legacy checkpoint format requires explicit migration; exact resume refused")
+    generation = _generation(path, sidecar.get("checkpoint_file"))
+    if not generation.is_file() or generation.stat().st_size > 2 * 1024**3:
+        raise ValueError("Missing or oversized checkpoint generation")
+    if sidecar.get("checkpoint_sha256") != hashlib.sha256(generation.read_bytes()).hexdigest() or sidecar.get(
         "metadata_sha256"
     ) != content_hash(metadata):
         raise ValueError("Checkpoint integrity metadata mismatch")
@@ -152,7 +149,7 @@ def load_checkpoint(
     }
     if any(metadata.get(key) != value for key, value in expected.items()):
         raise ValueError("Schema/data/model/recipe/runtime mismatch; exact resume refused")
-    payload = torch.load(path, map_location="cpu", weights_only=True)
+    payload = torch.load(generation, map_location="cpu", weights_only=True)
     if payload["metadata"] != metadata:
         raise ValueError("Checkpoint payload metadata conflict")
     model.load_state_dict(payload["model"], strict=True)

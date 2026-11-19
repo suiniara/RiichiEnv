@@ -100,16 +100,21 @@ def _require_own(own: ReplayOpportunity | None, actor: int) -> ReplayOpportunity
     return own
 
 
-def _freeze_kan_window(
-    ledgers: list[ObserverLedger], preview: dict[int, list[Action]]
-) -> dict[int, ReplayOpportunity]:
-    return {seat: ReplayOpportunity.from_kan_preview(ledgers[seat].snapshot(), actions)
-            for seat, actions in preview.items() if actions}
+def _freeze_kan_window(ledgers: list[ObserverLedger], preview: dict[int, list[Action]]) -> dict[int, ReplayOpportunity]:
+    return {
+        seat: ReplayOpportunity.from_kan_preview(ledgers[seat].snapshot(), actions)
+        for seat, actions in preview.items()
+        if actions
+    }
 
 
 def _finish_response(
-    window: ResponseWindow, closure: str, index: int, inputs: InputAudit,
-    ledgers: list[ObserverLedger], counts: OpportunityCounts,
+    window: ResponseWindow,
+    closure: str,
+    index: int,
+    inputs: InputAudit,
+    ledgers: list[ObserverLedger],
+    counts: OpportunityCounts,
 ) -> None:
     evidence = ResponseEvidence(window.trigger_event_id, index)
     for seat, offer in window.offers.items():
@@ -121,8 +126,9 @@ def _finish_response(
         elif provenance := unique_pass_provenance(choice.candidates, closure):
             # Score the frozen prefix before inserting the private marker into
             # the live ledger. This cannot affect any earlier opportunity.
-            inputs.inspect(choice.snapshot, choice.candidates, PASS_ID, provenance=provenance,
-                           response_evidence=evidence)
+            inputs.inspect(
+                choice.snapshot, choice.candidates, PASS_ID, provenance=provenance, response_evidence=evidence
+            )
             ledgers[seat].record_self_pass(offer.trigger, provenance=provenance)
             status = "uniquely_inferred"
         else:
@@ -216,8 +222,12 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
                     if responses is None:
                         raise ValueError("Observed win is absent from the pre-resolution native legal actions")
                     choice = responses.select_explicit(actor, ron=True).choice
-                    inputs.inspect(choice.snapshot, choice.candidates, choice.win_target(event),
-                                   response_evidence=ResponseEvidence(responses.trigger_event_id, index))
+                    inputs.inspect(
+                        choice.snapshot,
+                        choice.candidates,
+                        choice.win_target(event),
+                        response_evidence=ResponseEvidence(responses.trigger_event_id, index),
+                    )
                     responses.mark_explicit(actor, ron=True)
                 own = None  # Keep responders frozen for other winners in this same window.
             elif typ == "ryukyoku":
@@ -246,8 +256,12 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
                         raise ValueError(f"Observed {typ} has no matching frozen native legal action")
                     choice = responses.select_explicit(actor, ron=False).choice
                     target, _ = choice.select(event)
-                    inputs.inspect(choice.snapshot, choice.candidates, target,
-                                   response_evidence=ResponseEvidence(responses.trigger_event_id, index))
+                    inputs.inspect(
+                        choice.snapshot,
+                        choice.candidates,
+                        target,
+                        response_evidence=ResponseEvidence(responses.trigger_event_id, index),
+                    )
                     responses.mark_explicit(actor, ron=False)
                 own = None
                 next_draw_player = actor if typ in {"daiminkan", "kan", "ankan", "kakan"} else None
@@ -274,9 +288,9 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
             elif typ == "dahai":
                 seats = sorted(env.active_players) if env.phase == Phase.WaitResponse else []
                 observations = env.get_observations(seats) if seats else {}
-                responses = ResponseWindow.open(ledgers, {
-                    seat: ReplayOpportunity.observe(ledgers[seat], observations[seat]) for seat in seats
-                })
+                responses = ResponseWindow.open(
+                    ledgers, {seat: ReplayOpportunity.observe(ledgers[seat], observations[seat]) for seat in seats}
+                )
             elif preview is not None:
                 if responses is not None:
                     raise ValueError("Kan declaration overlaps an earlier response window")
@@ -434,6 +448,7 @@ def run_audit(  # noqa: PLR0915
                     "PASS",
                     source=str(proto_path),
                     sha256=hashlib.sha256(proto_path.read_bytes()).hexdigest(),
+                    **protocol.identity_record(),
                 )
             )
             if generated_module_path is not None:
@@ -450,8 +465,9 @@ def run_audit(  # noqa: PLR0915
         if protocol is None:
             row.update(status="BLOCKED", reason="protocol_unavailable")
         else:
+            row.update(protocol.identity_record())
             try:
-                from .mjsoul import decode_record_bytes  # noqa: PLC0415
+                from .mjsoul import decode_record_bytes, protocol_identity  # noqa: PLC0415
 
                 if path.stat().st_size > 64 * 1024 * 1024:
                     raise ValueError("Input exceeds raw-game record size limit; do not pass prepared datasets")
@@ -467,7 +483,7 @@ def run_audit(  # noqa: PLR0915
                     status=result["status"],
                     game_id=game.game_id,
                     source_sha256=game.source_sha256,
-                    protocol_sha256=game.protocol_sha256,
+                    **protocol_identity(game.protocol_sha256, game.protocol_descriptor_sha256),
                     metadata=game.metadata,
                     replay=result,
                     cohort_matches=cohort_ok,

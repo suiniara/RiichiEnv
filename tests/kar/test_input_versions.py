@@ -19,7 +19,7 @@ def test_old_artifact_cannot_omit_or_retag_new_input_semantics():
         == ("semantic_public_clock_frozen_decisions_v7_native_rules")
     )
     assert current["native_replay_version"] == "native_replay_context_v4"
-    assert current["native_rules_version"] == "riichienv_native_rules_v1"
+    assert current["native_rules_version"] == "riichienv_native_rules_v2_scoring"
     assert MODEL_VERSION == "kar_transformer_v3_semantic_inputs"
     old = dict(current, artifact_contract_version="kar_riichienv_contract_v2")
     old.pop("input_pipeline_version")

@@ -369,11 +369,15 @@ def _history(  # noqa: PLR0915
         # Transport ACK updates the live ledger immediately, but is not a
         # source-independent history boundary. Materialize history acceptance at
         # common dora/replacement-draw evidence (including delayed old-kan dora).
-        if pending is not None and typ != "kan_commit" and pending_kan_commits(
-            event,
-            actor=pending["actor"],
-            committed_kans=sum(item.get("kind") in COMMITTED_KAN_KINDS for player in melds for item in player),
-            indicators=len(indicators),
+        if (
+            pending is not None
+            and typ != "kan_commit"
+            and pending_kan_commits(
+                event,
+                actor=pending["actor"],
+                committed_kans=sum(item.get("kind") in COMMITTED_KAN_KINDS for player in melds for item in player),
+                indicators=len(indicators),
+            )
         ):
             actor = pending["actor"]
             index = pending["index"]
@@ -570,9 +574,12 @@ def _history(  # noqa: PLR0915
         elif typ == "self_pass":
             trigger_id, confirmed_id = event.get("trigger_event_id"), event.get("confirmed_at_event_id")
             if (
-                event.get("actor") != observer or event.get("target") == observer
-                or event.get("confirmed") is not True or event.get("provenance") not in SELF_PASS_PROVENANCES
-                or type(trigger_id) is not int or type(confirmed_id) is not int
+                event.get("actor") != observer
+                or event.get("target") == observer
+                or event.get("confirmed") is not True
+                or event.get("provenance") not in SELF_PASS_PROVENANCES
+                or type(trigger_id) is not int
+                or type(confirmed_id) is not int
                 or not 0 <= trigger_id < confirmed_id == state.public_event_id <= snapshot.cutoff_event_id
             ):
                 raise ValueError("SELF_PASS must be owner-only, confirmed and anchored without future information")
@@ -737,7 +744,10 @@ def append_action(prefix: TokenSequence, action_id: int) -> TokenSequence:
     if prefix.rows[-1]["kind"] != 9 or action_id not in prefix.candidates:
         raise ValueError("An ACTION suffix requires a legal candidate and an unsuffixed DECIDE prefix")
     row = _row(
-        10, prefix.logical_position + 1, 3, actor=1,
+        10,
+        prefix.logical_position + 1,
+        3,
+        actor=1,
         **dict(zip(ACTION_FACTOR_FIELDS, action_factor_ids(action_id))),
     )
     encoded = _freeze_token(row, prefix.schema_hash)

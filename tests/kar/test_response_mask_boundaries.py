@@ -1,4 +1,5 @@
 """Public-only masks against actual native legal actions on complete physical walls."""
+
 from dataclasses import replace
 
 import pytest
@@ -24,8 +25,11 @@ def pass_window(env, live):
         for seat in env.active_players:
             view = live.snapshot(seat)
             source = view.pending_kan_actor if view.pending_kan_actor is not None else view.last_discard_actor
-            choices[seat] = next(item for item in legal_candidates(env.get_observation(seat), source_player=source)
-                                 if item.global_id == 221)
+            choices[seat] = next(
+                item
+                for item in legal_candidates(env.get_observation(seat), source_player=source)
+                if item.global_id == 221
+            )
         begin = len(env.rule_log)
         execute_joint_responses(env, choices)
         sync(env, live, begin)
@@ -46,12 +50,16 @@ def four_riichi(distinct_discards=False):
     live.observe_native(env.rule_log)
     for actor in range(3):
         assert env.current_player == actor
-        chosen = next(item for item in legal_candidates(env.get_observation(actor), drawn_tile=env.drawn_tile)
-                      if item.global_id < 148 and item.spec.riichi and item.actions[-1].tile == env.drawn_tile)
+        chosen = next(
+            item
+            for item in legal_candidates(env.get_observation(actor), drawn_tile=env.drawn_tile)
+            if item.global_id < 148 and item.spec.riichi and item.actions[-1].tile == env.drawn_tile
+        )
         perform(env, live, chosen)
     assert env.current_player == 3
-    chosen = next(item for item in legal_candidates(env.get_observation(3), drawn_tile=env.drawn_tile)
-                  if item.global_id == 39)
+    chosen = next(
+        item for item in legal_candidates(env.get_observation(3), drawn_tile=env.drawn_tile) if item.global_id == 39
+    )
     return env, live, chosen
 
 
@@ -92,8 +100,11 @@ def test_native_four_winds_is_terminal_after_ron_priority():
     live = LiveEventProjection()
     live.observe_native(env.rule_log)
     for actor in range(4):
-        chosen = next(item for item in legal_candidates(env.get_observation(actor), drawn_tile=env.drawn_tile)
-                      if item.global_id < 148 and not item.spec.riichi and item.actions[-1].tile // 4 == 27)
+        chosen = next(
+            item
+            for item in legal_candidates(env.get_observation(actor), drawn_tile=env.drawn_tile)
+            if item.global_id < 148 and not item.spec.riichi and item.actions[-1].tile // 4 == 27
+        )
         before = live.snapshot(actor)
         allowed = public_rule_response_mask(before, chosen.global_id)
         assert allowed[Response.ABORT_FOUR_WINDS] == (actor == 3)
@@ -107,20 +118,28 @@ def test_native_four_winds_is_terminal_after_ron_priority():
 
 @pytest.mark.parametrize("single_owner", [False, True])
 def test_four_legal_native_kans_distinguish_one_and_multiple_owners(single_owner):
-    specials = {0: ("E",) * 4 + ("S",) * 4 + ("W",) * 4 + ("N",)} if single_owner else {
-        0: ("E",) * 4 + ("S",) * 4, 1: ("W",) * 4 + ("N",) * 4}
-    env = deal(specials, ("N",) if single_owner else ("9m", "8m"),
-               rinshan=("N", "N") if single_owner else ())
+    specials = (
+        {0: ("E",) * 4 + ("S",) * 4 + ("W",) * 4 + ("N",)}
+        if single_owner
+        else {0: ("E",) * 4 + ("S",) * 4, 1: ("W",) * 4 + ("N",) * 4}
+    )
+    env = deal(specials, ("N",) if single_owner else ("9m", "8m"), rinshan=("N", "N") if single_owner else ())
     live = LiveEventProjection()
     live.observe_native(env.rule_log)
     for owner, count in ((0, 4),) if single_owner else ((0, 2), (1, 2)):
         assert env.current_player == owner
         for _ in range(count):
-            chosen = next(item for item in legal_candidates(env.get_observation(owner), drawn_tile=env.drawn_tile)
-                          if item.spec.action_type == "ANKAN")
+            chosen = next(
+                item
+                for item in legal_candidates(env.get_observation(owner), drawn_tile=env.drawn_tile)
+                if item.spec.action_type == "ANKAN"
+            )
             perform(env, live, chosen)
-        chosen = next(item for item in legal_candidates(env.get_observation(owner), drawn_tile=env.drawn_tile)
-                      if item.global_id < 148 and not item.spec.riichi)
+        chosen = next(
+            item
+            for item in legal_candidates(env.get_observation(owner), drawn_tile=env.drawn_tile)
+            if item.global_id < 148 and not item.spec.riichi
+        )
         before = live.snapshot(owner)
         counts = [sum(meld.kind in {"ankan", "kakan", "daiminkan"} for meld in melds) for melds in before.melds]
         allowed = public_rule_response_mask(before, chosen.global_id)
@@ -136,12 +155,16 @@ def test_four_legal_native_kans_distinguish_one_and_multiple_owners(single_owner
 def test_unknown_abort_evidence_does_not_falsely_suppress_progress(kind):
     _, live, _ = four_riichi()
     base = live.snapshot(3)
-    state = replace(base, history_complete=False, riichi_accepted=(False,) * 4,
-                    discard_history=((),) * 4, current_rivers=((),) * 4)
+    state = replace(
+        base, history_complete=False, riichi_accepted=(False,) * 4, discard_history=((),) * 4, current_rivers=((),) * 4
+    )
     allowed = public_rule_response_mask(state, 4)
     assert allowed[Response.NEXT_DRAW] and any(allowed[2:5])
-    aborts = {"winds": Response.ABORT_FOUR_WINDS, "riichi": Response.ABORT_FOUR_RIICHI,
-              "kans": Response.ABORT_FOUR_KANS}
+    aborts = {
+        "winds": Response.ABORT_FOUR_WINDS,
+        "riichi": Response.ABORT_FOUR_RIICHI,
+        "kans": Response.ABORT_FOUR_KANS,
+    }
     index = aborts[kind]
     # Non-wind candidate is positive evidence against four winds, not Unknown.
     assert allowed[index] == (kind != "winds")

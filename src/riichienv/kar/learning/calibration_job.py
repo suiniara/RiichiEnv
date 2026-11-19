@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, overload
+from typing import Any, cast, overload
 
 import numpy as np
 import torch
@@ -18,6 +19,7 @@ from ..evaluation_authorization import require_evaluation_authorization
 from ..support import EventSupport
 from .batch import rule_feature_view
 from .dataset import DecisionDataset, collate_examples
+from .evaluation_startup import evaluation_job
 from .inference import FrozenModelPredictor
 from .losses import loss_sums
 
@@ -108,7 +110,7 @@ def calibration_job_plan(
 ) -> dict[str, Any]:
     split = calibration_split_from_manifest(validation_manifest)
     record = {
-        "job_version": "heldout_logits_calibration_job_v2",
+        "job_version": "heldout_logits_calibration_job_v3_single_prefix",
         "source_sha256": update_implementation_sha256(),
         "binding_sha256": predictor.binding.digest,
         "dataset_manifest_sha256": dataset_manifest["manifest_sha256"],
@@ -151,7 +153,8 @@ def _archive_and_fit(
             ledger.reserve_next(
                 (stop - start) / ledger.plan.forecast.measured_units_per_second * ledger.plan.forecast.safety_multiplier
             )
-            batch = collate_examples([validation[index] for index in range(start, stop)]).to(device)
+            rows = [validation[index] for index in range(start, stop)]
+            batch = collate_examples(rows).to(device)
             inputs = rule_feature_view(
                 batch.inputs,
                 torch.zeros(batch.inputs.size, dtype=torch.bool, device=device),
@@ -159,6 +162,9 @@ def _archive_and_fit(
             )
             with torch.autocast(device_type=device.type, enabled=False):
                 outputs = model(inputs)
+            # A strict gate must be fitted from the deployed single-prefix
+            # arithmetic, not a batch-shaped dense forward with teacher ACTION.
+            outputs = replace(outputs, policy_logits=predictor.policy_logits_from_rows(rows))
             loss_sums(outputs, batch.labels, inputs.legal_mask)
             values = {
                 key: value.detach().float().cpu().numpy().astype("<f4", copy=False)
@@ -248,7 +254,7 @@ def _archive_and_fit(
 
 @torch.no_grad()
 def collect_and_calibrate(
-    predictor: FrozenModelPredictor,
+    predictor: FrozenModelPredictor | Callable[[], FrozenModelPredictor],
     dataset_dir: Path,
     validation_manifest: dict[str, Any],
     output: Path,
@@ -263,29 +269,35 @@ def collect_and_calibrate(
     require_evaluation_authorization(authorization, operation="calibrate_frozen_logits", plan_sha256=plan_sha256)
     if quality_policy is None:
         raise ValueError("Preregister calibration-quality limits before computing or inspecting cal_check")
-    predictor._unchanged()
-    validation = DecisionDataset(dataset_dir, "validation")
-    plan = calibration_job_plan(
-        predictor, validation.manifest, validation_manifest, quality_policy=quality_policy, temperatures=temperatures
-    )
-    if (
-        plan["plan_sha256"] != plan_sha256
-        or predictor.binding.train_manifest_sha256 != validation.manifest["manifest_sha256"]
-    ):
-        raise ValueError("Calibration uses a different model, quality policy or training selection")
-    split = calibration_split_from_manifest(validation_manifest)
-    actual = {row["game_id"] for row in validation.manifest["games"] if row["split"] == "validation"}
-    if actual != set(split.validation_games):
-        raise ValueError("Production calibration cannot silently use a probe validation subset")
     if microbatch < 1 or budget.phase not in {"M1", "M2"} or budget.forecast.recipe_sha256 != plan_sha256:
         raise ValueError("Calibration requires its registered full-validation budget")
-    # Calibration work units are validation decision rows, not games or batches.
-    # The bound recipe's measured rate must include collection, archive and fit/check.
-    if budget.forecast.work_units < len(validation):
-        raise ValueError("Calibration cost forecast must cover every validation decision row")
-    output.mkdir(parents=True, exist_ok=False)
-    ledger = BudgetLedger(output / "costs.jsonl", budget)
-    with ledger.record_compute("calibration_logits_fit_check"):
+    with evaluation_job(
+        output, budget, operation="calibrate_frozen_logits", plan_sha256=plan_sha256, authorization=authorization
+    ) as ledger:
+        predictor = cast(Callable[[], FrozenModelPredictor], predictor)() if callable(predictor) else predictor
+        predictor._unchanged()
+        validation = DecisionDataset(dataset_dir, "validation")
+        plan = calibration_job_plan(
+            predictor,
+            validation.manifest,
+            validation_manifest,
+            quality_policy=quality_policy,
+            temperatures=temperatures,
+        )
+        if (
+            plan["plan_sha256"] != plan_sha256
+            or predictor.binding.train_manifest_sha256 != validation.manifest["manifest_sha256"]
+        ):
+            raise ValueError("Calibration uses a different model, quality policy or training selection")
+        split = calibration_split_from_manifest(validation_manifest)
+        actual = {row["game_id"] for row in validation.manifest["games"] if row["split"] == "validation"}
+        if actual != set(split.validation_games):
+            raise ValueError("Production calibration cannot silently use a probe validation subset")
+        # The measured whole-job rate covers loading, hashes, index materialization,
+        # canonical policy forwards, batched auxiliary heads, archives, and fit/check.
+        if budget.forecast.work_units < len(validation):
+            raise ValueError("Calibration cost forecast must cover every validation decision row")
+        ledger.settle_elapsed("calibration_startup")
         artifact, support = _archive_and_fit(
             predictor,
             validation,

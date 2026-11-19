@@ -4,11 +4,36 @@ import hashlib
 import importlib.resources
 import tempfile
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from .event_semantics import ABORT_REASONS, nine_terminals_public_hand
+
+PROTOCOL_IDENTITY_VERSION = "protobuf_source_and_descriptor_v1"
+PROTOCOL_IDENTITY_FIELDS = ("protocol_identity_version", "protocol_sha256", "protocol_descriptor_sha256")
+
+
+def protocol_identity(source_sha256: str, descriptor_sha256: str) -> dict[str, str]:
+    """Bind the supplied source and the compiled schema, including imported files."""
+    for value in (source_sha256, descriptor_sha256):
+        if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            raise ValueError("Protocol identity requires source and complete descriptor SHA-256 values")
+    return {
+        "protocol_identity_version": PROTOCOL_IDENTITY_VERSION,
+        "protocol_sha256": source_sha256,
+        "protocol_descriptor_sha256": descriptor_sha256,
+    }
+
+
+def validate_protocol_identity(record: Mapping[str, Any], *, context: str) -> dict[str, str]:
+    if record.get("protocol_identity_version") != PROTOCOL_IDENTITY_VERSION:
+        raise ValueError(f"{context} lacks the complete source/descriptor protocol identity; rebuild from raw inputs")
+    source, descriptor = record.get("protocol_sha256"), record.get("protocol_descriptor_sha256")
+    if not isinstance(source, str) or not isinstance(descriptor, str):
+        raise ValueError(f"Protocol identity requires source and complete descriptor SHA-256 values: {context}")
+    return protocol_identity(source, descriptor)
 
 
 class ProtocolError(ValueError):
@@ -39,6 +64,9 @@ class Protocol:
     descriptor_sha256: str
     source_name: str
     pool: Any = field(repr=False, compare=False)
+
+    def identity_record(self) -> dict[str, str]:
+        return protocol_identity(self.source_sha256, self.descriptor_sha256)
 
     @classmethod
     def from_descriptor_set(
@@ -212,6 +240,7 @@ class DecodedGame:
     metadata: dict[str, Any]
     records: tuple[ServerRecord, ...]
     events: tuple[dict[str, Any], ...]
+    protocol_descriptor_sha256: str
 
     @property
     def complete(self) -> bool:
@@ -415,7 +444,13 @@ def decode_record_bytes(  # noqa: PLR0915
         "explicit_server_gameend" if events[-1]["type"] == "end_game" else "missing_explicit_server_gameend"
     )
     return DecodedGame(
-        hashlib.sha256(data).hexdigest(), protocol.source_sha256, game_id, metadata, tuple(records), events
+        hashlib.sha256(data).hexdigest(),
+        protocol.source_sha256,
+        game_id,
+        metadata,
+        tuple(records),
+        events,
+        protocol.descriptor_sha256,
     )
 
 
@@ -856,20 +891,27 @@ def normalize_records(  # noqa: PLR0915
                 actor = _seat(data.get("seat", None if last_draw is None else last_draw[0]))
                 try:
                     revealed = nine_terminals_public_hand(
-                        actor, hands[actor], current_draw_actor=None if last_draw is None else last_draw[0],
-                        draw_count=draw_counts[actor], has_discarded=bool(discard_history[actor]),
-                        calls_seen=meld_seen, source_tiles=[_tile(tile) for tile in data.get("tiles", ())],
+                        actor,
+                        hands[actor],
+                        current_draw_actor=None if last_draw is None else last_draw[0],
+                        draw_count=draw_counts[actor],
+                        has_discarded=bool(discard_history[actor]),
+                        calls_seen=meld_seen,
+                        source_tiles=[_tile(tile) for tile in data.get("tiles", ())],
                     )
                 except ValueError as error:
                     raise RecordError(str(error)) from error
                 shown: list[list[str] | None] = [None for _ in range(4)]
                 shown[actor] = revealed
                 event.update(
-                    actor=actor, public_hands=shown,
+                    actor=actor,
+                    public_hands=shown,
                     public_reveal_provenance="source_declaring_tiles_verified_against_prior_events"
-                    if data.get("tiles") else "frozen_nine_terminals_reveal_from_verified_prior_events",
+                    if data.get("tiles")
+                    else "frozen_nine_terminals_reveal_from_verified_prior_events",
                     declaring_actor_provenance="source_seat_and_current_draw"
-                    if "seat" in data else "unique_verified_current_draw",
+                    if "seat" in data
+                    else "unique_verified_current_draw",
                 )
             if reason in ABORT_REASONS:
                 # Frozen aborts have no transfer. This is rule evidence, not a

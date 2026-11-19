@@ -3,6 +3,7 @@
 The design schema ID is a reference, not an alias for the complete host registry.
 No legacy bytes, checkpoints, or manifests are upgraded by this module.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -14,6 +15,7 @@ from .actions import manifest_hash
 from .calibration_quality import BRANCH_QUALITY_VERSION
 from .contracts import MJSOUL_RULESET, REFERENCE_SCHEMA_ID, RESPONSE_MASK_VERSION, SCHEMA_ID, SCHEMA_OVERLAY_SHA256
 from .event_semantics import PUBLIC_CLOCK_VERSION, TERMINAL_PUBLIC_VERSION
+from .mjsoul import PROTOCOL_IDENTITY_VERSION
 from .native_replay import NATIVE_REPLAY_VERSION
 from .schema import schema_status
 
@@ -30,7 +32,7 @@ TRAIN_CONFIG_VERSION = "explicit_train_split_scale_v5_decision_time"
 
 
 def artifact_contract() -> dict[str, Any]:
-    if NATIVE_RULES_VERSION != "riichienv_native_rules_v1":
+    if NATIVE_RULES_VERSION != "riichienv_native_rules_v2_scoring":
         raise ValueError("Rebuild the native extension for the active rule contract")
     schema = schema_status()
     if (
@@ -42,6 +44,7 @@ def artifact_contract() -> dict[str, Any]:
         raise ValueError("Complete host schema and design-reference identity are required")
     return {
         "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
+        "protocol_identity_version": PROTOCOL_IDENTITY_VERSION,
         "input_pipeline_version": INPUT_PIPELINE_VERSION,
         "native_rules_version": NATIVE_RULES_VERSION,
         "native_replay_version": NATIVE_REPLAY_VERSION,

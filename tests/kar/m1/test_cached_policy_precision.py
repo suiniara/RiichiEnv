@@ -1,4 +1,5 @@
 """CPU forward-only FP32 readout boundaries, including an outer BF16 autocast."""
+
 import json
 from dataclasses import replace
 
@@ -27,8 +28,7 @@ def _batches(make_sample, seeds=(42, 0)):
     prefixes = [make_sample(seed, prefix_only=True) for seed in seeds]
     samples = [make_sample(seed, action_choice=1) for seed in seeds]
     branches = [
-        {**sample, "tokens": sample["tokens"][-139:], "decide_index": 0, "action_index": 0}
-        for sample in samples
+        {**sample, "tokens": sample["tokens"][-139:], "decide_index": 0, "action_index": 0} for sample in samples
     ]
     return collate_inputs(prefixes), collate_inputs(samples), collate_inputs(branches)
 
@@ -45,14 +45,21 @@ def test_dense_and_cached_three_heads_have_fp32_projection_boundaries(
 
     def watch(name):
         def capture(_module, arguments, output):
-            projections.append({"head": name, "input_dtype": str(arguments[0].dtype),
-                                "output_dtype": str(output.dtype),
-                                "cpu_autocast_enabled": torch.is_autocast_enabled("cpu")})
+            projections.append(
+                {
+                    "head": name,
+                    "input_dtype": str(arguments[0].dtype),
+                    "output_dtype": str(output.dtype),
+                    "cpu_autocast_enabled": torch.is_autocast_enabled("cpu"),
+                }
+            )
+
         return capture
 
-    handles = [head.register_forward_hook(watch(name)) for name, head in (
-        ("policy", model.policy_head), ("response", model.response_head), ("rank", model.value_head)
-    )]
+    handles = [
+        head.register_forward_hook(watch(name))
+        for name, head in (("policy", model.policy_head), ("response", model.response_head), ("rank", model.value_head))
+    ]
     try:
         with torch.autocast(device_type="cpu", dtype=torch.bfloat16, enabled=use_bf16):
             dense = model(dense_batch)
@@ -123,9 +130,7 @@ def test_cached_policy_matches_fp32_projection_of_identical_prefix_hidden(
 @pytest.mark.parametrize("use_bf16", [False, True], ids=["fp32", "cpu-bf16"])
 @pytest.mark.parametrize("invalid", ["teacher-prefix", "empty-branch", "multirow-branch"])
 @torch.no_grad()
-def test_precision_boundary_preserves_prefix_and_single_action_validation(
-    frozen_model, make_sample, use_bf16, invalid
-):
+def test_precision_boundary_preserves_prefix_and_single_action_validation(frozen_model, make_sample, use_bf16, invalid):
     prefix, dense, branches = _batches(make_sample)
     with torch.autocast(device_type="cpu", dtype=torch.bfloat16, enabled=use_bf16):
         if invalid == "teacher-prefix":
@@ -133,8 +138,10 @@ def test_precision_boundary_preserves_prefix_and_single_action_validation(
                 frozen_model.encode_prefix(dense)
         else:
             cache = frozen_model.encode_prefix(prefix)
-            invalid_branch = dense if invalid == "multirow-branch" else replace(
-                branches, fields={key: value[:, :0] for key, value in branches.fields.items()}
+            invalid_branch = (
+                dense
+                if invalid == "multirow-branch"
+                else replace(branches, fields={key: value[:, :0] for key, value in branches.fields.items()})
             )
             with pytest.raises(ValueError, match="exactly one valid ACTION"):
                 frozen_model.score_actions(cache, invalid_branch, torch.arange(prefix.size))

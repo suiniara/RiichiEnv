@@ -22,6 +22,7 @@ from .contracts import (
 )
 from .corpus_audit import SEMANTIC_GAME_VERSION, _inputs, _write
 from .golden import golden_coverage
+from .mjsoul import PROTOCOL_IDENTITY_FIELDS, validate_protocol_identity
 from .schema import schema_status
 from .versioning import MODEL_TIER_BASIS, artifact_contract, validate_artifact_contract
 
@@ -57,13 +58,14 @@ class _Shard:
         }
 
 
-def _load_shard(directory: Path, input_manifest: Path) -> _Shard:
+def _load_shard(directory: Path, input_manifest: Path) -> _Shard:  # noqa: PLR0915
     original = json.loads((directory / "report.json").read_text(encoding="utf-8"))
     checkpoint = json.loads((directory / "checkpoint.json").read_text(encoding="utf-8"))
     checkpoint_sha = content_hash({key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"})
     if checkpoint.get("checkpoint_sha256") != checkpoint_sha:
         raise ValueError("Completed corpus checkpoint hash mismatch")
     scope = checkpoint["scope"]
+    protocol = validate_protocol_identity(scope, context="Corpus scope")
     if original.get("scope") != scope or scope.get("mode") != "audit":
         raise ValueError("Expected a matching full-audit report and checkpoint")
     if not checkpoint.get("selection_complete") or not original.get("selection_complete"):
@@ -100,13 +102,15 @@ def _load_shard(directory: Path, input_manifest: Path) -> _Shard:
             raise ValueError("Report material evidence conflicts with its authenticated checkpoint")
         if row["source_sha256"] != source["source_sha256"]:
             raise ValueError("Shard source hash differs from its input selection")
-        if row.get("protocol_sha256", scope["protocol_sha256"]) != scope["protocol_sha256"]:
+        if validate_protocol_identity(row, context="Corpus row") != protocol:
             raise ValueError("Receipt protocol differs from its corpus scope")
         raw = Path(source["source"])
         if raw.stat().st_size > 64 * 1024 * 1024 or _file_sha(raw) != source["source_sha256"]:
             raise ValueError("An audited raw source changed")
         if row.get("receipt_sha256"):
             receipt = json.loads((directory / "receipts" / f"{identity}.json").read_text(encoding="utf-8"))
+            if validate_protocol_identity(receipt, context="Native receipt") != protocol:
+                raise ValueError("Native receipt protocol differs from its corpus scope")
             if (
                 content_hash(receipt) != row["receipt_sha256"]
                 or receipt["game_id"] != identity
@@ -182,15 +186,20 @@ def _finalize(  # noqa: PLR0915
         raise ValueError("At least one completely audited shard is required")
     first = shards[0].scope
     validate_artifact_contract(first, context="M0 acceptance source")
-    shared = tuple(dict.fromkeys((*artifact_contract(),
-        "schema_hash",
-        "ruleset_hash",
-        "cohort_hash",
-        "action_manifest_hash",
-        "protocol_sha256",
-        "split_salt",
-        "implementation_sha256",
-    )))
+    shared = tuple(
+        dict.fromkeys(
+            (
+                *artifact_contract(),
+                "schema_hash",
+                "ruleset_hash",
+                "cohort_hash",
+                "action_manifest_hash",
+                *PROTOCOL_IDENTITY_FIELDS,
+                "split_salt",
+                "implementation_sha256",
+            )
+        )
+    )
     if any(any(shard.scope.get(key) != first.get(key) for key in shared) for shard in shards):
         raise ValueError("Audit shards have incompatible contracts, protocol, split salt or implementation")
     if merged and any(shard.scope.get("normalized_game_digest_version") != SEMANTIC_GAME_VERSION for shard in shards):
@@ -210,7 +219,7 @@ def _finalize(  # noqa: PLR0915
                 for key in (
                     "source_sha256",
                     "status",
-                    "protocol_sha256",
+                    *PROTOCOL_IDENTITY_FIELDS,
                     "metadata",
                     "response_categories",
                     "normalized_game_sha256",
@@ -288,7 +297,7 @@ def _finalize(  # noqa: PLR0915
         if eligible:
             source = {
                 **sources[identity],
-                "protocol_sha256": row["protocol_sha256"],
+                **validate_protocol_identity(row, context="Accepted game"),
                 "receipt_sha256": row["receipt_sha256"],
                 "producer_receipts": lineage[identity],
             }

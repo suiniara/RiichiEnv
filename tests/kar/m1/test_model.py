@@ -52,9 +52,7 @@ def test_numeric_projection_receives_fp32_value_presence_concatenation(miniature
         miniature(model_batch)
     finally:
         handle.remove()
-    expected = torch.cat(
-        [model_batch.fields["numeric"].float(), model_batch.fields["numeric_present"].float()], dim=-1
-    )
+    expected = torch.cat([model_batch.fields["numeric"].float(), model_batch.fields["numeric_present"].float()], dim=-1)
     assert seen["input"].dtype == torch.float32 and seen["input"].shape[-1] == 40
     torch.testing.assert_close(seen["input"], expected, atol=0, rtol=0)
 

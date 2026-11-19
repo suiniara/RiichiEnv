@@ -1,4 +1,5 @@
 """Full native half-games, not synthetic response labels or hand-filled cutoffs."""
+
 import json
 import sqlite3
 from contextlib import closing
@@ -35,8 +36,9 @@ def completed():
         assert semantic_results[0]["type"] == after
         family = desired.get(seat, "PASS")
         # Only a selected action that actually became public has a result ID.
-        selection.record_index = (ep._find_result(public, seat, family.lower()) if family.lower() == after
-                                  else trigger.trigger_event_id)
+        selection.record_index = (
+            ep._find_result(public, seat, family.lower()) if family.lower() == after else trigger.trigger_event_id
+        )
         assert selection.prefix.to_bytes() == frozen_bytes and not _marker(selection.snapshot, trigger.trigger_event_id)
         for _ in range(5):
             ep.resolve()
@@ -53,8 +55,11 @@ def completed():
 
 
 def _marker(snapshot, trigger):
-    markers = [row for raw in snapshot.events if (row := json.loads(raw))["type"] == "self_pass"
-               and row["trigger_event_id"] == trigger]
+    markers = [
+        row
+        for raw in snapshot.events
+        if (row := json.loads(raw))["type"] == "self_pass" and row["trigger_event_id"] == trigger
+    ]
     assert len(markers) <= 1
     return markers[0] if markers else None
 
@@ -93,8 +98,12 @@ def _check_pass(game, trigger, live, later, exported, *, kind, provenance, recor
     observed = [sample for sample in samples if sample[:3] == (seat, trigger, 221)]
     record_property("pass_rows_at_trigger", len(observed))
     record_property("live_has_self_pass", bool(_marker(later.snapshot, trigger)))
-    offline_later = next(row for row in rows if row.snapshot.observer_player_id == seat
-                         and game.events[row.trigger_event_id].get("source_record_index") == later.record_index)
+    offline_later = next(
+        row
+        for row in rows
+        if row.snapshot.observer_player_id == seat
+        and game.events[row.trigger_event_id].get("source_record_index") == later.record_index
+    )
     record_property("offline_has_self_pass", bool(_marker(offline_later.snapshot, trigger)))
     assert len(observed) == 1 and observed[0][3] == provenance
     diagnostic = json.loads(observed[0][4])
@@ -109,8 +118,7 @@ def _check_pass(game, trigger, live, later, exported, *, kind, provenance, recor
     # Native transport includes explicit kan_commit acknowledgements; the
     # server path proves the same commitment with its replacement draw. Map
     # public IDs by that one transport difference, retaining every marker fact.
-    native_public = [event for raw in later.snapshot.events
-                     if (event := json.loads(raw))["type"] != "self_pass"]
+    native_public = [event for raw in later.snapshot.events if (event := json.loads(raw))["type"] != "self_pass"]
     semantic_ids = [index for index, event in enumerate(native_public) if event["type"] != "kan_commit"]
     to_offline = {native_id: offline_id for offline_id, native_id in enumerate(semantic_ids)}
     expected = {**native_marker, "provenance": provenance}
@@ -120,10 +128,15 @@ def _check_pass(game, trigger, live, later, exported, *, kind, provenance, recor
         assert (native_event["type"], native_event.get("actor")) == (offline_event["type"], offline_event.get("actor"))
     assert offline_marker == expected
     assert offline_marker["confirmed_at_event_id"] == closing_event_id
-    native_positions = tuple(position for raw, position in zip(later.snapshot.events, later.snapshot.history_positions)
-                             if json.loads(raw)["type"] != "kan_commit")
-    assert (compared.prefix.to_record() == later.prefix.to_record()
-            and compared.snapshot.history_positions == native_positions)
+    native_positions = tuple(
+        position
+        for raw, position in zip(later.snapshot.events, later.snapshot.history_positions)
+        if json.loads(raw)["type"] != "kan_commit"
+    )
+    assert (
+        compared.prefix.to_record() == later.prefix.to_record()
+        and compared.snapshot.history_positions == native_positions
+    )
     return prefix
 
 
@@ -142,8 +155,16 @@ def test_completed_robbery_pass_exports_and_matches_live_after_replacement(compl
     assert live.prefix.candidates == (221, 545)
     # The prior kan's public indicator can put this cutoff after its trigger.
     assert live.snapshot.cutoff_event_id > trigger
-    pass_row = _check_pass(game, trigger, live, later, _export(game), kind="replacement_draw",
-                           provenance="inferred_unique_kan_replacement_pass", record_property=record_property)
+    pass_row = _check_pass(
+        game,
+        trigger,
+        live,
+        later,
+        _export(game),
+        kind="replacement_draw",
+        provenance="inferred_unique_kan_replacement_pass",
+        record_property=record_property,
+    )
     assert pass_row.snapshot.cutoff_event_id > pass_row.trigger_event_id
 
 
@@ -162,8 +183,16 @@ def test_completed_same_pon_pass_offer_does_not_disappear_when_lower_chi_wins(co
     explicit = _comparison((pon_game.events, pon_rows), pon)
     assert explicit.action_provenance == "explicit"
     assert _closed_slice(pon_receipt, "discard_response", "pon")["explicit"] >= 1
-    _check_pass(pass_game, trigger, passed, later, _export(pass_game), kind="chi",
-                provenance="inferred_unique_call_priority_pass", record_property=record_property)
+    _check_pass(
+        pass_game,
+        trigger,
+        passed,
+        later,
+        _export(pass_game),
+        kind="chi",
+        provenance="inferred_unique_call_priority_pass",
+        record_property=record_property,
+    )
 
 
 def test_completed_higher_pon_censors_chi_even_when_actual_pass_is_private(completed):
@@ -180,14 +209,23 @@ def test_completed_higher_pon_censors_chi_even_when_actual_pass_is_private(compl
     assert _closed_slice(receipt, "discard_response", "pon")["censored"] >= 1
 
 
-@pytest.mark.parametrize("ids,result,proven", [
-    ((221, 222), "pon", False), ((221, 312), "pon", False),
-    ((221, 312), "chi", True), ((221, 312, 222), "chi", False),
-    ((221, 543), "pon", True), ((221, 543), "replacement_draw", True),
-    ((221, 543), "all_ron_results", True), ((221, 543, 312), "all_ron_results", False),
-    ((221, 543), "no_ron_draw/exhaustive_draw", True), ((221, 543), "ron_results", False),
-    ((221, 543), "unresolved", False), ((221,), "next_draw", False),
-])
+@pytest.mark.parametrize(
+    "ids,result,proven",
+    [
+        ((221, 222), "pon", False),
+        ((221, 312), "pon", False),
+        ((221, 312), "chi", True),
+        ((221, 312, 222), "chi", False),
+        ((221, 543), "pon", True),
+        ((221, 543), "replacement_draw", True),
+        ((221, 543), "all_ron_results", True),
+        ((221, 543, 312), "all_ron_results", False),
+        ((221, 543), "no_ron_draw/exhaustive_draw", True),
+        ((221, 543), "ron_results", False),
+        ((221, 543), "unresolved", False),
+        ((221,), "next_draw", False),
+    ],
+)
 def test_only_disproved_nonpass_alternatives_are_eliminated(ids, result, proven):
     from riichienv.kar.response_supervision import unique_pass_provenance  # noqa: PLC0415
 

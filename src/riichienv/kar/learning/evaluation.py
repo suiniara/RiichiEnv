@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from time import perf_counter
 from typing import Any
 
@@ -35,7 +36,8 @@ def _add_response_diagnostics(
     if train_supported is not None:
         metrics.add_response_mass(
             tuple(math.exp(value) for value in event_logs),
-            train_supported=train_supported, value_supported=value_supported,
+            train_supported=train_supported,
+            value_supported=value_supported,
         )
 
 
@@ -54,8 +56,11 @@ def add_diagnostics(
     if calibration is not None and (support is None or calibration.support_sha256 != support.digest):
         raise ValueError("Calibrated diagnostics require the bound support artifact")
     train_supported = support.supported if support is not None else None
-    value_supported = (support.value_supported(calibration.value_branch_statuses)
-                       if support is not None and calibration is not None else None)
+    value_supported = (
+        support.value_supported(calibration.value_branch_statuses)
+        if support is not None and calibration is not None
+        else None
+    )
     temperatures = calibration.temperatures if calibration is not None else (1.0, 1.0, 1.0)
     action_log = (
         (outputs.policy_logits.float() / temperatures[0])
@@ -132,9 +137,14 @@ def add_diagnostics(
                 )
         if active["response"][index]:
             _add_response_diagnostics(
-                metrics, game=game, logits=response_logits[index], allowed=response_masks[index],
-                target=targets["response"][index], temperature=temperatures[1],
-                train_supported=train_supported, value_supported=value_supported,
+                metrics,
+                game=game,
+                logits=response_logits[index],
+                allowed=response_masks[index],
+                target=targets["response"][index],
+                temperature=temperatures[1],
+                train_supported=train_supported,
+                value_supported=value_supported,
             )
         target = targets["action"][index]
         if (
@@ -213,6 +223,7 @@ def evaluate_complete(  # noqa: PLR0915
     count = 0
     error = None
     payload = None
+    predictor = None
     try:
         model.eval()
         if calibration is not None:
@@ -220,18 +231,17 @@ def evaluate_complete(  # noqa: PLR0915
                 raise ValueError("Calibrated diagnostics require the bound support artifact")
             from .inference import FrozenModelPredictor  # noqa: PLC0415
 
-            binding = FrozenModelPredictor(
+            predictor = FrozenModelPredictor(
                 model, dataset.manifest["manifest_sha256"], use_rule_features=use_rule_features
-            ).binding
-            calibration.validate(binding, support)
+            )
+            calibration.validate(predictor.binding, support)
             if calibration.inference_device_type != context.device.type:
                 raise ValueError("Calibrated evaluation requires its original inference backend")
         forward_started = perf_counter()
         indices = list(range(context.rank, len(dataset), context.world_size))
         for start in range(0, len(indices), microbatch):
-            batch = collate_examples([dataset[index] for index in indices[start : start + microbatch]]).to(
-                context.device
-            )
+            rows = [dataset[index] for index in indices[start : start + microbatch]]
+            batch = collate_examples(rows).to(context.device)
             inputs = rule_feature_view(
                 batch.inputs,
                 torch.zeros(batch.inputs.size, dtype=torch.bool, device=context.device),
@@ -240,6 +250,8 @@ def evaluate_complete(  # noqa: PLR0915
             viewed = TrainingBatch(inputs, batch.labels, batch.game_ids)
             with torch.autocast(device_type=context.device.type, dtype=torch.bfloat16, enabled=precision == "bf16"):
                 outputs = model(inputs)
+            if predictor is not None:
+                outputs = replace(outputs, policy_logits=predictor.policy_logits_from_rows(rows))
             add_diagnostics(
                 metrics, outputs, viewed, calibration=calibration, support=support, public_fields=batch.inputs.fields
             )
@@ -268,8 +280,9 @@ def evaluate_complete(  # noqa: PLR0915
     if context.primary:
         try:
             assert gathered is not None
-            report = _global_validation_report(dataset, gathered, aggregation_started,
-                                               bootstrap_replicates, calibrated=calibration is not None)
+            report = _global_validation_report(
+                dataset, gathered, aggregation_started, bootstrap_replicates, calibrated=calibration is not None
+            )
         except Exception as caught:
             error = caught
     # A primary-only merge/report failure must reach all ranks before any
@@ -279,8 +292,12 @@ def evaluate_complete(  # noqa: PLR0915
 
 
 def _global_validation_report(
-    dataset: DecisionDataset, gathered: list[dict[str, Any]], aggregation_started: float,
-    bootstrap_replicates: int, *, calibrated: bool,
+    dataset: DecisionDataset,
+    gathered: list[dict[str, Any]],
+    aggregation_started: float,
+    bootstrap_replicates: int,
+    *,
+    calibrated: bool,
 ) -> dict[str, Any]:
     merged = FullDiagnostics()
     total = 0

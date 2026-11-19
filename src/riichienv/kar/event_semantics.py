@@ -3,6 +3,7 @@
 Source record IDs, server packaging and native callback boundaries are audit data,
 not model time. No method here consults a future event or another player's hand.
 """
+
 from __future__ import annotations
 
 import json

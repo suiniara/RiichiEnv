@@ -1,4 +1,5 @@
 """Bounded source/clock parity and native legal aborts, not real-log Golden certificates."""
+
 import copy
 from collections import Counter
 
@@ -20,10 +21,15 @@ def record(index, name, data):
 def new_round_data(start, draw):
     hands = copy.deepcopy(start["tehais"])
     hands[start["oya"]].append(draw["pai"])
-    return {"chang": ("E", "S", "W", "N").index(start["bakaze"]), "ju": start["oya"],
-            "ben": start["honba"], "liqibang": start.get("kyotaku", start.get("kyoutaku", 0)),
-            "scores": start["scores"], "dora": start["dora_marker"],
-            **{f"tiles{seat}": hand for seat, hand in enumerate(hands)}}
+    return {
+        "chang": ("E", "S", "W", "N").index(start["bakaze"]),
+        "ju": start["oya"],
+        "ben": start["honba"],
+        "liqibang": start.get("kyotaku", start.get("kyoutaku", 0)),
+        "scores": start["scores"],
+        "dora": start["dora_marker"],
+        **{f"tiles{seat}": hand for seat, hand in enumerate(hands)},
+    }
 
 
 def opening_pair(seed=42):
@@ -32,8 +38,9 @@ def opening_pair(seed=42):
     start = next(event for event in raw if event["type"] == "start_kyoku")
     draw = next(event for event in raw if event["type"] == "tsumo")
     # A container closure is needed by the decoder, but is outside every tested cutoff.
-    offline = normalize_records([record(0, "RecordNewRound", new_round_data(start, draw)),
-                                 record(1, "RecordNoTile", {})])[:3]
+    offline = normalize_records(
+        [record(0, "RecordNewRound", new_round_data(start, draw)), record(1, "RecordNoTile", {})]
+    )[:3]
     return env, raw, offline
 
 
@@ -59,7 +66,7 @@ def deal(specials, draws, *, rinshan=()):
     for hand in hands:
         while len(hand) < 13:
             hand.append(pool.pop(0))
-    wall = [tile for start in (0, 4, 8) for hand in hands for tile in hand[start:start + 4]]
+    wall = [tile for start in (0, 4, 8) for hand in hands for tile in hand[start : start + 4]]
     wall += [hand[12] for hand in hands] + first_draws + pool + list(reversed(replacements))
     assert sorted(wall) == list(range(136))
     env = MJSOUL_RULESET.create_env(seed=42)
@@ -84,12 +91,18 @@ def test_source_packing_cannot_set_reach_dora_or_draw_positions(packing):
     _, raw, _ = opening_pair()
     drawn = raw[-1]["pai"]
     occupied = {tile for event in raw if event["type"] == "start_kyoku" for hand in event["tehais"] for tile in hand}
-    marker = next(convert.tid_to_mjai(tile) for tile in range(136)
-                  if convert.tid_to_mjai(tile) not in occupied and convert.tid_to_mjai(tile) != drawn)
-    stream = raw + [{"type": "reach", "actor": 0},
-                    {"type": "dahai", "actor": 0, "pai": drawn, "tsumogiri": True},
-                    {"type": "reach_accepted", "actor": 0}, {"type": "dora", "dora_marker": marker},
-                    {"type": "tsumo", "actor": 1, "pai": marker}]
+    marker = next(
+        convert.tid_to_mjai(tile)
+        for tile in range(136)
+        if convert.tid_to_mjai(tile) not in occupied and convert.tid_to_mjai(tile) != drawn
+    )
+    stream = raw + [
+        {"type": "reach", "actor": 0},
+        {"type": "dahai", "actor": 0, "pai": drawn, "tsumogiri": True},
+        {"type": "reach_accepted", "actor": 0},
+        {"type": "dora", "dora_marker": marker},
+        {"type": "tsumo", "actor": 1, "pai": marker},
+    ]
     first, second = ObserverLedger(0, (0, 1, 2, 3)), ObserverLedger(0, (0, 1, 2, 3))
     cache = TokenHistoryCache()
     frozen = []
@@ -155,28 +168,31 @@ def test_kyushu_public_reveal_and_zero_settlement_match_through_next_real_decisi
     live.observe_native(initial)
     old_snapshot = live.snapshot(seat)
     old_prefix = encode_prefix(old_snapshot, (220,))
-    chosen = next(item for item in legal_candidates(env.get_observation(0), drawn_tile=env.drawn_tile)
-                  if item.global_id == 220)
+    chosen = next(
+        item for item in legal_candidates(env.get_observation(0), drawn_tile=env.drawn_tile) if item.global_id == 220
+    )
     execute_candidate(env, 0, chosen)
-    terminal = list(env.rule_log[len(initial):])
+    terminal = list(env.rule_log[len(initial) :])
     # Advance the same actual environment to the next public round/first draw.
     if not any(event["type"] == "start_kyoku" for event in terminal):
         env.step({})
-        terminal = list(env.rule_log[len(initial):])
+        terminal = list(env.rule_log[len(initial) :])
     next_start = next(event for event in terminal if event["type"] == "start_kyoku")
-    next_draw = next(event for event in terminal[terminal.index(next_start) + 1:] if event["type"] == "tsumo")
+    next_draw = next(event for event in terminal[terminal.index(next_start) + 1 :] if event["type"] == "tsumo")
     for begin in range(0, len(terminal), chunks):
-        live.observe_native(terminal[begin:begin + chunks])
-    records = [record(0, "RecordNewRound", new_round_data(start, draw)),
-               record(1, "RecordLiuJu", {"type": 1, "seat": 0, "tiles": start["tehais"][0] + [draw["pai"]]}),
-               record(2, "RecordNewRound", new_round_data(next_start, next_draw)),
-               record(3, "RecordNoTile", {})]
+        live.observe_native(terminal[begin : begin + chunks])
+    records = [
+        record(0, "RecordNewRound", new_round_data(start, draw)),
+        record(1, "RecordLiuJu", {"type": 1, "seat": 0, "tiles": start["tehais"][0] + [draw["pai"]]}),
+        record(2, "RecordNewRound", new_round_data(next_start, next_draw)),
+        record(3, "RecordNoTile", {}),
+    ]
     normalized = normalize_records(records)
     boundary = next(index for index, event in enumerate(normalized) if index > 2 and event["type"] == "tsumo")
-    offline = ledger(normalized[:boundary + 1], seat)
-    ids = tuple(item.global_id for item in legal_candidates(
-        env.get_observation(env.current_player), drawn_tile=env.drawn_tile
-    ))
+    offline = ledger(normalized[: boundary + 1], seat)
+    ids = tuple(
+        item.global_id for item in legal_candidates(env.get_observation(env.current_player), drawn_tile=env.drawn_tile)
+    )
     a, b = encode_prefix(offline.snapshot(), ids), encode_prefix(live.snapshot(seat), ids)
     assert a.to_bytes() == b.to_bytes()
     reveal = [row for row in a.rows if row["kind"] == 29]
@@ -217,13 +233,19 @@ def test_confirmed_private_pass_does_not_change_public_clock_or_other_observers(
     env = deal({0: ("E",), 1: ("E", "E")}, ["9s", "8s"])
     live = LiveEventProjection()
     live.observe_native(env.rule_log)
-    discard = next(item for item in legal_candidates(env.get_observation(0), drawn_tile=env.drawn_tile)
-                   if item.global_id < 148 and item.actions[-1].tile // 4 == 27)
+    discard = next(
+        item
+        for item in legal_candidates(env.get_observation(0), drawn_tile=env.drawn_tile)
+        if item.global_id < 148 and item.actions[-1].tile // 4 == 27
+    )
     before = len(env.rule_log)
     responses = execute_candidate(env, 0, discard)
     live.observe_native(env.rule_log[before:])
-    choices = {seat: next(item for item in legal_candidates(observation, source_player=0) if item.global_id == 221)
-               for seat, observation in responses.items() if observation.legal_actions()}
+    choices = {
+        seat: next(item for item in legal_candidates(observation, source_player=0) if item.global_id == 221)
+        for seat, observation in responses.items()
+        if observation.legal_actions()
+    }
     assert any(item.spec.action_type == "PON" for item in legal_candidates(env.get_observation(1), source_player=0))
     receipt = tuple(trigger for trigger in live.capture_self_passes(choices) if trigger.observer_player_id == 1)
     old = live.snapshot(1)
@@ -246,18 +268,26 @@ def test_confirmed_private_pass_does_not_change_public_clock_or_other_observers(
 @pytest.mark.parametrize("chunk_size", [1, 2, 3, 100])
 def test_actual_multi_ron_group_is_independent_of_native_batch_boundaries(chunk_size, reverse_winners):
     common = ("1m", "2m", "3m", "4p", "5p", "6p", "7s", "8s", "9s")
-    env = deal({0: ("E",), 1: common + ("P",) * 3 + ("E",),
-                2: common + ("F",) * 3 + ("E",)}, ["C"])
+    env = deal({0: ("E",), 1: common + ("P",) * 3 + ("E",), 2: common + ("F",) * 3 + ("E",)}, ["C"])
     prefix = list(env.rule_log)
-    discard = next(item for item in legal_candidates(env.get_observation(0), drawn_tile=env.drawn_tile)
-                   if item.global_id < 148 and not item.spec.riichi and item.actions[-1].tile // 4 == 27)
+    discard = next(
+        item
+        for item in legal_candidates(env.get_observation(0), drawn_tile=env.drawn_tile)
+        if item.global_id < 148 and not item.spec.riichi and item.actions[-1].tile // 4 == 27
+    )
     responses = execute_candidate(env, 0, discard)
     public_before = list(env.rule_log)
-    choices = {seat: next(item for item in legal_candidates(observation, source_player=0)
-                          if item.spec.action_type == ("RON" if seat in {1, 2} else "PASS"))
-               for seat, observation in responses.items() if observation.legal_actions()}
+    choices = {
+        seat: next(
+            item
+            for item in legal_candidates(observation, source_player=0)
+            if item.spec.action_type == ("RON" if seat in {1, 2} else "PASS")
+        )
+        for seat, observation in responses.items()
+        if observation.legal_actions()
+    }
     execute_joint_responses(env, choices)
-    tail = list(env.rule_log[len(public_before):])
+    tail = list(env.rule_log[len(public_before) :])
     assert sum(event["type"] == "hora" for event in tail) == 2
     if reverse_winners:
         end = next(index for index, event in enumerate(tail) if event["type"] != "hora")
@@ -268,13 +298,13 @@ def test_actual_multi_ron_group_is_independent_of_native_batch_boundaries(chunk_
     old = streamed.snapshot(3)
     old_bytes = encode_prefix(old, (221,)).to_bytes()
     for start in range(0, len(tail), chunk_size):
-        streamed.observe_native(tail[start:start + chunk_size])
+        streamed.observe_native(tail[start : start + chunk_size])
         if streamed._pending_horas:
             with pytest.raises(ValueError, match="incomplete"):
                 streamed.snapshot(3)
-    ids = tuple(item.global_id for item in legal_candidates(
-        env.get_observation(env.current_player), drawn_tile=env.drawn_tile
-    ))
+    ids = tuple(
+        item.global_id for item in legal_candidates(env.get_observation(env.current_player), drawn_tile=env.drawn_tile)
+    )
     for seat in range(4):
         a, b = encode_prefix(whole.snapshot(seat), ids), encode_prefix(streamed.snapshot(seat), ids)
         offline = ledger([{**event, "source_record_index": 0} for event in whole.events], seat)

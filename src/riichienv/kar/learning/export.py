@@ -15,7 +15,7 @@ from ..calibration_roles import CALIBRATION_PARTITION_VERSION, CALIBRATION_SPLIT
 from ..contracts import cohort_hash, content_hash, game_split, matches_primary_cohort
 from ..decision import ReplayDecision
 from ..kan_transactions import KAN_TRANSACTION_VERSION
-from ..mjsoul import decode_record_bytes, load_protocol
+from ..mjsoul import decode_record_bytes, load_protocol, protocol_identity, validate_protocol_identity
 from ..response import resolve_discard_response
 from ..response_mask import public_rule_response_mask, validate_response_target
 from ..response_supervision import RESPONSE_SUPERVISION_VERSION, OpportunityCounts
@@ -92,11 +92,15 @@ class GameWriter:
         opening, closing = evidence.window_trigger_event_id, evidence.label_evidence_event_id
         explicit = event.action_provenance == "explicit"
         expected_kinds = {"dahai"} if snapshot.decision_phase == "discard_response" else {"ankan", "kakan"}
-        if (not 0 <= opening <= cutoff <= closing < length or opening >= closing
-                or self.game.events[opening]["type"] not in expected_kinds
-                or self.round_at[opening] != self.round_at[closing]
-                or trigger != (closing if explicit else opening)
-                or not explicit and event.action_target_global != 221):
+        if (
+            not 0 <= opening <= cutoff <= closing < length
+            or opening >= closing
+            or self.game.events[opening]["type"] not in expected_kinds
+            or self.round_at[opening] != self.round_at[closing]
+            or trigger != (closing if explicit else opening)
+            or not explicit
+            and event.action_target_global != 221
+        ):
             raise ValueError("Response label is not bound to its frozen opening and public result")
         if len(event.prefix.candidates) > 1:
             self.response_labels["explicit" if explicit else "uniquely_inferred"] += 1
@@ -170,11 +174,13 @@ class GameWriter:
         self.provenance[event.action_provenance] += 1
 
     def finish(self, replay: dict[str, Any], split: str) -> dict[str, Any]:
+        identity = protocol_identity(self.game.protocol_sha256, self.game.protocol_descriptor_sha256)
         if replay["status"] != "PASS" or not replay.get("final_ranks"):
             raise ValueError(f"Game failed complete export replay: {replay.get('errors')}")
         counters = replay["response_opportunities"]
-        if (counters["version"] != RESPONSE_SUPERVISION_VERSION
-                or any(counters[key] != self.response_labels[key] for key in ("explicit", "uniquely_inferred"))):
+        if counters["version"] != RESPONSE_SUPERVISION_VERSION or any(
+            counters[key] != self.response_labels[key] for key in ("explicit", "uniquely_inferred")
+        ):
             raise ValueError("Response opportunity evidence differs from emitted action supervision")
         ranks = replay["final_ranks"]
         for actor, rank in enumerate(ranks):
@@ -217,6 +223,7 @@ class GameWriter:
             "game_id": self.game.game_id,
             "split": split,
             "source_sha256": self.game.source_sha256,
+            **identity,
             "examples": self.examples,
             "response_valid": self.response_count,
             "value_valid": self.value_count,
@@ -237,6 +244,7 @@ def _selection(acceptance_dir: Path, limits: dict[str, int | None]) -> tuple[dic
     ):
         raise ValueError("M1 requires a source-bound PASS acceptance manifest")
     validate_artifact_contract(accepted.get("source_scope", {}), context="M0 acceptance for dataset export")
+    protocol = validate_protocol_identity(accepted["source_scope"], context="M0 acceptance for dataset export")
     contract = learning_contract()
     if any(
         accepted["source_scope"].get(key) != contract[key]
@@ -254,6 +262,8 @@ def _selection(acceptance_dir: Path, limits: dict[str, int | None]) -> tuple[dic
         if document.get("manifest_sha256") != content_hash(rows) or document["scope"] != accepted["source_scope"]:
             raise ValueError("Train/validation/test manifest was modified")
         for source in rows[:limit] if limit is not None else rows:
+            if validate_protocol_identity(source, context="Selected game") != protocol:
+                raise ValueError("Selected game protocol differs from its accepted scope")
             identity = source["game_id"]
             if (
                 identity in reserved
@@ -266,6 +276,7 @@ def _selection(acceptance_dir: Path, limits: dict[str, int | None]) -> tuple[dic
             selected.append({**source, "split": split})
     return {
         "acceptance_sha256": accepted["acceptance_sha256"],
+        **protocol,
         "split_salt": accepted["source_scope"]["split_salt"],
         "available_split_counts": accepted["split_counts"],
         "subset_limits": limits,
@@ -291,12 +302,17 @@ def export_dataset(  # noqa: PLR0915
     if any(output_dir.is_relative_to(Path(source["source"]).resolve().parent) for source in sources):
         raise ValueError("Learning output must stay outside raw directories")
     protocol = load_protocol(proto_path)
+    if protocol.identity_record() != validate_protocol_identity(selection, context="Dataset selection"):
+        raise ValueError("Export protocol source or imported descriptors differ from accepted inputs")
     package = Path(__file__).parents[1]
     implementation = {
         name: _file_sha(package / name)
         for name in (
             "learning/export.py",
             "audit.py",
+            "completion.py",
+            "mjsoul.py",
+            "settlement.py",
             "input_audit.py",
             "decision.py",
             "observation.py",
@@ -315,7 +331,7 @@ def export_dataset(  # noqa: PLR0915
         **learning_contract(),
         **selection,
         "producer_implementation_sha256": content_hash(implementation),
-        "protocol_sha256": protocol.source_sha256,
+        **protocol.identity_record(),
         "sources": sources,
         "label_scope": ACTION_LABEL_VERSION,
     }
@@ -339,7 +355,10 @@ def export_dataset(  # noqa: PLR0915
                 raise ValueError("Original audited game bytes changed")
             prior = db.execute("SELECT value FROM metadata WHERE key=?", ("game:" + source["game_id"],)).fetchone()
             if prior:
-                rows.append(json.loads(prior[0]))
+                record = json.loads(prior[0])
+                if validate_protocol_identity(record, context="Completed exported game") != protocol.identity_record():
+                    raise ValueError("Completed export game protocol differs from its dataset scope")
+                rows.append(record)
                 continue
             game = decode_record_bytes(path.read_bytes(), protocol, container="majsoul_download")
             if game.game_id != source["game_id"] or not matches_primary_cohort(game.metadata):

@@ -22,7 +22,13 @@ from .contracts import (
     model_tier,
 )
 from .golden import find_golden_candidates, golden_coverage, verify_golden_evidence
-from .mjsoul import decode_record_bytes, load_protocol
+from .mjsoul import (
+    PROTOCOL_IDENTITY_FIELDS,
+    decode_record_bytes,
+    load_protocol,
+    protocol_identity,
+    validate_protocol_identity,
+)
 from .schema import schema_status
 from .versioning import MODEL_TIER_BASIS, artifact_contract
 
@@ -145,7 +151,7 @@ def audit_corpus(  # noqa: PLR0915
         "mode": mode,
         "implementation_sha256": content_hash(implementation),
         "input_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
-        "protocol_sha256": protocol.source_sha256,
+        **protocol.identity_record(),
         "schema_hash": registry["schema_hash"],
         "ruleset_hash": MJSOUL_RULESET.ruleset_hash,
         "cohort_hash": cohort_hash(),
@@ -183,16 +189,20 @@ def audit_corpus(  # noqa: PLR0915
             if hashlib.sha256(Path(source["source"]).read_bytes()).hexdigest() != source["source_sha256"]:
                 raise ValueError("A previously processed source changed")
             previous = prior_rows[source["game_id"]]
+            if validate_protocol_identity(previous, context="Completed corpus row") != protocol.identity_record():
+                raise ValueError("A completed row protocol differs from its corpus scope")
             if previous.get("receipt_sha256"):
                 receipt = json.loads(
                     (output_dir / "receipts" / f"{source['game_id']}.json").read_text(encoding="utf-8")
                 )
                 if content_hash(receipt) != previous["receipt_sha256"]:
                     raise ValueError("A completed native replay receipt changed")
+                if validate_protocol_identity(receipt, context="Native receipt") != protocol.identity_record():
+                    raise ValueError("A completed native receipt protocol differs from its corpus scope")
             elif mode == "audit" and previous["status"] != "FAIL":
                 raise ValueError("A completed native replay receipt is missing")
             continue
-        row: dict[str, Any] = dict(source)
+        row: dict[str, Any] = {**source, **protocol.identity_record()}
         try:
             raw_path = Path(source["source"])
             if raw_path.stat().st_size > 64 * 1024 * 1024:
@@ -205,7 +215,7 @@ def audit_corpus(  # noqa: PLR0915
                 raise ValueError("Raw game identity differs from input manifest")
             candidates = find_golden_candidates(game)
             row.update(
-                protocol_sha256=game.protocol_sha256,
+                **protocol_identity(game.protocol_sha256, game.protocol_descriptor_sha256),
                 normalized_game_sha256=normalized_game_sha256(game.events),
                 metadata=game.metadata,
                 cohort_matches=matches_primary_cohort(game.metadata),
@@ -219,6 +229,7 @@ def audit_corpus(  # noqa: PLR0915
                 receipt = {
                     "game_id": game.game_id,
                     "source_sha256": game.source_sha256,
+                    **protocol_identity(game.protocol_sha256, game.protocol_descriptor_sha256),
                     "source": str(raw_path),
                     "normalized_game_sha256": row["normalized_game_sha256"],
                     "replay": replay,
@@ -271,7 +282,7 @@ def audit_corpus(  # noqa: PLR0915
         if eligible:
             split = game_split(row["game_id"], split_salt)
             split_games[split].append(
-                {key: row[key] for key in ("game_id", "source", "source_sha256", "protocol_sha256")}
+                {key: row[key] for key in ("game_id", "source", "source_sha256", *PROTOCOL_IDENTITY_FIELDS)}
             )
             for event in row.get("response_categories", []):
                 support[event].add(row["game_id"])

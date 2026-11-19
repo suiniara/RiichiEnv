@@ -1,4 +1,5 @@
 """Frozen sampler digest/ordering compatibility, with no parameter updates."""
+
 import random
 from types import SimpleNamespace
 
@@ -12,8 +13,11 @@ from riichienv.kar.learning.sampling import GlobalEpochSampler
 def _old_order(lengths, seed, epoch, window):
     indices = list(range(len(lengths)))
     random.Random(seed + 1000003 * epoch).shuffle(indices)
-    return tuple(index for start in range(0, len(indices), window)
-                 for index in sorted(indices[start:start + window], key=lengths.__getitem__))
+    return tuple(
+        index
+        for start in range(0, len(indices), window)
+        for index in sorted(indices[start : start + window], key=lengths.__getitem__)
+    )
 
 
 def test_epoch_and_restore_hash_each_immutable_sequence_once(monkeypatch, record_property):
@@ -58,10 +62,18 @@ def test_epoch_and_restore_hash_each_immutable_sequence_once(monkeypatch, record
     record_property("order_entries", len(resumed.order))
 
 
-@pytest.mark.parametrize("invalid", [
-    {"lengths_sha256": "0" * 64}, {"order_sha256": "0" * 64}, {"cursor": 3}, {"cursor": -1},
-    {"cursor": 104}, {"cursor": True}, {"epoch": -1},
-])
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"lengths_sha256": "0" * 64},
+        {"order_sha256": "0" * 64},
+        {"cursor": 3},
+        {"cursor": -1},
+        {"cursor": 104},
+        {"cursor": True},
+        {"epoch": -1},
+    ],
+)
 def test_bad_digest_or_cursor_never_replaces_committed_sampler_state(invalid):
     cfg = {"seed": 9, "effective_batch": 16, "microbatch": 2}
     sampler = GlobalEpochSampler([300] * 103, **cfg)
@@ -114,9 +126,17 @@ def test_actual_checkpoint_restores_same_next_group_and_still_checks_source_iden
     contract = {**artifact_contract(), "implementation": implementation}
     runtime = {"world_size": 1, "device": "cpu"}
     path = tmp_path / "checkpoint.pt"
-    save_production_checkpoint(path, model, optimizer, scheduler, contract=contract, runtime=runtime,
-                               trainer_state={"sampler": original.state_dict()},
-                               rank_rng=[rank_rng_state(torch.device("cpu"))], step=0)
+    save_production_checkpoint(
+        path,
+        model,
+        optimizer,
+        scheduler,
+        contract=contract,
+        runtime=runtime,
+        trainer_state={"sampler": original.state_dict()},
+        rank_rng=[rank_rng_state(torch.device("cpu"))],
+        step=0,
+    )
     saved = read_production_checkpoint(path, contract=contract, runtime=runtime)
     resumed = GlobalEpochSampler(lengths, **config)
     resumed.load_state_dict(saved["trainer"]["sampler"])

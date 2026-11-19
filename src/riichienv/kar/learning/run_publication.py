@@ -63,9 +63,10 @@ def completed_run_record(
     return {
         "status": "PASS",
         "phase": phase,
-        **{key: contract["training"][key] for key in (
-            "model_tier", "N_train_half_games", "N_eligible_half_games", "model_tier_basis"
-        )},
+        **{
+            key: contract["training"][key]
+            for key in ("model_tier", "N_train_half_games", "N_eligible_half_games", "model_tier_basis")
+        },
         "completed_epochs": state["completed_epochs"],
         "planned_epochs": planned_epochs,
         "step": state["step"],

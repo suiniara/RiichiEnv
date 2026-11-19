@@ -359,7 +359,13 @@ class _Verifier:
         # chain lacks points, discard the kernel's termination answer as well.
         transition = native_round_transition(
             self.points if self.points is not None else (0, 0, 0, 0),
-            self.oya, self.wind, self.honba, 2, kind, renchan, winner_count,
+            self.oya,
+            self.wind,
+            self.honba,
+            2,
+            kind,
+            renchan,
+            winner_count,
             rule=self.ruleset.engine_rule(),
         )
         self.expected_round = tuple(transition[:3])

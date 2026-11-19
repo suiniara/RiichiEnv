@@ -55,19 +55,20 @@ def create_training_directory(directory: Path, *, identity: dict[str, Any], ledg
             raise ValueError("Refuse to overwrite a training run")
         previous = ledger_path.read_bytes() if ledger_path.exists() else None
         origin = (
-            {"bytes": len(previous), "sha256": hashlib.sha256(previous).hexdigest()}
-            if previous is not None
-            else None
+            {"bytes": len(previous), "sha256": hashlib.sha256(previous).hexdigest()} if previous is not None else None
         )
         with tempfile.TemporaryDirectory(prefix="." + directory.name + ".initializing-", dir=directory.parent) as tmp:
             staging = Path(tmp)
-            _write_startup(staging, {
-                "version": TRAINING_STARTUP_VERSION,
-                "identity": identity,
-                "phase": "preparing",
-                "ledger_origin": origin,
-                "budget_ledger": None,
-            })
+            _write_startup(
+                staging,
+                {
+                    "version": TRAINING_STARTUP_VERSION,
+                    "identity": identity,
+                    "phase": "preparing",
+                    "ledger_origin": origin,
+                    "budget_ledger": None,
+                },
+            )
             staging.rename(directory)
             _sync_directory(directory.parent)
 
@@ -92,16 +93,18 @@ def read_training_startup(
         or record.get("phase") not in {"preparing", "initializing", "checkpoint_committed"}
     ):
         raise ValueError("Training startup identity/phase differs; preserve the original run and ledger")
-    if (
-        (record["phase"] == "preparing" and record.get("budget_ledger") is not None)
-        or (record["phase"] != "preparing" and not isinstance(record.get("budget_ledger"), dict))
+    if (record["phase"] == "preparing" and record.get("budget_ledger") is not None) or (
+        record["phase"] != "preparing" and not isinstance(record.get("budget_ledger"), dict)
     ):
         raise ValueError("An initialized run requires its original budget-ledger anchor")
     origin = record["ledger_origin"]
     if origin is not None:
         if (
-            not isinstance(origin, dict) or type(origin.get("bytes")) is not int or origin["bytes"] < 0
-            or not isinstance(origin.get("sha256"), str) or len(origin["sha256"]) != 64
+            not isinstance(origin, dict)
+            or type(origin.get("bytes")) is not int
+            or origin["bytes"] < 0
+            or not isinstance(origin.get("sha256"), str)
+            or len(origin["sha256"]) != 64
         ):
             raise ValueError("Invalid shared-ledger origin evidence")
         with ledger_path.open("rb") as stream:
@@ -180,6 +183,53 @@ def _generation(path: Path, name: str) -> Path:
     return path.parent / name
 
 
+def _publish_checkpoint(path: Path, payload: dict[str, Any], metadata: dict[str, Any], *, step: int) -> dict[str, Any]:
+    """Commit one durable pointer after its immutable payload is fully written."""
+    pointer = path.with_suffix(".json")
+    previous = None
+    if pointer.exists():
+        previous = json.loads(pointer.read_text(encoding="utf-8"))
+        if "checkpoint_file" not in previous:
+            raise ValueError("Legacy checkpoint publication requires explicit migration")
+        old = _generation(path, previous["checkpoint_file"])
+        if previous.get("checkpoint_sha256") != hashlib.sha256(old.read_bytes()).hexdigest() or previous.get(
+            "metadata_sha256"
+        ) != content_hash(previous.get("metadata")):
+            raise ValueError("Previous committed checkpoint was modified")
+    generation = _generation(path, f"{path.stem}.g{step:012d}-{uuid.uuid4().hex[:12]}.pt")
+    with generation.open("xb") as stream:
+        torch.save(payload, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    _sync_directory(path.parent)
+    sidecar = {
+        "metadata": metadata,
+        "metadata_sha256": content_hash(metadata),
+        "checkpoint_file": generation.name,
+        "checkpoint_sha256": hashlib.sha256(generation.read_bytes()).hexdigest(),
+        "previous_generation": {"file": previous["checkpoint_file"], "sha256": previous["checkpoint_sha256"]}
+        if previous is not None
+        else None,
+    }
+    temporary = pointer.with_name(pointer.name + "." + uuid.uuid4().hex + ".tmp")
+    with temporary.open("x", encoding="utf-8") as stream:
+        json.dump(sidecar, stream, ensure_ascii=False, indent=2, allow_nan=False)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(pointer)
+    _sync_directory(path.parent)
+    # Keep the previous committed generation until the new pointer is durable.
+    # Interrupted writes leave their uncommitted files intact for inspection.
+    stale = previous.get("previous_generation") if previous is not None else None
+    if stale is not None:
+        target = _generation(path, stale["file"])
+        if target.exists() and hashlib.sha256(target.read_bytes()).hexdigest() == stale["sha256"]:
+            target.unlink()
+            _sync_directory(path.parent)
+    return sidecar
+
+
 def save_production_checkpoint(
     path: Path,
     model: KARTransformer,
@@ -213,42 +263,7 @@ def save_production_checkpoint(
         "rank_rng": rank_rng,
         "scaler": None,
     }
-    pointer = path.with_suffix(".json")
-    previous = None
-    if pointer.exists():
-        previous = json.loads(pointer.read_text(encoding="utf-8"))
-        old = _generation(path, previous["checkpoint_file"])
-        if previous.get("checkpoint_sha256") != hashlib.sha256(old.read_bytes()).hexdigest():
-            raise ValueError("Previous committed checkpoint was modified")
-    generation = _generation(path, f"{path.stem}.g{step:012d}-{uuid.uuid4().hex[:12]}.pt")
-    with generation.open("xb") as stream:
-        torch.save(payload, stream)
-        stream.flush()
-        os.fsync(stream.fileno())
-    sidecar = {
-        "metadata": metadata,
-        "metadata_sha256": content_hash(metadata),
-        "checkpoint_file": generation.name,
-        "checkpoint_sha256": hashlib.sha256(generation.read_bytes()).hexdigest(),
-        "previous_generation": {"file": previous["checkpoint_file"], "sha256": previous["checkpoint_sha256"]}
-        if previous is not None
-        else None,
-    }
-    temporary = pointer.with_name(pointer.name + "." + uuid.uuid4().hex + ".tmp")
-    with temporary.open("x", encoding="utf-8") as stream:
-        json.dump(sidecar, stream, ensure_ascii=False, indent=2, allow_nan=False)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.replace(pointer)
-    # Retain the current and preceding complete generation. An interrupted write
-    # never replaces the last committed pointer; uncommitted orphan files stay intact.
-    stale = previous.get("previous_generation") if previous is not None else None
-    if stale is not None:
-        target = _generation(path, stale["file"])
-        if target.exists() and hashlib.sha256(target.read_bytes()).hexdigest() == stale["sha256"]:
-            target.unlink()
-    return sidecar
+    return _publish_checkpoint(path, payload, metadata, step=step)
 
 
 def read_production_checkpoint(path: Path, *, contract: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:

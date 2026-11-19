@@ -1,4 +1,5 @@
 """New semantic/quality identities reject legacy bytes rather than restamping artifacts."""
+
 import copy
 from dataclasses import replace
 
@@ -60,18 +61,32 @@ def fixtures():
     binding = RuntimeBinding.current("a" * 64, "b" * 64)
     support = EventSupport(binding.train_manifest_sha256, (500,) * 21, "synthetic version rejection only")
     split = calibration_split([f"version-validation-{index}" for index in range(20)])
+
     def row(game):
         return CalibrationRow(
-            game, game + "/decision", (4, 8), (0.0,) * 546, 4,
-            response_logits=(0.0,) * 21, response_allowed=(True,) * 21,
+            game,
+            game + "/decision",
+            (4, 8),
+            (0.0,) * 546,
+            4,
+            response_logits=(0.0,) * 21,
+            response_allowed=(True,) * 21,
             rank_logits=((0.0,) * 4,) * 21,
-            response_target=0, response_valid=True, rank_target=0, value_valid=True,
+            response_target=0,
+            response_valid=True,
+            rank_target=0,
+            value_valid=True,
         )
 
     artifact = calibrate_static_rows(
-        [row(split.fit_games[0])], [row(split.check_games[0])],
-        split=split, binding=binding, support=support, temperatures=(1.0,),
-        source_reference="synthetic,not actual calibration", diagnostic_fixture=True,
+        [row(split.fit_games[0])],
+        [row(split.check_games[0])],
+        split=split,
+        binding=binding,
+        support=support,
+        temperatures=(1.0,),
+        source_reference="synthetic,not actual calibration",
+        diagnostic_fixture=True,
     )
     return binding, support, artifact
 
@@ -94,8 +109,9 @@ def test_checksum_valid_old_support_and_calibration_contracts_are_rejected(field
                 CalibrationArtifact.from_record(forged, binding, support, allow_diagnostic=True)
 
 
-@pytest.mark.parametrize("kind,old_version", [("support", "train_independent_games_v1"),
-                                              ("calibration", "heldout_temperatures_log_gate_v3")])
+@pytest.mark.parametrize(
+    "kind,old_version", [("support", "train_independent_games_v1"), ("calibration", "heldout_temperatures_log_gate_v3")]
+)
 def test_old_outer_artifact_version_is_rejected_even_with_a_valid_checksum(kind, old_version):
     binding, support, artifact = fixtures()
     source = support.to_record() if kind == "support" else artifact.to_record()

@@ -1,5 +1,5 @@
 {
-  "registry_version": "mjsoul_real_golden_v1",
+  "registry_version": "mjsoul_real_golden_v2",
   "schema_id": "kar-riichienv-v1",
   "source_role": "golden_only",
   "main_training_membership": "excluded",
@@ -47,6 +47,8 @@
     "real_raw_record provenance declaration",
     "raw source file bytes match source_sha256",
     "actual proto bytes match protocol_sha256",
+    "recompiled complete descriptor set including imports matches protocol_descriptor_sha256",
+    "protocol_identity_version declares source and complete descriptor identity",
     "source file is decoded again using result-only decoder",
     "normalized events and record digests match decoded game",
     "complete native replay receipt and independently recomputed settlement agree",

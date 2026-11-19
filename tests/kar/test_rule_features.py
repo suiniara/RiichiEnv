@@ -95,26 +95,26 @@ def test_four_held_target_tiles_do_not_exclude_a_real_ryanmen_ron():
     assert extract_rule_features(snapshot)["hand_count_flags"][0][6] == 1
 
     candidates = legal_candidates(episode.obs[0])
-    discard = next(candidate for candidate in candidates
-                   if candidate.spec.action_type == "DISCARD" and candidate.spec.base34 == 0
-                   and not candidate.spec.riichi)
+    discard = next(
+        candidate
+        for candidate in candidates
+        if candidate.spec.action_type == "DISCARD" and candidate.spec.base34 == 0 and not candidate.spec.riichi
+    )
     assert public_rule_response_mask(snapshot, discard.global_id)[Response.RON_MASK_1]
     ids = tuple(candidate.global_id for candidate in candidates)
     cache = TokenHistoryCache()
     for _ in range(2):
         prefix = encode_prefix(snapshot, ids, history_cache=cache)
-        hand_count = next(row for row in prefix.rows
-                          if row["kind"] == 4 and row["tiles"][0] == discard.spec.tile37 + 1)
+        hand_count = next(row for row in prefix.rows if row["kind"] == 4 and row["tiles"][0] == discard.spec.tile37 + 1)
         assert hand_count["flags"][6] == 1
         assert prefix.to_bytes() == encode_prefix(snapshot, ids).to_bytes()
 
     episode.act(tile="1m")
     assert episode.env.phase == Phase.WaitResponse and 1 in episode.env.active_players
-    assert any(candidate.spec.action_type == "RON"
-               for candidate in legal_candidates(episode.obs[1], source_player=0))
+    assert any(candidate.spec.action_type == "RON" for candidate in legal_candidates(episode.obs[1], source_player=0))
     episode.resolve("RON", seat=1)
     end = next(index for index, event in enumerate(episode.live.events) if event["type"] == "end_kyoku")
-    events = episode.live.events[:end + 1]
+    events = episode.live.events[: end + 1]
     win = next(event for event in events if event["type"] == "hora")
     assert (win["actor"], win["target"], win["pai"]) == (1, 0, "1m")
     assert win["scores"] == [23700, 26300, 25000, 25000]

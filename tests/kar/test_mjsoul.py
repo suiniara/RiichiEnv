@@ -253,6 +253,7 @@ def test_legacy_decodes_red_tiles_and_splits_dealer_draw(protocol):
     assert "paishan" not in game.records[0].data
     assert "paishan" not in repr(game.events)
     assert game.protocol_sha256 == protocol.source_sha256
+    assert game.protocol_descriptor_sha256 == protocol.descriptor_sha256
     assert game.source_sha256 == hashlib.sha256(_legacy(protocol)).hexdigest()
 
 
@@ -380,11 +381,20 @@ def test_liuju_wire_uses_only_verified_declaring_tiles_not_all_players(protocol,
     revealed = data["tiles0"].copy() if source_hand != "missing" else []
     if source_hand == "mismatch":
         revealed[0] = "3m"
-    payload = _legacy(protocol, [
-        _result(protocol, "RecordNewRound", **data),
-        _result(protocol, "RecordLiuJu", type=1, seat=0, tiles=revealed,
-                allplayertiles=["PRIVATE_NONDECLARING_HAND_MUST_NOT_ENTER_INPUT"] * 4),
-    ])
+    payload = _legacy(
+        protocol,
+        [
+            _result(protocol, "RecordNewRound", **data),
+            _result(
+                protocol,
+                "RecordLiuJu",
+                type=1,
+                seat=0,
+                tiles=revealed,
+                allplayertiles=["PRIVATE_NONDECLARING_HAND_MUST_NOT_ENTER_INPUT"] * 4,
+            ),
+        ],
+    )
     if source_hand == "mismatch":
         with pytest.raises(RecordError, match="source hand"):
             decode_record_bytes(payload, protocol, container="game_detail_records")

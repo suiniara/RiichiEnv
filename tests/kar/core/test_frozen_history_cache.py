@@ -1,4 +1,5 @@
 """Exercise incremental visible history through the frozen FP32 predictor."""
+
 # ruff: noqa: E402 -- Torch is optional until ML tests are collected
 import json
 from dataclasses import replace
@@ -101,8 +102,9 @@ def test_history_cache_crosses_round_but_not_an_identical_new_match(encodes):
     restarted, restarted_ids = _own(_Episode({}, ("E",)))
     assert restarted.to_bytes() == first.to_bytes() and restarted_ids == first_ids
     with pytest.raises(ValueError, match="another observer/decision"):
-        predictor.candidates(restarted, restarted_ids, tuple(a for a in first_ids if a < 148)[:1],
-                             "same-context-for-restart")
+        predictor.candidates(
+            restarted, restarted_ids, tuple(a for a in first_ids if a < 148)[:1], "same-context-for-restart"
+        )
     assert both(restarted, restarted_ids, "same-context-for-restart") == 0
 
 

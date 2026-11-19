@@ -6,10 +6,11 @@ from typing import Any
 from riichienv._riichienv import native_round_transition
 
 from .contracts import ENGINE_COMMIT, MJSOUL_RULESET, content_hash
+from .mjsoul import protocol_identity
 from .payments import end_game_pot
 from .settlement import SETTLEMENT_VERSION
 
-COMPLETION_VERSION = "frozen_mjsoul_hanchan_completion_v1"
+COMPLETION_VERSION = "frozen_mjsoul_hanchan_completion_v2"
 INITIAL_SEAT_ORDER = (0, 1, 2, 3)
 
 
@@ -228,7 +229,15 @@ def _end_required(
     honba = _integer(last_round.get("honba"), "final_honba")
     try:
         transition = native_round_transition(
-            scores, oya, wind, honba, 2, kind, renchan, winner_count, INITIAL_SEAT_ORDER,
+            scores,
+            oya,
+            wind,
+            honba,
+            2,
+            kind,
+            renchan,
+            winner_count,
+            INITIAL_SEAT_ORDER,
             rule=MJSOUL_RULESET.engine_rule(),
         )
     except (ValueError, TypeError, OverflowError) as error:
@@ -331,6 +340,7 @@ def _certificate(game: Any, replay: Mapping[str, Any]) -> dict[str, Any]:  # noq
         raise _EvidenceError("FAIL", "start_game_id_mismatch")
     source_hash = _digest(getattr(game, "source_sha256", None), "source_sha256")
     protocol_hash = _digest(getattr(game, "protocol_sha256", None), "protocol_sha256")
+    descriptor_hash = _digest(getattr(game, "protocol_descriptor_sha256", None), "protocol_descriptor_sha256")
     metadata, observed = _header(game, game_id)
     if replay.get("errors") is None:
         raise _EvidenceError("BLOCKED", "missing_replay_error_evidence")
@@ -411,7 +421,7 @@ def _certificate(game: Any, replay: Mapping[str, Any]) -> dict[str, Any]:  # noq
         "evidence_kind": "explicit_server_gameend" if explicit else "derived_frozen_hanchan_termination",
         "game_id": game_id,
         "source_sha256": source_hash,
-        "protocol_sha256": protocol_hash,
+        **protocol_identity(protocol_hash, descriptor_hash),
         "reference_engine_commit": ENGINE_COMMIT,
         "ruleset_hash": MJSOUL_RULESET.ruleset_hash,
         "settlement_version": SETTLEMENT_VERSION,

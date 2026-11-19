@@ -284,6 +284,7 @@ def _initial_state(scope: dict[str, Any]) -> dict[str, Any]:
         "all_disk_scanned": False,
         "kar_split_assigned": False,
         "protocol_sha256": None,
+        "protocol_descriptor_sha256": None,
     }
 
 
@@ -476,6 +477,7 @@ def _write_record(root: Path, state: dict[str, Any], row: dict[str, Any], *, res
         training_eligible=False,
         kar_split=None,
         protocol_sha256=None,
+        protocol_descriptor_sha256=None,
         old_schema_hash_is_protocol_hash=False,
     )
     with _local_file(root, "manifest.jsonl").open("ab") as manifest:

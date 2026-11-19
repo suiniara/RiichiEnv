@@ -18,15 +18,26 @@ def _replay_source(paths):
     decisions, early_prefixes = [], []
 
     def capture(item):
-        decisions.append({"trigger": item.trigger_event_id, "observer": item.snapshot.observer_player_id,
-                          "target": item.action_target_global, "provenance": item.action_provenance,
-                          "prefix_sha256": hashlib.sha256(item.prefix.to_bytes()).hexdigest()})
+        decisions.append(
+            {
+                "trigger": item.trigger_event_id,
+                "observer": item.snapshot.observer_player_id,
+                "target": item.action_target_global,
+                "provenance": item.action_provenance,
+                "prefix_sha256": hashlib.sha256(item.prefix.to_bytes()).hexdigest(),
+            }
+        )
         if len(early_prefixes) < 8:
             early_prefixes.append(item.prefix.to_record())
 
     replay = replay_game(game, on_decision=capture)
-    return {"game_id": game.game_id, "source_sha256": game.source_sha256,
-            "replay": replay, "decision_inputs": decisions, "early_prefixes": early_prefixes}
+    return {
+        "game_id": game.game_id,
+        "source_sha256": game.source_sha256,
+        "replay": replay,
+        "decision_inputs": decisions,
+        "early_prefixes": early_prefixes,
+    }
 
 
 def _differences(left, right, path="root"):
@@ -60,8 +71,9 @@ def test_single_and_two_process_replays_are_byte_deterministic():
         parallel = workers.map(_replay_source, arguments)
     assert all(row["replay"]["status"] == "PASS" for row in serial)
     for result in serial + parallel:
-        inferred = (item for item in result["decision_inputs"]
-                    if item["provenance"] == "inferred_unique_next_draw_pass")
+        inferred = (
+            item for item in result["decision_inputs"] if item["provenance"] == "inferred_unique_next_draw_pass"
+        )
         for _, group in groupby(inferred, key=lambda item: item["trigger"]):
             seats = [item["observer"] for item in group]
             assert seats == sorted(seats), "Pass export order must follow stable initial seats, not a native hash map"

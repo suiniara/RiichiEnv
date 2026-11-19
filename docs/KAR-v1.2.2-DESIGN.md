@@ -1,10 +1,10 @@
 # KAR-v1.2.2 / RiichiEnv V4 完整主设计
 
-**版本：** 算法 `KAR-v1.2.2` · 宿主合同 `RiichiEnv V4`（`kar_riichienv_contract_v4`） · 文档修订 `design-sync-4`。最后一项仅标识文档，不是新的算法、输入或产物版本。
+**版本：** 算法 `KAR-v1.2.2` · 宿主合同 `RiichiEnv V4`（`kar_riichienv_contract_v4`） · 文档修订 `design-sync-5`。最后一项仅标识文档，不是新的算法、输入或产物版本。
 
 **唯一正文：** `docs/KAR-v1.2.2-DESIGN.md`。对外分发时应从该正文制作逐字节快照，不另维护规范；相对链接以仓库 `docs/` 为基准。此前 `design-sync-1` 的分发文件只对应当时的 `f70684e`，不自动升级。
 
-**适用实现：** `suiniara/RiichiEnv`。本修订以 `kar/riichienv-v1-20261117` 的 `7626166246ec3ed698d5e6d95b27b2068afbe604` 为改动前基线，在已有[响应监督、冻结 FP32 和验证统计修订](kar-response-fp32-validation-repair.md)上实施[原生规则边界收敛](kar-native-rule-boundary.md)。宿主、重放、合法动作及运行时均为 RiichiEnv；Kanachan 仅是 546 动作和 tile37 编号来源。RiichiEnv 上游参考提交为 `0ee1236a283b15508f3ac28407027f340b81e1de`。
+**适用实现：** `suiniara/RiichiEnv` 的 `kar/riichienv-v1-20261117`。保留此前以 `7626166246ec3ed698d5e6d95b27b2068afbe604` 为基线的[响应监督、冻结 FP32 和验证统计修订](kar-response-fp32-validation-repair.md)及[原生规则边界收敛](kar-native-rule-boundary.md)，并在 `4132c6ab21d0b17ecc901763fe56399c1a454e5b` 后追加计分、协议身份、冻结评测和检查点发布修复。宿主、重放、合法动作及运行时均为 RiichiEnv；Kanachan 仅是 546 动作和 tile37 编号来源。RiichiEnv 上游参考提交为 `0ee1236a283b15508f3ac28407027f340b81e1de`。
 
 **历史来源：** 外部附件 `KAR-v1.2.2-DESIGN(3).md` 的字节 SHA-256 为 `4349039c44175ece77f6dddad3a2106fbd3e0e0339935122df242175c83cbdba`。它保留历史身份，不作为 V4 实施规范。见[相对旧附件的差异与迁移说明](kar-design-v4-migration.md)。
 
@@ -24,13 +24,14 @@
 | architecture | `kar_kl_response_value_v1` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | artifact | `kar_riichienv_contract_v4` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | ruleset | `mahjong_soul_4p_red_half_v3_native_rules` | [contracts.py](../src/riichienv/kar/contracts.py) |
-| native rules | `riichienv_native_rules_v1`，产物显式绑定 `native_rules_version` | [core/lib.rs](../riichienv-core/src/lib.rs)、[versioning.py](../src/riichienv/kar/versioning.py) |
+| native rules | `riichienv_native_rules_v2_scoring`，产物显式绑定 `native_rules_version` | [core/lib.rs](../riichienv-core/src/lib.rs)、[versioning.py](../src/riichienv/kar/versioning.py) |
+| protocol identity | `protobuf_source_and_descriptor_v1`，同时绑定主 proto 源字节与完整描述符 | [mjsoul.py](../src/riichienv/kar/mjsoul.py) |
 | input pipeline | `semantic_public_clock_frozen_decisions_v7_native_rules` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | native replay | `native_replay_context_v4` | [native_replay.py](../src/riichienv/kar/native_replay.py) |
 | settlement | `native_mjsoul_settlement_v2` | [settlement.py](../src/riichienv/kar/settlement.py) |
 | dataset / action labels | `kar_decision_sqlite_v1` / `explicit_and_unique_response_pass_v3` | [learning/export.py](../src/riichienv/kar/learning/export.py) |
 | response opportunity evidence | `frozen_response_opportunities_v1` | [response_supervision.py](../src/riichienv/kar/response_supervision.py) |
-| frozen model precision recipe | `fp32_no_autocast_v1` | [learning/config.py](../src/riichienv/kar/learning/config.py) |
+| frozen model precision recipe | `fp32_no_autocast_single_prefix_v2` | [learning/config.py](../src/riichienv/kar/learning/config.py) |
 | public clock | `public_semantic_clock_v1` | [event_semantics.py](../src/riichienv/kar/event_semantics.py) |
 | terminal public resolution | `verified_abort_public_resolution_v1` | [event_semantics.py](../src/riichienv/kar/event_semantics.py) |
 | model computation identity | `kar_transformer_v3_semantic_inputs`，不改变参数形状 | [learning/config.py](../src/riichienv/kar/learning/config.py) |
@@ -44,6 +45,8 @@
 | runtime / finite policy identity | `restricted_kl_runtime_v3_event_ovr` / `calibrated_policy_identity_v3_event_ovr`，KL 数学不变 | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
 | training configuration | `explicit_train_split_scale_v5_decision_time`，配方绑定当前输入版本 | [versioning.py](../src/riichienv/kar/versioning.py) |
 | training startup / cost ledger | `kar_training_startup_v1` / `durable_compute_cost_ledger_v3` | [learning/production_checkpoint.py](../src/riichienv/kar/learning/production_checkpoint.py) / [budget.py](../src/riichienv/kar/budget.py) |
+| frozen evaluation startup / calibration job | `frozen_evaluation_startup_v1` / `heldout_logits_calibration_job_v3_single_prefix` | [learning/evaluation_startup.py](../src/riichienv/kar/learning/evaluation_startup.py) / [learning/calibration_job.py](../src/riichienv/kar/learning/calibration_job.py) |
+| bounded diagnostic / production checkpoint | `kar_exact_resume_v2` / `kar_production_exact_resume_v1`，共用不可变代际与原子指针发布 | [learning/checkpoint.py](../src/riichienv/kar/learning/checkpoint.py) / [learning/production_checkpoint.py](../src/riichienv/kar/learning/production_checkpoint.py) |
 | validation tau selection / gain bound | `frozen_validation_tau_grid_v4` / `paired_rank_hoeffding_union_v1` | [selection_quality.py](../src/riichienv/kar/selection_quality.py) |
 | tau preregistration / evaluation plan | `preregistered_tau_selection_v2` / `registered_validation_tau_matches_v4` | [selection_quality.py](../src/riichienv/kar/selection_quality.py) / [learning/validation_policy.py](../src/riichienv/kar/learning/validation_policy.py) |
 | training plan / loss / decision bound | `budget_ladder_v1` / `sentinel_safe_v1_2_1` / `one_sided_v1_2_1` | [versioning.py](../src/riichienv/kar/versioning.py) / [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
@@ -447,7 +450,11 @@ $$E2=M[\widehat\Delta-\sum_a|d_a|b_a-3\sum_a(q_0(a)-q_\tau(a))_+\rho_a]-3\delta_
 
 完整 validation 按固定 game hash 分成 cal_fit/cal_check；test 不调参。冻结网络，仅 cal_fit 的固定温度网格选 TA、TE、TR；分别最小化合法动作、masked response、真实 E 分支 rank NLL。cal_check 只评估预登记判据，不能看完后调阈值。
 
-冻结模型合同要求 FP32 参数及浮点缓冲，在校准收集、冻结 prefix/候选及已校准 validation 的完整前向边界关闭 autocast，不靠输出 `.float()` 补精度。推理 recipe 显式绑定 `fp32_no_autocast_v1`。原生模型缓存不允许跨 autocast 开关／dtype 使用。未校准的训练验证可用相同精度的 BF16；已校准验证拒绝请求 BF16。若以后提供冻结 BF16，应单独绑定 recipe／cache／calibration／release 并在同一路径重做校准。
+冻结模型合同要求 FP32 参数及浮点缓冲，在校准收集、冻结 prefix/候选及已校准 validation 的完整前向边界关闭 autocast，不靠输出 `.float()` 补精度。推理 recipe 显式绑定 `fp32_no_autocast_single_prefix_v2`。动作校准 logits 与部署共用单样本、无 padding、截至 DECIDE 的 `encode_prefix` 路径；收集时剔除教师 ACTION，不能用批量 dense policy logits 拟合严格门控。相同 FP32 dtype 不保证不同矩阵形状逐位相同；阈值附近的舍入差异足以改变 `>=` 支持集合，因此不以部署侧 epsilon 掩盖差异。Response/Rank 的 heldout logits 仍可批量收集，其路径不构成动作门控数值一致性证明。
+
+原生模型缓存不允许跨 autocast 开关／dtype 使用。未校准的训练验证可用相同精度的 BF16；已校准验证拒绝请求 BF16。若以后提供冻结 BF16，应单独绑定 recipe／cache／calibration／release 并在同一路径重做校准。
+
+已校准完整验证的动作门控诊断也使用上述单前缀路径。逐元素一致性限定于相同设备、实现及前缀输入，不承诺跨 CPU/GPU、内核或库版本的逐位一致；跨运行环境发布仍须满足冻结运行身份与校准证据合同。
 
 温度总体 NLL 与平均 forward KL 差一个未知条件熵，Pinsker/Jensen 仅给同一分布上的平均 TV 关系；有限验证 NLL 不是逐状态证书，不能忽略条件熵把原始 NLL 当真实 KL 数值。
 
@@ -522,7 +529,7 @@ mask 的1仅表示未被公开事实证明不可能；未知保守允许。Pytho
 
 ## 13. RiichiEnv/雀魂适配
 
-离线 GameDetailRecords.actions 只读 `.result`，绝不读 `.user_input`。下载 pb2 不 import 执行；协议由可信 proto 静态字段和描述符核对。source_record_index/hash保留来源，不影响模型时间。
+离线 GameDetailRecords.actions 只读 `.result`，绝不读 `.user_input`。下载 pb2 不 import 执行；协议由可信 proto 静态字段和描述符核对。`protocol_sha256` 保留主 proto 文件字节身份，`protocol_descriptor_sha256` 绑定实际编译的完整 FileDescriptorSet（包括 imports）。解码、逐局审计、完成证书、Golden、审计恢复/合并、接受选择、导出和训练读取均须核对两者及 `protocol_identity_version`。只改被导入的协议也可能改变相同 wire payload 的解释；主文件 SHA 相同不能放行。缺少完整身份的旧派生产物拒绝使用，不能事后补一个 hash 迁移。source_record_index/hash保留来源，不影响模型时间。
 
 离线 replay 在已知 cutoff 调观察；不得用将未来日志注入 current_claims 的 helper 构造决策前合法集合。原生 `ReplayContext` 在 MJAI 事件入口推进一发、双立直、岭上和杠见逃等规则上下文；Python 桥只验证版本、预览及事件配对，不从快照推导或回写 flag。真实合法响应只用于审计/冻结机会证据，不能输入公开 mask。
 
@@ -533,6 +540,8 @@ mask 的1仅表示未被公开事实证明不可能；未知保守允许。Pytho
 暗/加杠分声明、抢杠窗口和提交；KAKAN声明时仍是原PON。仅有本次有效dora/替换draw/匹配ACK证据才提交，旧杠延迟Dora不证明新声明；被抢杠不提前改meld。对手暗杠红牌组成按可见性过滤，不从全知记录泄露。
 
 冻结雀魂规则包括赤牌、三家和、抢暗杠国士、倍役满、包牌、喰替、起家顺破平、终局及流局满贯。规则hash与数据来源必须一致，不混用天凤规则。流局满贯外部依据见[雀魂规则取证](kar-nagashi-rules.md)。
+
+和牌拆解按实际支付选优，普通累计番仍按单倍累计役满封顶，不能因宝牌使原始番数更高而覆盖真正的多倍役满；同支付时保留真正役满身份供后续规则与包牌处理。天和没有固定的和牌张，按[雀魂官方规则](https://mahjongsoul.com/news/46/)选择得分最高的解释，四暗刻单骑、纯正九莲和国士十三面不能由十四张牌的排列顺序决定。普通自摸、地和和荣和仍使用实际和牌张。四人和三人计分器共用拆解比较及天和解释逻辑；这不扩大为对三人整套平台规则的验收。
 
 四人在线与独立审计共用 Rust `rules::settlement` 的支付、残余供托、连庄和终止内核，但平台规则由显式 `GameRule` 决定。KAR 固定雀魂；以下差异依据[雀魂官方段位战规则](https://mahjongsoul.com/news/46/)与[天凤官方四人段位战规则](https://tenhou.net/man/#RULE)：
 
@@ -559,11 +568,15 @@ weight decay：value_head.weight=.05；其他二维矩阵=.01；所有bias/norm�
 
 Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sampler/分桶游标、所有活动artifact字段、source/native构建指纹、完整训练manifest与split、固定rho/lambda、预算账本/登记身份、温度/log阈值/support/quality与验证策略引用、Rmax/tau_min、证书来源和环境版本。任何核心字段缺失/不匹配拒绝精确续训。
 
+有界诊断检查点和正式检查点共用代际发布：先完整写入不可变 payload、flush/fsync，再原子替换同目录 JSON 指针，并在 POSIX 同步目录。新指针提交前不能覆盖或删除上一份已提交代际；成功后保留当前和上一代，未提交的孤立文件不自动删除。读取须验证指针所属命名空间、payload SHA 与 metadata SHA。有界诊断格式升级为 `kar_exact_resume_v2`，其旧单文件 v1 要求显式迁移；正式检查点保持原格式版本和完整训练状态合同。
+
 输出目录与 `startup.json` 身份一起原子发布；身份绑定数据、配方、实现内容、运行布局、原登记及原账本路径。`--resume` 在首份 checkpoint 前仅允许核验过的初始化重入，保留原账本；创建时已有的共享账本还必须保留原始前缀。模型初始化后先保存 step 0 checkpoint，再执行初始完整验证。已提交标记、更新日志或非零 step 代际证据存在时，不得因 checkpoint 缺失而重新初始化；无 startup 记录的既有 checkpoint 仍走原精确恢复校验。
 
 正式 trainer 先从已核验的授权记录取得数据 manifest 摘要，绑定启动身份并持久化原账本中的 compute attempt，然后才读取和校验完整 manifest、计算 SQLite 文件 SHA、加载索引、构造长度表、复验 M2 前置证据，以及初始化线程、设备和进程组。实际加载数据必须与授权摘要一致；授权摘要不能替代完整数据校验。预处理失败也保留启动与失败记录，并按本次计时结算；未核销的旧 attempt 在任何新数据加载前拒绝继续。
 
 多进程在设备和进程组建立前，通过共享输出文件系统协调启动。torchrun 的独立 run ID（含 `--standalone`）或其他 launcher 显式提供的 `KAR_DISTRIBUTED_RUN_ID` 与 restart count 绑定一次启动；放行收据必须绑定本次 primary 和各 rank 的新 nonce，旧成功记录不能放行新 worker。所有 rank 等 primary 的账本登记完成才开始数据预处理，普通失败使各 rank 一起退出。M1/M2 外层创建进程组使用同一阶段账本的独立启动计时间隔，结算后再由 trainer 接续，避免重复收费；调用方自行提前创建进程组的既有成本不能由后进入的 trainer 回溯计时。
+
+冻结校准与 τ 选型同样先验证预算/授权、持久化独占输出身份及 compute attempt，再经延迟加载工厂读取模型、数据摘要和索引。准备阶段先结算，超预算不能进入前向或对局；准备失败与计算失败共用同一账本，硬中断保留 pending attempt。既有输出不得被新启动覆盖；需先审计、对账并明确处理失败产物，不能静默续接部分 logits 或选型结果。API 接受已加载对象以保持调用兼容，但调用方在进入作用域前发生的开销无法追溯计时；正式 CLI 使用延迟工厂覆盖自身的加载成本。
 
 总云资源USD1000独立封顶：M0/M1=100，M2=650，M3=250，包括CPU/GPU、存储、快照和传输。实际spent、未对账fixed reservations及未完成compute reservations分别记录。计算前持久化attempt，阶段内实测结算递减预留但保持attempt，正常结束或可捕获异常才关闭；没有独立初始化预测时，零金额预留仍是未完成标记。硬中断后不把新进程时钟当成旧计算为零的证据，必须通过外部实际费用凭据核销未记账余款后才能继续。收据唯一ID幂等，checkpoint绑定账本锚点，拒绝费用回退；旧账本版本和不完整尾部要求显式审计迁移，不自动重写。不能跨阶段挪用、缩M3样本或隐费用凑预算。
 
@@ -639,6 +652,8 @@ $$L_\tau=\max\!\left(-3,\overline D_\tau-\sqrt{\frac{18\log(K/\alpha)}{n}}\right
 以 `4c09e9e` 为基线的响应监督修订还会补入非平凡 Pass、改变可证私有历史，并记录不可辨认机会；旧 audit、接受快照、训练 SQLite、索引／样本序、计数与绑定指纹应由可信原始结果重建。固定 rho 的计算与使用方式不变；新导出如因补行改变 train 样本数，其 manifest 比例由实际训练集重新计算，而非在训练中动态再估。冻结 FP32 recipe hash 也已变化，旧缓存和旧绑定的静态 logits／校准／有限策略及发布证据不能重贴。新验收不覆盖原始数据或旧训练产物。
 
 以 `7626166` 为基线的原生规则收敛进一步升级 KAR 雀魂 ruleset、input v7、native replay v4、settlement v2 和 live projection v6，并新增 `native_rules_version`。雀魂规则 hash 显式包含 `allow_fifth_copy_tenpai=false` 与 `extension_dealer_repeat_priority=false`；旧真实 Golden、audit/接受报告和原始数据必须用新扩展重新核验，不能由旧默认值推定平台。受影响的合法候选、终局公开历史、完成/名次标签及派生 SQLite、缓存、索引、统计和绑定需真实重建或验证。绑定旧规则/输入的 checkpoint、校准 logits、有限策略与发布证据不能因 546 Schema 和参数形状未变而直接复用。给旧 JSON 补字段或换 hash 不是迁移；本轮也不自动处理已有训练产物。具体范围见[原生规则边界](kar-native-rule-boundary.md)。
+
+在 `4132c6a` 后的修复将 native rules 升到 `riichienv_native_rules_v2_scoring`，强制重新编译扩展；完整协议身份、Golden/完成证据 v2、单前缀冻结 recipe 与校准 job v3 均有显式绑定。旧计分、旧协议解码或旧 dense policy 校准产物不能直接作为当前训练/发布证据，须从可核验来源重新审计、导出或收集。回归仅证明已覆盖案例中的错误得到修复；未扫描真实历史训练产物，不据此断言已有训练权重或整个语料受污染。
 
 ## 20. 风险与声明边界
 

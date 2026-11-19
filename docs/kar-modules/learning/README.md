@@ -33,13 +33,14 @@
 | `orchestration` | [说明](orchestration/README.md) | M1 on/off 与唯一 M2 调度 |
 | `prerequisites` | [说明](prerequisites/README.md) | M1→M2 实际证据重验 |
 | `inference` | [说明](inference/README.md) | 冻结模型到原始 logits |
+| `evaluation_startup` | [说明](evaluation_startup/README.md) | 冻结评测加载、准备和计算的持久化计费 |
 | `calibration_job` | [说明](calibration_job/README.md) | 冻结 validation archive 与质量判定 |
 | `validation_policy` | [说明](validation_policy/README.md) | cal_fit 配对对局选择 tau |
 | `deployment` | [说明](deployment/README.md) | 冻结发布和受限加载 |
 | `simulation` | [说明](simulation/README.md) | 成对完整基准与固定 M3 |
 | `jobs_cli` | [说明](jobs_cli/README.md) | 冻结模型作业 CLI 接线 |
 
-加上本页，共覆盖 28 个 Python 模块。
+加上本页，共覆盖 29 个 Python 模块。
 
 ## 正式链与历史诊断的区别
 

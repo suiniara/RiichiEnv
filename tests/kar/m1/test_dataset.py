@@ -17,6 +17,7 @@ from riichienv.kar.decision import ReplayDecision
 from riichienv.kar.learning.batch import TOKEN_DTYPE
 from riichienv.kar.learning.dataset import DecisionDataset, collate_examples
 from riichienv.kar.learning.export import SQL_SCHEMA, GameWriter, learning_contract
+from riichienv.kar.mjsoul import protocol_identity
 from riichienv.kar.observation import ObserverLedger
 from riichienv.kar.schema import decode_token
 
@@ -52,8 +53,9 @@ def _current_private_fixture(path, *, explicit=False):
             raise
         document = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
         scope = document["scope"]
-        if (scope.get("dataset_version") != learning_contract()["dataset_version"]
-                or scope.get("input_pipeline_version") not in {None, "legal_set_pool_private_self_pass_v1"}):
+        if scope.get("dataset_version") != learning_contract()["dataset_version"] or scope.get(
+            "input_pipeline_version"
+        ) not in {None, "legal_set_pool_private_self_pass_v1"}:
             raise
         database = path / "decisions.sqlite3"
         if not database.is_file() or hashlib.sha256(database.read_bytes()).hexdigest() != document["database_sha256"]:
@@ -110,12 +112,20 @@ def test_private_fixture_selection_reports_absence_only_when_no_assets_exist(tmp
 def test_only_intact_default_legacy_fixture_can_report_rebuild_not_executed(tmp_path, case):
     database = tmp_path / "decisions.sqlite3"
     database.write_bytes(b"synthetic legacy payload; never accepted as a current SQLite export")
-    scope = {**learning_contract(), "input_pipeline_version": "legal_set_pool_private_self_pass_v1"}
+    scope = {
+        **learning_contract(),
+        **protocol_identity("a" * 64, "b" * 64),
+        "input_pipeline_version": "legal_set_pool_private_self_pass_v1",
+    }
     if case == "current-corrupt":
         scope["input_pipeline_version"] = learning_contract()["input_pipeline_version"]
         scope["response_mask_version"] = "corrupt-current-mask"
-    unsigned = {"status": "PASS", "complete": True, "scope": scope,
-                "database_sha256": hashlib.sha256(database.read_bytes()).hexdigest()}
+    unsigned = {
+        "status": "PASS",
+        "complete": True,
+        "scope": scope,
+        "database_sha256": hashlib.sha256(database.read_bytes()).hexdigest(),
+    }
     document = {**unsigned, "manifest_sha256": content_hash(unsigned)}
     if case == "corrupt-manifest":
         document["unexpected"] = True

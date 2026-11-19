@@ -126,11 +126,19 @@ def test_cal_check_does_not_adjust_fit_temperatures_or_gate(binding, event_suppo
 
 @pytest.mark.parametrize("side", ["fit", "check"])
 def test_static_calibration_rejects_foreign_games_and_duplicate_decisions(
-    side, binding, event_support, calibration_fixture,
+    side,
+    binding,
+    event_support,
+    calibration_fixture,
 ):
     artifact, fit, check = calibration_fixture
-    kwargs = {"split": artifact.split, "binding": binding, "support": event_support,
-              "source_reference": "synthetic membership check", "diagnostic_fixture": True}
+    kwargs = {
+        "split": artifact.split,
+        "binding": binding,
+        "support": event_support,
+        "source_reference": "synthetic membership check",
+        "diagnostic_fixture": True,
+    }
     rows = {"fit": fit, "check": check}
     other = "check" if side == "fit" else "fit"
     rows[side] = [replace(rows[side][0], game_id="outside-the-frozen-validation-split")]

@@ -13,11 +13,12 @@ from test_training_contracts import SyntheticDataset
 
 from riichienv.kar import budget as budget_module
 from riichienv.kar.authorization import update_implementation_sha256
-from riichienv.kar.budget import BudgetLedger, BudgetPlan, CostForecast
+from riichienv.kar.budget import BudgetExceededError, BudgetLedger, BudgetPlan, CostForecast
 from riichienv.kar.calibration_quality import CalibrationQualityPolicy
 from riichienv.kar.calibration_roles import calibration_is_fit
 from riichienv.kar.contracts import content_hash, game_split
 from riichienv.kar.learning import calibration_job
+from riichienv.kar.learning import dataset as dataset_module
 from riichienv.kar.learning.dataset import DecisionDataset
 from riichienv.kar.learning.export import SQL_SCHEMA, learning_contract
 from riichienv.kar.learning.model import ModelOutputs
@@ -42,7 +43,13 @@ def calibration_request(tmp_path, monkeypatch):
         "check": next(game for game in validation_games if not calibration_is_fit(game)),
     }
     available = {"train": 1, "validation": 2, "test": 0}
-    scope = {**learning_contract(), "available_split_counts": available, "split_salt": salt}
+    scope = {
+        **learning_contract(),
+        "protocol_sha256": "d" * 64,
+        "protocol_descriptor_sha256": "e" * 64,
+        "available_split_counts": available,
+        "split_salt": salt,
+    }
     path = data / "decisions.sqlite3"
     games = []
     with sqlite3.connect(path) as db:
@@ -164,11 +171,16 @@ def calibration_request(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("phase", ["M1", "M2"])
 @pytest.mark.parametrize("work_units,cap", [(1, 1.5), (3, 3.5)])
-def test_incomplete_workload_is_rejected_before_output_or_compute(calibration_request, phase, work_units, cap):
+def test_incomplete_workload_is_rejected_after_metered_preparation_before_forward(
+    calibration_request, phase, work_units, cap
+):
     run, output, reached = calibration_request
     with pytest.raises(ValueError, match="every validation decision row"):
         run(work_units, phase=phase, cap=cap)
-    assert reached == [] and not output.exists()
+    assert reached == [] and (output / "startup.json").is_file()
+    entries = [json.loads(line) for line in (output / "costs.jsonl").read_text().splitlines()]
+    assert entries[-1]["closed"] and entries[-1]["reference"].endswith("/aborted")
+    assert not (output / "logits.sqlite3").exists()
 
 
 @pytest.mark.parametrize("phase,work_units", [("M1", 4), ("M2", 4), ("M2", 5)])
@@ -185,6 +197,58 @@ def test_complete_workload_still_requires_the_calibration_phase_and_recipe(calib
     with pytest.raises(ValueError, match="registered full-validation budget"):
         run(4, **overrides)
     assert reached == [] and not output.exists()
+
+
+@pytest.mark.parametrize("fail_hash", [False, True])
+def test_real_database_preparation_is_durably_metered(calibration_request, monkeypatch, fail_hash):
+    run, output, reached = calibration_request
+    clock = [0.0]
+    monkeypatch.setattr(budget_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    original_hash = dataset_module._file_sha
+
+    def measured_hash(path):
+        assert (output / "startup.json").is_file()
+        entries = [json.loads(line) for line in (output / "costs.jsonl").read_text().splitlines()]
+        assert entries[-1]["kind"] == "compute_reservation"
+        clock[0] += 10.0
+        if fail_hash:
+            raise RuntimeError("synthetic hash read failure")
+        return original_hash(path)
+
+    def archive(*args, **kwargs):
+        reached.append("forward-blocked")
+        clock[0] += 1.0
+        raise ComputeEntryReachedError("no model execution")
+
+    monkeypatch.setattr(dataset_module, "_file_sha", measured_hash)
+    monkeypatch.setattr(calibration_job, "_archive_and_fit", archive)
+    with pytest.raises(RuntimeError, match="synthetic hash read failure" if fail_hash else "no model execution"):
+        run(4, cap=20.0)
+    entries = [json.loads(line) for line in (output / "costs.jsonl").read_text().splitlines()]
+    settlements = [entry for entry in entries if entry["kind"] == "compute_settlement"]
+    assert sum(entry["usd"] for entry in settlements) == (10.0 if fail_hash else 11.0)
+    assert len({entry["attempt_id"] for entry in settlements}) == 1
+    assert settlements[-1]["closed"] and settlements[-1]["reference"].endswith("/aborted")
+    assert reached == ([] if fail_hash else ["forward-blocked"])
+
+
+def test_preparation_overrun_is_charged_once_before_model_forward(calibration_request, monkeypatch):
+    run, output, reached = calibration_request
+    clock = [0.0]
+    monkeypatch.setattr(budget_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    original_hash = dataset_module._file_sha
+
+    def measured_hash(path):
+        clock[0] += 10.0
+        return original_hash(path)
+
+    monkeypatch.setattr(dataset_module, "_file_sha", measured_hash)
+    with pytest.raises(BudgetExceededError, match="exhausted this phase"):
+        run(4, cap=4.5)
+    entries = [json.loads(line) for line in (output / "costs.jsonl").read_text().splitlines()]
+    settlements = [entry for entry in entries if entry["kind"] == "compute_settlement"]
+    assert sum(entry["usd"] for entry in settlements) == 10.0
+    assert settlements[-1]["closed"] and reached == []
 
 
 def test_last_partial_batch_reserves_actual_rows_with_an_exact_budget(monkeypatch, tmp_path):
@@ -217,6 +281,7 @@ def test_last_partial_batch_reserves_actual_rows_with_an_exact_budget(monkeypatc
         _frozen_identity=lambda: "fixed-logit-stub",
         use_rule_features=True,
         binding=None,
+        policy_logits_from_rows=lambda rows: torch.zeros(len(rows), 546),
     )
     monkeypatch.setattr(calibration_job, "dataset_event_support", lambda _data: "synthetic-support")
     monkeypatch.setattr(

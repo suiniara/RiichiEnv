@@ -21,11 +21,13 @@ from riichienv.kar.learning import trainer
 from riichienv.kar.learning.dataset import DecisionDataset
 from riichienv.kar.learning.distributed import DistributedStageError
 from riichienv.kar.learning.export import SQL_SCHEMA, learning_contract
+from riichienv.kar.mjsoul import protocol_identity
 
 
 def _write_dataset(directory):
     directory.mkdir()
     manifest = FullSyntheticDataset(directory, "train").manifest
+    manifest["scope"].update(protocol_identity("c" * 64, "d" * 64))
     database = directory / "decisions.sqlite3"
     with sqlite3.connect(database) as db:
         db.executescript(SQL_SCHEMA)

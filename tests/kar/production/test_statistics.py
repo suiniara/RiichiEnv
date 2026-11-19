@@ -86,8 +86,9 @@ def test_reliability_and_observed_branch_rank_metrics_are_explicit():
     metrics.add(
         game="b", head="rank", probabilities=[0.1, 0.1, 0.1, 0.7], target=3, log_probability=math.log(0.7), event=4
     )
-    metrics.add_response_mass((0.7, 0.3, *(0.0,) * 19), train_supported=(True,) * 21,
-                              value_supported=(True,) + (False,) * 20)
+    metrics.add_response_mass(
+        (0.7, 0.3, *(0.0,) * 19), train_supported=(True,) * 21, value_supported=(True,) + (False,) * 20
+    )
     metrics.add_gate(retained=False, support_size=1, mass=0.2)
     result = metrics.report(bootstrap_replicates=50)
     assert result["rank_by_response"]["8"]["count"] == 1 and result["rank_by_response"]["4"]["count"] == 1

@@ -15,7 +15,7 @@ from riichienv import convert
 from .actions import legal_candidates
 from .completion import certify_completion, observed_raw_final_scores
 from .contracts import MJSOUL_RULESET, content_hash, game_split
-from .mjsoul import decode_record_bytes, load_protocol
+from .mjsoul import decode_record_bytes, load_protocol, protocol_identity, validate_protocol_identity
 from .observation import ObserverLedger, PublicSnapshot
 from .response import resolve_discard_response
 from .response_mask import public_rule_response_mask, validate_response_target
@@ -30,7 +30,7 @@ from .rule_features import (
 from .settlement import verify_settlements
 from .tokenize import encode_prefix
 
-GOLDEN_VERSION = "mjsoul_real_golden_v1"
+GOLDEN_VERSION = "mjsoul_real_golden_v2"
 _MAX_RAW_BYTES = 64 * 1024 * 1024
 
 
@@ -487,7 +487,7 @@ def _candidate(game: Any, case_id: str, observer: int, ids: tuple[int, ...]) -> 
         "case_id": case_id,
         "game_id": game.game_id,
         "source_sha256": game.source_sha256,
-        "protocol_sha256": game.protocol_sha256,
+        **protocol_identity(game.protocol_sha256, game.protocol_descriptor_sha256),
         "ruleset_hash": MJSOUL_RULESET.ruleset_hash,
         "observer": observer,
         "event_ids": list(ids),
@@ -573,10 +573,12 @@ def find_golden_candidates(game: Any) -> list[dict[str, Any]]:  # noqa: PLR0915
     return list(found.values())
 
 
-def _protocol(path: str, digest: str):
+def _protocol(path: str, digest: str, descriptor_digest: str):
     source = Path(path)
     _require(hashlib.sha256(source.read_bytes()).hexdigest() == digest, "protocol_file_hash_mismatch")
-    return load_protocol(source)
+    protocol = load_protocol(source)
+    _require(protocol.descriptor_sha256 == descriptor_digest, "protocol_descriptor_hash_mismatch")
+    return protocol
 
 
 def _source_game(game: Any, evidence: Mapping[str, Any]) -> Any:
@@ -590,8 +592,12 @@ def _source_game(game: Any, evidence: Mapping[str, Any]) -> Any:
     )
     _require(evidence.get("game_id") == game.game_id, "game_id_mismatch")
     source_hash = _digest(evidence.get("source_sha256"), "source_sha256")
-    protocol_hash = _digest(evidence.get("protocol_sha256"), "protocol_sha256")
-    _require(source_hash == game.source_sha256 and protocol_hash == game.protocol_sha256, "source_identity_mismatch")
+    identity = validate_protocol_identity(evidence, context="Golden evidence")
+    _require(
+        source_hash == game.source_sha256
+        and identity == protocol_identity(game.protocol_sha256, game.protocol_descriptor_sha256),
+        "source_identity_mismatch",
+    )
     _require(evidence.get("ruleset_hash") == MJSOUL_RULESET.ruleset_hash, "ruleset_hash_mismatch")
     _require(
         bool(evidence.get("source_path")) and bool(evidence.get("proto_path")),
@@ -604,10 +610,13 @@ def _source_game(game: Any, evidence: Mapping[str, Any]) -> Any:
     _require(source.stat().st_size <= _MAX_RAW_BYTES, "raw_source_size_limit_exceeded")
     payload = source.read_bytes()
     _require(hashlib.sha256(payload).hexdigest() == source_hash, "raw_source_file_hash_mismatch")
-    protocol = _protocol(str(proto.resolve()), protocol_hash)
+    protocol = _protocol(str(proto.resolve()), identity["protocol_sha256"], identity["protocol_descriptor_sha256"])
     decoded = decode_record_bytes(payload, protocol, container=evidence.get("container", "majsoul_download"))
     _require(
-        decoded.game_id == game.game_id and decoded.source_sha256 == source_hash, "decoded_source_identity_mismatch"
+        decoded.game_id == game.game_id
+        and decoded.source_sha256 == source_hash
+        and identity == protocol_identity(decoded.protocol_sha256, decoded.protocol_descriptor_sha256),
+        "decoded_source_identity_mismatch",
     )
     _require(content_hash(decoded.events) == content_hash(game.events), "normalized_event_stream_mismatch")
     records = [(record.index, record.name, record.source_sha256) for record in game.records]
@@ -725,7 +734,7 @@ def verify_golden_evidence(game: Any, replay_result: Mapping[str, Any], evidence
             "source_provenance": "real_raw_record",
             "game_id": decoded.game_id,
             "source_sha256": decoded.source_sha256,
-            "protocol_sha256": decoded.protocol_sha256,
+            **protocol_identity(decoded.protocol_sha256, decoded.protocol_descriptor_sha256),
             "ruleset_hash": MJSOUL_RULESET.ruleset_hash,
             "observer": observer,
             "event_ids": list(ids),
@@ -773,7 +782,7 @@ def golden_coverage(evidences: Sequence[Mapping[str, Any]]) -> dict[str, Any]:  
     failed = []
     blocked = []
     seen: set[str] = set()
-    replay_cache: dict[tuple[str, str], dict[str, Any]] = {}
+    replay_cache: dict[tuple[str, str, str], dict[str, Any]] = {}
     for evidence in evidences:
         if not isinstance(evidence, Mapping):
             failed.append({"case_id": None, "status": "FAIL", "reason": "malformed_golden_record"})
@@ -799,13 +808,18 @@ def golden_coverage(evidences: Sequence[Mapping[str, Any]]) -> dict[str, Any]:  
             source = Path(evidence["source_path"])
             _require(source.is_file(), "raw_source_file_missing", "BLOCKED")
             _require(source.stat().st_size <= _MAX_RAW_BYTES, "raw_source_size_limit_exceeded")
-            protocol = _protocol(str(Path(evidence["proto_path"]).resolve()), evidence["protocol_sha256"])
+            identity = validate_protocol_identity(evidence, context="Golden evidence")
+            protocol = _protocol(
+                str(Path(evidence["proto_path"]).resolve()),
+                identity["protocol_sha256"],
+                identity["protocol_descriptor_sha256"],
+            )
             game = decode_record_bytes(
                 source.read_bytes(), protocol, container=evidence.get("container", "majsoul_download")
             )
             # Saved counters and a self-hash are not native-legality evidence.
             # Re-run the actual result-only replay, once per raw/protocol pair.
-            key = (game.source_sha256, game.protocol_sha256)
+            key = (game.source_sha256, game.protocol_sha256, game.protocol_descriptor_sha256)
             if key not in replay_cache:
                 from .audit import replay_game  # noqa: PLC0415
 

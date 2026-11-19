@@ -1,4 +1,5 @@
 """Same actual random Small model on source-aligned inputs; forward only."""
+
 import json
 
 import pytest
@@ -33,8 +34,12 @@ def test_source_aligned_inputs_have_identical_small_fp32_readouts(scenario, reco
         action = chosen.global_id
         # This comparison changes source envelopes, not the midgame decoder.
         offline = [{**event, "source_record_index": 0, "source_record_sha256": "f" * 64} for event in live.events]
-    record_property("comparison_source", "RecordNewRound normalization vs native" if scenario == "opening"
-                    else "native midgame vs same live events with different source metadata")
+    record_property(
+        "comparison_source",
+        "RecordNewRound normalization vs native"
+        if scenario == "opening"
+        else "native midgame vs same live events with different source metadata",
+    )
     owner = ObserverLedger(actor, (0, 1, 2, 3))
     for event in offline:
         owner.apply_event(event)
@@ -42,9 +47,15 @@ def test_source_aligned_inputs_have_identical_small_fp32_readouts(scenario, reco
     for view in (owner.snapshot(), live.snapshot(actor)):
         prefix = encode_prefix(view, ids)
         sequence = append_action(prefix, action)
-        samples.append({"tokens": sequence.to_bytes()[108:], "candidates": ids,
-                        "decide_index": prefix.decide_index, "action_index": len(sequence.rows) - 1,
-                        "decision_row_id": "source-parity"})
+        samples.append(
+            {
+                "tokens": sequence.to_bytes()[108:],
+                "candidates": ids,
+                "decide_index": prefix.decide_index,
+                "action_index": len(sequence.rows) - 1,
+                "decision_row_id": "source-parity",
+            }
+        )
     left, right = (collate_inputs([sample]) for sample in samples)
     assert left.context_ids == right.context_ids
     assert torch.equal(left.candidates, right.candidates)

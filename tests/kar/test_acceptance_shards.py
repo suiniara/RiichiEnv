@@ -8,6 +8,7 @@ from riichienv.kar import acceptance
 from riichienv.kar.actions import manifest_hash
 from riichienv.kar.contracts import MJSOUL_RULESET, cohort_hash, content_hash, game_split
 from riichienv.kar.corpus_audit import SEMANTIC_GAME_VERSION, normalized_game_sha256
+from riichienv.kar.mjsoul import protocol_identity
 from riichienv.kar.schema import schema_status
 from riichienv.kar.versioning import artifact_contract
 
@@ -84,7 +85,7 @@ def _trusted_shards(tmp_path, count, *, semantic_alias=False):
         "ruleset_hash": MJSOUL_RULESET.ruleset_hash,
         "cohort_hash": cohort_hash(),
         "action_manifest_hash": manifest_hash(),
-        "protocol_sha256": "a" * 64,
+        **protocol_identity("a" * 64, "b" * 64),
         "split_salt": salt,
         "implementation_sha256": "b" * 64,
         "normalized_game_digest_version": SEMANTIC_GAME_VERSION,
@@ -110,7 +111,7 @@ def _trusted_shards(tmp_path, count, *, semantic_alias=False):
                 {
                     **sources[identity],
                     "status": "PASS",
-                    "protocol_sha256": "a" * 64,
+                    **protocol_identity("a" * 64, "b" * 64),
                     "metadata": metadata,
                     "response_categories": [0],
                     "receipt_sha256": "d" * 64,

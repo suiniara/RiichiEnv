@@ -6,6 +6,7 @@ import pytest
 
 from riichienv.kar import corpus_audit as corpus
 from riichienv.kar.contracts import content_hash, game_split
+from riichienv.kar.mjsoul import Protocol
 
 SALT = "corpus-unit-split"
 
@@ -25,7 +26,7 @@ def _setup(tmp_path, monkeypatch, *, statuses=None, golden=False, room=12):
     manifest.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     proto = tmp_path / "fixture.proto"
     proto.write_text("synthetic protocol fixture", encoding="utf-8")
-    monkeypatch.setattr(corpus, "load_protocol", lambda _: SimpleNamespace(source_sha256="a" * 64))
+    monkeypatch.setattr(corpus, "load_protocol", lambda _: Protocol("a" * 64, "b" * 64, "synthetic_fixture", None))
 
     def decode(payload, *_args, **_kwargs):
         game_id = payload.decode()
@@ -40,6 +41,7 @@ def _setup(tmp_path, monkeypatch, *, statuses=None, golden=False, room=12):
             events=events,
             source_sha256=hashlib.sha256(payload).hexdigest(),
             protocol_sha256="a" * 64,
+            protocol_descriptor_sha256="b" * 64,
             metadata={"category": 2, "mode": 2, "mode_id": room, "account_seats": [0, 1, 2, 3]},
         )
 

@@ -47,18 +47,34 @@ def _calibration(model, dataset):
 
     def row(game):
         return CalibrationRow(
-            game, game + "/row", sample["candidates"], (0.0,) * 546, sample["action_target"],
-            response_logits=(0.0,) * 21, response_allowed=sample["response_allowed"],
-            response_target=0, response_valid=True, rank_logits=((2.0, 0.0, 0.0, 0.0),) * 21,
-            rank_target=0, value_valid=True,
+            game,
+            game + "/row",
+            sample["candidates"],
+            (0.0,) * 546,
+            sample["action_target"],
+            response_logits=(0.0,) * 21,
+            response_allowed=sample["response_allowed"],
+            response_target=0,
+            response_valid=True,
+            rank_logits=((2.0, 0.0, 0.0, 0.0),) * 21,
+            rank_target=0,
+            value_valid=True,
         )
 
     heads = ("action", "response", "rank")
-    quality = CalibrationQualityPolicy(dict.fromkeys(heads, 10.0), dict.fromkeys(heads, 2.0),
-                                       dict.fromkeys(heads, 1.0), 1, 1, 0.0, "fixture only")
+    quality = CalibrationQualityPolicy(
+        dict.fromkeys(heads, 10.0), dict.fromkeys(heads, 2.0), dict.fromkeys(heads, 1.0), 1, 1, 0.0, "fixture only"
+    )
     artifact = calibrate_static_rows(
-        [row(fit)], [row(check)], split=split, binding=binding, support=support, temperatures=(1.0,),
-        quality_policy=quality, inference_device_type="cpu", source_reference="synthetic FP32 boundary fixture",
+        [row(fit)],
+        [row(check)],
+        split=split,
+        binding=binding,
+        support=support,
+        temperatures=(1.0,),
+        quality_policy=quality,
+        inference_device_type="cpu",
+        source_reference="synthetic FP32 boundary fixture",
     )
     return artifact, support
 
@@ -76,8 +92,13 @@ def test_calibrated_evaluation_is_fp32_under_ambient_bf16_and_refuses_requested_
         return original(batch)
 
     monkeypatch.setattr(model, "forward", inspect)
-    kwargs = {"microbatch": 2, "use_rule_features": True, "calibration": artifact, "support": support,
-              "bootstrap_replicates": 5}
+    kwargs = {
+        "microbatch": 2,
+        "use_rule_features": True,
+        "calibration": artifact,
+        "support": support,
+        "bootstrap_replicates": 5,
+    }
     try:
         expected = evaluate_complete(model, dataset, context, **kwargs)
         with torch.autocast("cpu", dtype=torch.bfloat16):
@@ -91,8 +112,14 @@ def test_calibrated_evaluation_is_fp32_under_ambient_bf16_and_refuses_requested_
 
 
 def _worker(rank, port, directory, fail):
-    os.environ.update(RANK=str(rank), WORLD_SIZE="2", LOCAL_RANK=str(rank),
-                      MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port), CUDA_VISIBLE_DEVICES="-1")
+    os.environ.update(
+        RANK=str(rank),
+        WORLD_SIZE="2",
+        LOCAL_RANK=str(rank),
+        MASTER_ADDR="127.0.0.1",
+        MASTER_PORT=str(port),
+        CUDA_VISIBLE_DEVICES="-1",
+    )
     torch.set_num_threads(1)
     report_calls = 0
     original = FullDiagnostics.report
@@ -107,13 +134,20 @@ def _worker(rank, port, directory, fail):
     FullDiagnostics.report = counted
     context = DistributedContext.open("cpu", backend="gloo", gloo_bind_host="127.0.0.1")
     try:
-        report = evaluate_complete(_model(), _Validation(), context, microbatch=1, use_rule_features=True,
-                                   bootstrap_replicates=17)
-        outcome = {"examples": report["evaluated_examples"], "digest": content_hash(report),
-                   "timings": report.get("timings_seconds", {})}
+        report = evaluate_complete(
+            _model(), _Validation(), context, microbatch=1, use_rule_features=True, bootstrap_replicates=17
+        )
+        outcome = {
+            "examples": report["evaluated_examples"],
+            "digest": content_hash(report),
+            "timings": report.get("timings_seconds", {}),
+        }
     except Exception as error:
-        outcome = {"error_type": type(error).__name__, "error": str(error),
-                   "distributed_error": isinstance(error, DistributedStageError)}
+        outcome = {
+            "error_type": type(error).__name__,
+            "error": str(error),
+            "distributed_error": isinstance(error, DistributedStageError),
+        }
     finally:
         context.close()
     (Path(directory) / f"rank-{rank}.json").write_text(json.dumps({"calls": report_calls, **outcome}), encoding="utf-8")

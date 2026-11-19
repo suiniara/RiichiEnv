@@ -151,6 +151,7 @@ def test_single_session_stdin_transport_keeps_old_metadata_non_authoritative(tmp
     for row in manifest(root):
         assert row["selection_role"] == "main_cohort_candidate"
         assert row["kar_split"] is None and row["protocol_sha256"] is None
+        assert row["protocol_descriptor_sha256"] is None
         assert row["training_eligible"] is False
         assert row["old_schema_hash_is_protocol_hash"] is False
         assert row["source_sha256"] == hashlib.sha256((root / row["local_file"]).read_bytes()).hexdigest()

@@ -1,4 +1,5 @@
 """Synthetic preregistered criteria only: no measured model-calibration claims."""
+
 import copy
 import math
 from dataclasses import replace
@@ -27,10 +28,14 @@ from riichienv.kar.support import EventSupport, candidate_value
 
 def branch_policy(minimum_games=1):
     # Deliberately synthetic test thresholds, NOT production defaults.
-    return BranchQualityPolicy(tuple(
-        BranchQualityCriterion(head, event, 5.0 if head == "response" else 1.0, 2.0, 1.0, minimum_games)
-        for head in ("response", "rank") for event in (0, 8)
-    ), "synthetic criteria fixed before generating fixture rows;not real calibration")
+    return BranchQualityPolicy(
+        tuple(
+            BranchQualityCriterion(head, event, 5.0 if head == "response" else 1.0, 2.0, 1.0, minimum_games)
+            for head in ("response", "rank")
+            for event in (0, 8)
+        ),
+        "synthetic criteria fixed before generating fixture rows;not real calibration",
+    )
 
 
 def artifact_fixture(binding, support, public_view, *, bad=True, minimum_games=1):
@@ -41,21 +46,44 @@ def artifact_fixture(binding, support, public_view, *, bad=True, minimum_games=1
         ranks = [(8.0, 0.0, 0.0, 0.0)] * 21
         if bad:
             ranks[8] = (0.0, 8.0, 0.0, 0.0)
-        return CalibrationRow(game, f"{game}/{index}", ids, (0.0,) * 546, ids[0],
-                              response_logits=(0.0,) * 21, rank_logits=tuple(ranks),
-                              response_allowed=(True,) * 21, response_target=event, response_valid=True,
-                              rank_target=0, value_valid=True)
+        return CalibrationRow(
+            game,
+            f"{game}/{index}",
+            ids,
+            (0.0,) * 546,
+            ids[0],
+            response_logits=(0.0,) * 21,
+            rank_logits=tuple(ranks),
+            response_allowed=(True,) * 21,
+            response_target=event,
+            response_valid=True,
+            rank_target=0,
+            value_valid=True,
+        )
 
     fit = [row(split.fit_games[0], 0, 0)]
     check = [row(split.check_games[0], index, 0 if index < 100 else 8) for index in range(101)]
     quality = CalibrationQualityPolicy(
-        {"action": 10.0, "response": 5.0, "rank": 1.0}, {head: 2.0 for head in ("action", "response", "rank")},
-        {head: 1.0 for head in ("action", "response", "rank")}, 1, 1, 0.0,
-        "synthetic overall criteria,not production thresholds", branch_policy(minimum_games),
+        {"action": 10.0, "response": 5.0, "rank": 1.0},
+        {head: 2.0 for head in ("action", "response", "rank")},
+        {head: 1.0 for head in ("action", "response", "rank")},
+        1,
+        1,
+        0.0,
+        "synthetic overall criteria,not production thresholds",
+        branch_policy(minimum_games),
     )
-    return calibrate_static_rows(fit, check, split=split, binding=binding, support=support,
-                                 temperatures=(1.0,), source_reference="synthetic logits only",
-                                 diagnostic_fixture=True, quality_policy=quality)
+    return calibrate_static_rows(
+        fit,
+        check,
+        split=split,
+        binding=binding,
+        support=support,
+        temperatures=(1.0,),
+        source_reference="synthetic logits only",
+        diagnostic_fixture=True,
+        quality_policy=quality,
+    )
 
 
 def test_overall_pass_does_not_authorize_unregistered_branch_quality(
@@ -64,15 +92,25 @@ def test_overall_pass_does_not_authorize_unregistered_branch_quality(
     original, fit, check = calibration_fixture
     assert original.quality_report["status"] == "passed"
     artifact = calibrate_static_rows(
-        fit, check, split=original.split, binding=original.binding, support=event_support,
-        temperatures=original.temperatures[:1], source_reference="synthetic, no branch preregistration",
-        diagnostic_fixture=True, quality_policy=replace(original.quality_policy, branch_policy=None),
+        fit,
+        check,
+        split=original.split,
+        binding=original.binding,
+        support=event_support,
+        temperatures=original.temperatures[:1],
+        source_reference="synthetic, no branch preregistration",
+        diagnostic_fixture=True,
+        quality_policy=replace(original.quality_policy, branch_policy=None),
     )
     assert artifact.quality_report["status"] == "passed"
     view, ids = public_view
-    result = RuntimePolicy(fixed_predictor, options=PolicyOptions("empirical_only", 0.5),
-                           support=event_support, calibration=artifact,
-                           allow_diagnostic_calibration=True).decide(view, ids, "missing-branch-criteria")
+    result = RuntimePolicy(
+        fixed_predictor,
+        options=PolicyOptions("empirical_only", 0.5),
+        support=event_support,
+        calibration=artifact,
+        allow_diagnostic_calibration=True,
+    ).decide(view, ids, "missing-branch-criteria")
     assert result.telemetry["candidate_forward_count"] == 0
     assert not result.telemetry["distribution_changed"]
     assert result.fallback_reason == "no_quality_qualified_response_branches"
@@ -95,18 +133,27 @@ def test_overall_pass_rare_rank_branch_failure_keeps_probability_but_cannot_supp
     monkeypatch.setattr(fixed_predictor, "policy", lambda *_args: policy_logits)
 
     def decide():
-        return RuntimePolicy(fixed_predictor, options=PolicyOptions("empirical_only", 0.5),
-                             support=event_support, calibration=artifact,
-                             allow_diagnostic_calibration=True, seed=3).decide(view, ids, "branch-failure")
+        return RuntimePolicy(
+            fixed_predictor,
+            options=PolicyOptions("empirical_only", 0.5),
+            support=event_support,
+            calibration=artifact,
+            allow_diagnostic_calibration=True,
+            seed=3,
+        ).decide(view, ids, "branch-failure")
 
     first = decide()
     original = fixed_predictor.candidates
 
     def poisoned(*args):
         values = original(*args)
-        return {action: (response, tuple((-1000.0, -1000.0, -1000.0, 1000.0) if event == 8 else row
-                                        for event, row in enumerate(ranks)))
-                for action, (response, ranks) in values.items()}
+        return {
+            action: (
+                response,
+                tuple((-1000.0, -1000.0, -1000.0, 1000.0) if event == 8 else row for event, row in enumerate(ranks)),
+            )
+            for action, (response, ranks) in values.items()
+        }
 
     monkeypatch.setattr(fixed_predictor, "candidates", poisoned)
     second = decide()
@@ -140,13 +187,22 @@ def test_branch_evidence_counts_distinct_validation_games_not_rows(
 def test_response_event_calibration_uses_allowed_negatives_and_only_positive_games_for_evidence():
     common, chi = int(Response.NEXT_DRAW), int(Response.CHI_P1)
     allowed = tuple(event in (common, chi) for event in range(21))
-    policy = BranchQualityPolicy((BranchQualityCriterion("response", chi, 1.0, 1.0, 1.0, 2),),
-                                 "synthetic positive-game minimum")
+    policy = BranchQualityPolicy(
+        (BranchQualityCriterion("response", chi, 1.0, 1.0, 1.0, 2),), "synthetic positive-game minimum"
+    )
 
     def row(game, index, event):
-        return CalibrationRow(game, f"{game}/{index}", (4, 8), (0.0,) * 546, 4,
-                              response_logits=(0.0,) * 21, response_allowed=allowed,
-                              response_target=event, response_valid=True)
+        return CalibrationRow(
+            game,
+            f"{game}/{index}",
+            (4, 8),
+            (0.0,) * 546,
+            4,
+            response_logits=(0.0,) * 21,
+            response_allowed=allowed,
+            response_target=event,
+            response_valid=True,
+        )
 
     # Positive rows repeat one game. Other *eligible* games provide negatives,
     # but cannot manufacture independent positive evidence for a rare branch.
@@ -157,8 +213,12 @@ def test_response_event_calibration_uses_allowed_negatives_and_only_positive_gam
     report = calibration_metrics([*positives, *negatives, masked, unknown], (1.0,) * 3, None)
     response = report["branch_metrics"]["response"]
     assert response[str(chi)] == {
-        "count": 5, "positive_count": 2, "positive_independent_games": 1,
-        "nll": pytest.approx(math.log(2)), "brier": pytest.approx(0.25), "ece": pytest.approx(0.1),
+        "count": 5,
+        "positive_count": 2,
+        "positive_independent_games": 1,
+        "nll": pytest.approx(math.log(2)),
+        "brier": pytest.approx(0.25),
+        "ece": pytest.approx(0.1),
     }
     assert response[str(common)]["count"] == 6
     assert response["2"]["count"] == 0 and response["2"]["ece"] is None
@@ -168,9 +228,17 @@ def test_response_event_calibration_uses_allowed_negatives_and_only_positive_gam
 
 
 def test_response_binary_nll_keeps_tiny_complement_in_log_space():
-    row = CalibrationRow("rare-negative", "rare-negative/decision", (4, 8), (0.0,) * 546, 4,
-                         response_logits=(1000.0, 0.0) + (2000.0,) * 19,
-                         response_allowed=(True, True) + (False,) * 19, response_target=1, response_valid=True)
+    row = CalibrationRow(
+        "rare-negative",
+        "rare-negative/decision",
+        (4, 8),
+        (0.0,) * 546,
+        4,
+        response_logits=(1000.0, 0.0) + (2000.0,) * 19,
+        response_allowed=(True, True) + (False,) * 19,
+        response_target=1,
+        response_valid=True,
+    )
     response = calibration_metrics([row], (1.0,) * 3, None)["branch_metrics"]["response"]
     assert response["0"]["nll"] == response["1"]["nll"] == 1000.0
     assert response["0"]["brier"] == response["1"]["brier"] == 1.0
@@ -243,7 +311,8 @@ def test_finite_policy_identity_cannot_omit_branch_contract(binding, event_suppo
     record = calibrated_policy_identity(binding, event_support, artifact)
     validate_policy_identity(record, binding)
     record.pop(missing)
-    record["policy_identity_sha256"] = content_hash({key: value for key, value in record.items()
-                                                  if key != "policy_identity_sha256"})
+    record["policy_identity_sha256"] = content_hash(
+        {key: value for key, value in record.items() if key != "policy_identity_sha256"}
+    )
     with pytest.raises(ValueError, match="branch-quality contract"):
         validate_policy_identity(record, binding)

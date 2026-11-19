@@ -111,9 +111,14 @@ def test_main_model_registration_binds_output_and_ledger(tmp_path, monkeypatch):
 
 def test_finished_checkpoint_publication_can_be_rebuilt_without_updates(tmp_path):
     contract = {
-        **artifact_contract(), "synthetic": True,
-        "training": {"model_tier": "small", "N_train_half_games": 900, "N_eligible_half_games": 990,
-                     "model_tier_basis": MODEL_TIER_BASIS},
+        **artifact_contract(),
+        "synthetic": True,
+        "training": {
+            "model_tier": "small",
+            "N_train_half_games": 900,
+            "N_eligible_half_games": 990,
+            "model_tier_basis": MODEL_TIER_BASIS,
+        },
     }
     runtime = {"world_size": 1}
     state = {

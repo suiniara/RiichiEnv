@@ -1,4 +1,5 @@
 """Recover only responses determined by a frozen offer and its public result."""
+
 from __future__ import annotations
 
 from collections import Counter
@@ -61,13 +62,17 @@ class ResponseWindow:
 
     @classmethod
     def open(
-        cls, ledgers: Sequence[ObserverLedger], choices: Mapping[int, ReplayOpportunity],
+        cls,
+        ledgers: Sequence[ObserverLedger],
+        choices: Mapping[int, ReplayOpportunity],
     ) -> ResponseWindow | None:
         if not choices:
             return None
         offers = {seat: ResponseOffer(choices[seat], ledgers[seat].pass_trigger()) for seat in sorted(choices)}
-        keys = {(item.choice.snapshot.decision_phase, item.trigger.target, item.trigger.trigger_event_id)
-                for item in offers.values()}
+        keys = {
+            (item.choice.snapshot.decision_phase, item.trigger.target, item.trigger.trigger_event_id)
+            for item in offers.values()
+        }
         if len(keys) != 1:
             raise ValueError("Frozen responders disagree on their public window")
         phase, source, trigger = keys.pop()
@@ -127,8 +132,10 @@ class OpportunityCounts:
             raise ValueError("Response opportunity report version differs")
         for phase, outcomes in record["by_phase_and_close"].items():
             for closure, counts in outcomes.items():
-                if set(counts) != set(_COUNTS) or any(type(n) is not int or n < 0 for n in counts.values()) or (
-                    counts["total"] != sum(counts[key] for key in _COUNTS[1:])
+                if (
+                    set(counts) != set(_COUNTS)
+                    or any(type(n) is not int or n < 0 for n in counts.values())
+                    or (counts["total"] != sum(counts[key] for key in _COUNTS[1:]))
                 ):
                     raise ValueError("Invalid response opportunity counts")
                 self.by_phase_and_close.setdefault(phase, {}).setdefault(closure, Counter()).update(counts)
@@ -138,6 +145,7 @@ class OpportunityCounts:
             phase: {close: {key: counts[key] for key in _COUNTS} for close, counts in sorted(outcomes.items())}
             for phase, outcomes in sorted(self.by_phase_and_close.items())
         }
-        totals = {key: sum(counts[key] for outcomes in slices.values() for counts in outcomes.values())
-                  for key in _COUNTS}
+        totals = {
+            key: sum(counts[key] for outcomes in slices.values() for counts in outcomes.values()) for key in _COUNTS
+        }
         return {"version": RESPONSE_SUPERVISION_VERSION, **totals, "by_phase_and_close": slices}

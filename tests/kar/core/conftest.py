@@ -99,9 +99,14 @@ def calibration_fixture(binding, event_support, public_view):
             1,
             0.0,
             "synthetic, explicitly preregistered fixture criteria",
-            BranchQualityPolicy(tuple(BranchQualityCriterion(head, event, 20.0, 2.0, 1.0, 1)
-                                      for head in ("response", "rank") for event in range(21)),
-                                "synthetic all-branch unit criteria,not production defaults"),
+            BranchQualityPolicy(
+                tuple(
+                    BranchQualityCriterion(head, event, 20.0, 2.0, 1.0, 1)
+                    for head in ("response", "rank")
+                    for event in range(21)
+                ),
+                "synthetic all-branch unit criteria,not production defaults",
+            ),
         ),
         inference_device_type="fixture",
     )

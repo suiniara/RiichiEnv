@@ -3,6 +3,7 @@
 The fixture serializes public results from one actually played round into server
 records. It never supplies offline snapshots, candidates, or decision cutoffs.
 """
+
 from dataclasses import dataclass
 
 import pytest
@@ -32,9 +33,13 @@ class _Selection:
 class _Policy:
     def decide(self, snapshot, ids, context, *, bounds=None):
         family, tile, riichi, record_choice = self.want
-        target = next(action for action in ids if action_spec(action).action_type == family
-                      and bool(action_spec(action).riichi) == riichi
-                      and (tile is None or action_spec(action).tile37 == tile))
+        target = next(
+            action
+            for action in ids
+            if action_spec(action).action_type == family
+            and bool(action_spec(action).riichi) == riichi
+            and (tile is None or action_spec(action).tile37 == tile)
+        )
         self.seen = _Selection(snapshot, encode_prefix(snapshot, ids), target) if record_choice else None
         return PolicyResult((), target, "fixture", None, {})
 
@@ -53,7 +58,7 @@ def _wall(specials, draws, replacements=(), *, dora_variant=False):
     hands = [[take(name) for name in specials.get(seat, ())] for seat in range(4)]
     for hand in hands:
         hand.extend(pool.pop(0) for _ in range(13 - len(hand)))
-    dealt = [tile for block in (0, 4, 8) for hand in hands for tile in hand[block:block + 4]]
+    dealt = [tile for block in (0, 4, 8) for hand in hands for tile in hand[block : block + 4]]
     wall = dealt + [hand[-1] for hand in hands] + normal + pool + [base, next1, next2] + list(reversed(rinshan))
     # Hold the visible initial indicator, draws and replacement draws fixed.
     for index, tile in ((-5, base), (-7, next2 if dora_variant else next1)):
@@ -94,8 +99,11 @@ class _Episode:
         return selection
 
     def _find_result(self, start, seat, kind):
-        return next(i for i in range(start, len(self.live.events))
-                    if self.live.events[i]["type"] == kind and self.live.events[i]["actor"] == seat)
+        return next(
+            i
+            for i in range(start, len(self.live.events))
+            if self.live.events[i]["type"] == kind and self.live.events[i]["actor"] == seat
+        )
 
     def resolve(self, family="PASS", *, seat=None, capture=False):
         if self.env.phase != Phase.WaitResponse:
@@ -103,8 +111,9 @@ class _Episode:
             return None
         choices, selected = {}, None
         for player in sorted(self.env.active_players):
-            action, choice = self._choose(player, family if player == seat else "PASS",
-                                          capture=capture and player == seat)
+            action, choice = self._choose(
+                player, family if player == seat else "PASS", capture=capture and player == seat
+            )
             choices[player] = action
             if choice is not None:
                 selected = choice
@@ -115,8 +124,9 @@ class _Episode:
         if capture:
             assert selected is not None
             if family == "PASS":
-                selected.record_index = next(i for i in range(public - 1, -1, -1)
-                                             if self.live.events[i]["type"] == "dahai")
+                selected.record_index = next(
+                    i for i in range(public - 1, -1, -1) if self.live.events[i]["type"] == "dahai"
+                )
             else:
                 selected.record_index = self._find_result(public, seat, "hora" if family == "RON" else family.lower())
         return selected
@@ -132,7 +142,7 @@ class _Episode:
         else:
             raise AssertionError("The scripted first round never closed")
         end = next(i for i, event in enumerate(self.live.events) if event["type"] == "end_kyoku")
-        return self.live.events[:end + 1]
+        return self.live.events[: end + 1]
 
 
 def _server_records(events):  # noqa: PLR0915
@@ -166,16 +176,22 @@ def _server_records(events):  # noqa: PLR0915
                 declaration = None
             name = "RecordDealTile" if dealing else "RecordDiscardTile"
         elif kind in {"chi", "pon", "daiminkan"}:
-            data = {"seat": event["actor"], "type": ("chi", "pon", "daiminkan").index(kind),
-                    "tiles": [event["pai"], *event["consumed"]],
-                    "froms": [event["target"], *([event["actor"]] * len(event["consumed"]))]}
+            data = {
+                "seat": event["actor"],
+                "type": ("chi", "pon", "daiminkan").index(kind),
+                "tiles": [event["pai"], *event["consumed"]],
+                "froms": [event["target"], *([event["actor"]] * len(event["consumed"]))],
+            }
             name = "RecordChiPengGang"
         elif kind in {"ankan", "kakan"}:
-            data = {"seat": event["actor"], "type": 3 if kind == "ankan" else 2,
-                    "tiles": event["consumed"][0] if kind == "ankan" else event["pai"]}
+            data = {
+                "seat": event["actor"],
+                "type": 3 if kind == "ankan" else 2,
+                "tiles": event["consumed"][0] if kind == "ankan" else event["pai"],
+            }
             # Server kan records can include a marker made visible in that
             # transaction; dora before a discard instead belongs to its result.
-            for later in events[index + 1:]:
+            for later in events[index + 1 :]:
                 if later["type"] == "kan_commit":
                     continue
                 if later["type"] != "dora":
@@ -187,15 +203,29 @@ def _server_records(events):  # noqa: PLR0915
             assert rules["status"] == "PASS", rules
             derived = rules["settlements"][-1]["derived_wins"]
             assert len(derived) == 1 and derived[0]["player_id"] == event["actor"]
-            data = {"old_scores": scores.copy(), "scores": event["scores"], "delta_scores": event["deltas"],
-                    "doras": indicators.copy(), "hules": [{"seat": event["actor"], "zimo": False,
-                    "hu_tile": event["pai"], "count": derived[0]["computed_han"], "fu": derived[0]["computed_fu"]}]}
+            data = {
+                "old_scores": scores.copy(),
+                "scores": event["scores"],
+                "delta_scores": event["deltas"],
+                "doras": indicators.copy(),
+                "hules": [
+                    {
+                        "seat": event["actor"],
+                        "zimo": False,
+                        "hu_tile": event["pai"],
+                        "count": derived[0]["computed_han"],
+                        "fu": derived[0]["computed_fu"],
+                    }
+                ],
+            }
             name = "RecordHule"
         elif kind == "ryukyoku":
             assert event["reason"] in {"exhaustive_draw", "nagashi_mangan"}, event
-            data = {"liujumanguan": event["reason"] == "nagashi_mangan",
-                    "scores": [{"old_scores": scores.copy(), "delta_scores": event["deltas"]}],
-                    "players": [{"tingpai": hand is not None, "hand": hand or []} for hand in event["public_hands"]]}
+            data = {
+                "liujumanguan": event["reason"] == "nagashi_mangan",
+                "scores": [{"old_scores": scores.copy(), "delta_scores": event["deltas"]}],
+                "players": [{"tingpai": hand is not None, "hand": hand or []} for hand in event["public_hands"]],
+            }
             name = "RecordNoTile"
         elif kind == "end_kyoku":
             break
@@ -217,7 +247,7 @@ def _offline(episode):
     # every semantic public event must still have the same order.
     assert [item["type"] for item in events] == [item["type"] for item in live if item["type"] != "kan_commit"]
     decisions = []
-    game = DecodedGame("a" * 64, "b" * 64, "synthetic-native-wall", {}, tuple(records), events)
+    game = DecodedGame("a" * 64, "b" * 64, "synthetic-native-wall", {}, tuple(records), events, "c" * 64)
     report = replay_game(game, on_decision=decisions.append)
     assert not report["errors"], report["errors"]
     assert report["independent_settlement"]["status"] == "PASS", report["independent_settlement"]
@@ -226,16 +256,23 @@ def _offline(episode):
 
 def _comparison(offline, live):
     events, decisions = offline
-    matches = [row for row in decisions if row.snapshot.observer_player_id == live.snapshot.observer_player_id
-               and row.action_target_global == live.target
-               and events[row.trigger_event_id].get("source_record_index") == live.record_index]
+    matches = [
+        row
+        for row in decisions
+        if row.snapshot.observer_player_id == live.snapshot.observer_player_id
+        and row.action_target_global == live.target
+        and events[row.trigger_event_id].get("source_record_index") == live.record_index
+    ]
     assert len(matches) == 1
     row = matches[0]
     assert row.prefix.candidates == live.prefix.candidates
     assert row.prefix.to_bytes() == live.prefix.to_bytes(), {
-        "live_cutoff": live.snapshot.cutoff_event_id, "offline_cutoff": row.snapshot.cutoff_event_id,
-        "live_indicators": len(live.snapshot.dora_indicators), "offline_indicators": len(row.snapshot.dora_indicators),
-        "live_scores": live.snapshot.scores, "offline_scores": row.snapshot.scores,
+        "live_cutoff": live.snapshot.cutoff_event_id,
+        "offline_cutoff": row.snapshot.cutoff_event_id,
+        "live_indicators": len(live.snapshot.dora_indicators),
+        "offline_indicators": len(row.snapshot.dora_indicators),
+        "live_scores": live.snapshot.scores,
+        "offline_scores": row.snapshot.scores,
     }
     assert row.prefix.to_record() == live.prefix.to_record()  # all fields, including positions
     return row
@@ -251,8 +288,12 @@ def _kan_sequence(case, *, dora_variant=False):
             ep.act(tile=draw)
         before = ep.act("KAKAN", capture=True)
     elif case in {"daiminkan", "consecutive"}:
-        ep = _Episode({1: ("E",) * 3 + (("S",) * 4 if case == "consecutive" else ())}, ("E",), ("7s", "6s"),
-                      dora_variant=dora_variant)
+        ep = _Episode(
+            {1: ("E",) * 3 + (("S",) * 4 if case == "consecutive" else ())},
+            ("E",),
+            ("7s", "6s"),
+            dora_variant=dora_variant,
+        )
         ep.act(tile="E")
         before = ep.resolve("DAIMINKAN", seat=1, capture=True)
         if case == "consecutive":
@@ -283,8 +324,10 @@ def test_offline_kan_discard_decision_matches_native_choose_before_submission(ca
 
 def test_actual_deferred_dora_variant_cannot_change_current_frozen_discard():
     episodes = [_kan_sequence("daiminkan", dora_variant=value) for value in (False, True)]
-    pairs = [(_comparison((offline := _offline(ep)), discard), _comparison(offline, after))
-             for ep, _, discard, after in episodes]
+    pairs = [
+        (_comparison((offline := _offline(ep)), discard), _comparison(offline, after))
+        for ep, _, discard, after in episodes
+    ]
     (current0, next0), (current1, next1) = pairs
     assert current0.prefix.to_bytes() == current1.prefix.to_bytes()
     assert next0.snapshot.dora_indicators != next1.snapshot.dora_indicators
@@ -294,9 +337,13 @@ def test_actual_deferred_dora_variant_cannot_change_current_frozen_discard():
 @pytest.mark.parametrize("family", ["CHI", "PON", "DAIMINKAN", "RON", "PASS"])
 def test_offline_riichi_declaration_response_is_frozen_before_deposit_and_resolution(family):
     tenpai = ("1p", "2p", "3p", "4p", "5p", "6p", "6s", "7s", "8s", "P", "P", "F", "F")
-    offers = {"CHI": ("1m", "2m"), "PON": ("3m",) * 2, "DAIMINKAN": ("3m",) * 3,
-              "RON": ("1m", "2m", "1s", "2s", "3s", "4s", "5s", "6s", "E", "E", "E", "N", "N"),
-              "PASS": ("1m", "2m")}
+    offers = {
+        "CHI": ("1m", "2m"),
+        "PON": ("3m",) * 2,
+        "DAIMINKAN": ("3m",) * 3,
+        "RON": ("1m", "2m", "1s", "2s", "3s", "4s", "5s", "6s", "E", "E", "E", "N", "N"),
+        "PASS": ("1m", "2m"),
+    }
     ep = _Episode({0: tenpai, 1: offers[family]}, ("3m",), ("7s",))
     declared = ep.act(riichi=True, tile="3m", capture=True)
     response = ep.resolve(family, seat=1, capture=True)

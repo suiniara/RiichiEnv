@@ -9,7 +9,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from riichienv.kar.authorization import update_implementation_sha256
-from riichienv.kar.budget import BudgetPlan, CostForecast
+from riichienv.kar.budget import BudgetLedger, BudgetPlan, CostForecast
 from riichienv.kar.calibration import CalibrationRow, calibrate_static_rows, calibration_split, choose_validation_tau
 from riichienv.kar.calibration_quality import BranchQualityCriterion, BranchQualityPolicy, CalibrationQualityPolicy
 from riichienv.kar.contracts import content_hash, game_split
@@ -110,7 +110,7 @@ def prior_release(tmp_path):
 
 
 @pytest.mark.parametrize("state", ["train_insufficient", "failed", "unavailable"])
-def test_finite_tau_rejected_before_output_ledger_or_matches(prior_release, state, monkeypatch, tmp_path):
+def test_finite_tau_rejected_after_metered_preparation_before_matches(prior_release, state, monkeypatch, tmp_path):
     subject = prior_release(state)
     assert subject.calibration.empirical_check_valid
     assert not any(subject.support.value_supported(subject.calibration.value_branch_statuses))
@@ -143,9 +143,8 @@ def test_finite_tau_rejected_before_output_ledger_or_matches(prior_release, stat
     authorization["authorization_sha256"] = content_hash(authorization)
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("A value-inactive finite grid must not open a ledger or run a match")
+        raise AssertionError("A value-inactive finite grid must not run a match")
 
-    monkeypatch.setattr(validation_policy, "BudgetLedger", forbidden)
     monkeypatch.setattr(validation_policy, "run_match", forbidden)
     output = tmp_path / "rejected-selection"
     with pytest.raises(ValueError, match="Finite tau selection requires at least one"):
@@ -159,7 +158,10 @@ def test_finite_tau_rejected_before_output_ledger_or_matches(prior_release, stat
             authorization=authorization,
             grid=(math.inf, 0.5),
         )
-    assert not output.exists()
+    assert (output / "startup.json").is_file()
+    ledger = BudgetLedger(output / "costs.jsonl", budget)
+    assert not ledger.pending_compute and ledger.entries[-1]["reference"].endswith("/aborted")
+    assert not (output / "validation_matches.jsonl").exists()
 
 
 def test_qualified_branch_keeps_finite_grid_available(prior_release):

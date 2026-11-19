@@ -1,4 +1,5 @@
 """Bounded native Pass submission and public stream segmentation regressions."""
+
 import json
 from dataclasses import replace
 
@@ -14,15 +15,24 @@ KOKUSHI_MISSING_1M = ("9m", "1p", "9p", "1s", "9s", "E", "S", "W", "N", "P", "F"
 
 
 def _pass_choices(responses, actor):
-    return {seat: next(item for item in legal_candidates(obs, source_player=actor) if item.global_id == 221)
-            for seat, obs in responses.items() if obs.legal_actions()}
+    return {
+        seat: next(item for item in legal_candidates(obs, source_player=actor) if item.global_id == 221)
+        for seat, obs in responses.items()
+        if obs.legal_actions()
+    }
 
 
 def _open_robbable_ankan(env, actor, waiter, projections):
-    kan = next(item for item in legal_candidates(env.get_observation(actor), drawn_tile=env.drawn_tile)
-               if item.spec.action_type == "ANKAN" and item.spec.base34 == 0)
-    declare = {"type": "ankan", "actor": actor,
-               "consumed": [convert.tid_to_mjai(tile) for tile in kan.actions[0].consume_tiles]}
+    kan = next(
+        item
+        for item in legal_candidates(env.get_observation(actor), drawn_tile=env.drawn_tile)
+        if item.spec.action_type == "ANKAN" and item.spec.base34 == 0
+    )
+    declare = {
+        "type": "ankan",
+        "actor": actor,
+        "consumed": [convert.tid_to_mjai(tile) for tile in kan.actions[0].consume_tiles],
+    }
     begin = len(env.rule_log)
     responses = execute_candidate(env, actor, kan)
     raw = list(env.rule_log[begin:])
@@ -99,8 +109,9 @@ def test_successful_ankan_pass_matches_whole_batch_at_every_final_field(receipt_
     assert actual.history_positions[-1] == actual.history_positions[-2] == split.ledgers[1].logical_clock
     assert split.ledgers[1].logical_clock == split.ledgers[0].logical_clock
     assert len([row for row in final.rows if row["kind"] == 26]) == 1
-    assert all(split.snapshot(seat) == whole.snapshot(seat) and not _markers(split.snapshot(seat))
-               for seat in (0, 2, 3))
+    assert all(
+        split.snapshot(seat) == whole.snapshot(seat) and not _markers(split.snapshot(seat)) for seat in (0, 2, 3)
+    )
     assert old_prefix.to_bytes() == old_bytes == encode_prefix(old, ids).to_bytes()
     assert not _markers(old) and not _markers(after_ack) and not _markers(after_dora)
     split.observe_native([], confirmed_self_passes=(receipt, receipt))
@@ -108,11 +119,12 @@ def test_successful_ankan_pass_matches_whole_batch_at_every_final_field(receipt_
 
 
 def _two_receipts():
-    env, observations, projection = _fixed_native(
-        {0: ["E"], 1: ["1m"] * 4, 2: KOKUSHI_MISSING_1M, 3: ["E"] * 2}, "6s"
+    env, observations, projection = _fixed_native({0: ["E"], 1: ["1m"] * 4, 2: KOKUSHI_MISSING_1M, 3: ["E"] * 2}, "6s")
+    discard = next(
+        item
+        for item in legal_candidates(observations[0], drawn_tile=env.drawn_tile)
+        if item.spec.base34 == 27 and item.spec.riichi is False and item.spec.tsumogiri is False
     )
-    discard = next(item for item in legal_candidates(observations[0], drawn_tile=env.drawn_tile)
-                   if item.spec.base34 == 27 and item.spec.riichi is False and item.spec.tsumogiri is False)
     begin = len(env.rule_log)
     responses = execute_candidate(env, 0, discard)
     projection.observe_native(env.rule_log[begin:])
@@ -133,6 +145,7 @@ def test_other_valid_receipts_survive_waiting_or_a_recording_error(monkeypatch, 
     projection, ready, waiting, raw = _two_receipts()
     receipts = waiting, ready  # an unready first receipt must not block the ready second receipt
     if ack_failure:
+
         def fail(*_args, **_kwargs):
             raise ValueError("induced recording failure, not a missing anchor")
 

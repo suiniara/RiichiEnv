@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
+from typing import Any
 
 import torch
 
 from ..observation import PublicSnapshot
 from ..runtime_contracts import RuntimeBinding
+from ..schema import TOKEN_BYTE_SIZE
 from ..tokenize import TokenHistoryCache, TokenSequence, append_action, encode_prefix
 from .batch import collate_inputs, rule_feature_view
 from .config import frozen_inference_recipe_sha256
@@ -29,8 +31,10 @@ def model_weights_sha256(model: KARTransformer) -> str:
 class FrozenModelPredictor:
     def __init__(self, model: KARTransformer, train_manifest_sha256: str, *, use_rule_features: bool = True):
         recipe = frozen_inference_recipe_sha256(model.config, use_rule_features=use_rule_features)
-        if any(value.is_floating_point() and value.dtype != torch.float32
-               for value in (*model.parameters(), *model.buffers())):
+        if any(
+            value.is_floating_point() and value.dtype != torch.float32
+            for value in (*model.parameters(), *model.buffers())
+        ):
             raise ValueError("Frozen FP32 inference requires FP32 model parameters and floating buffers")
         self.model = model.eval()
         self.use_rule_features = use_rule_features
@@ -58,6 +62,38 @@ class FrozenModelPredictor:
             self._cache = self._prefix = None
             raise ValueError("Frozen inference model was updated, reloaded or switched to training")
 
+    def _encode_policy_row(self, row: Mapping[str, Any]) -> PrefixCache:
+        """The same unpadded, single-prefix computation for calibration and play."""
+        decide_index = row["decide_index"]
+        if type(decide_index) is not int or decide_index < 0:
+            raise ValueError("Frozen policy needs an explicit DECIDE prefix boundary")
+        length = (decide_index + 1) * TOKEN_BYTE_SIZE
+        if len(row["tokens"]) < length:
+            raise ValueError("Frozen policy prefix is truncated")
+        prefix = {**row, "tokens": row["tokens"][:length], "action_index": -1}
+        device = next(self.model.parameters()).device
+        batch = collate_inputs([prefix]).to(device)
+        batch = rule_feature_view(
+            batch, torch.zeros(1, dtype=torch.bool, device=device), enabled=self.use_rule_features
+        )
+        with torch.autocast(device_type=device.type, enabled=False):
+            return self.model.encode_prefix(batch)
+
+    @torch.no_grad()
+    def policy_logits_from_rows(self, rows: Sequence[Mapping[str, Any]]) -> torch.Tensor:
+        """Archive policy logits without changing the deployed batch/token shape.
+
+        Teacher ACTION and batch padding are excluded before each forward.
+        Response/value logits may still be collected in batches separately.
+        """
+        self._unchanged()
+        self._cache = self._prefix = self._context = None
+        if not rows:
+            raise ValueError("Frozen policy collection requires decision rows")
+        logits = [self._encode_policy_row(row).policy_logits[0] for row in rows]
+        self.prefix_calls += len(rows)
+        return torch.stack(logits)
+
     @torch.no_grad()
     def policy(self, snapshot: PublicSnapshot, candidates: tuple[int, ...], context: str) -> Sequence[float]:
         self._unchanged()
@@ -82,13 +118,7 @@ class FrozenModelPredictor:
             "action_index": -1,
             "decision_row_id": context,
         }
-        device = next(self.model.parameters()).device
-        batch = collate_inputs([row]).to(device)
-        batch = rule_feature_view(
-            batch, torch.zeros(1, dtype=torch.bool, device=device), enabled=self.use_rule_features
-        )
-        with torch.autocast(device_type=device.type, enabled=False):
-            self._cache = self.model.encode_prefix(batch)
+        self._cache = self._encode_policy_row(row)
         self._prefix = prefix
         snapshot_sha256 = hashlib.sha256(snapshot.to_bytes()).hexdigest()
         self._context = (context, snapshot._history_session, snapshot_sha256, candidates)

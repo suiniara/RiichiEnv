@@ -1,4 +1,5 @@
 """Synthetic logits and preregistration only; no trained models or real calibration."""
+
 import copy
 import json
 import math
@@ -44,11 +45,18 @@ def case():
         {"action": 20.0, "response": 0.1, "rank": 0.2},
         {"action": 2.0, "response": 0.1, "rank": 0.1},
         {"action": 1.0, "response": 0.1, "rank": 0.1},
-        1, 1, 0.0, "synthetic overall criteria",
-        BranchQualityPolicy(tuple(
-            BranchQualityCriterion(head, event, 0.5, 2.0, 1.0, 10)
-            for head in ("response", "rank") for event in (COMMON, RARE)
-        ), "synthetic branch criteria, never production constants"),
+        1,
+        1,
+        0.0,
+        "synthetic overall criteria",
+        BranchQualityPolicy(
+            tuple(
+                BranchQualityCriterion(head, event, 0.5, 2.0, 1.0, 10)
+                for head in ("response", "rank")
+                for event in (COMMON, RARE)
+            ),
+            "synthetic branch criteria, never production constants",
+        ),
     )
     env = MJSOUL_RULESET.create_env(seed=42)
     observer = ObserverLedger(0, (0, 1, 2, 3))
@@ -61,8 +69,12 @@ def case():
     assert allowed[COMMON] and allowed[RARE] and not allowed[MASKED]
     prefix = encode_prefix(view, ids)
     sequence = append_action(prefix, target)
-    basis = {"tokens": sequence.to_bytes()[108:], "decide_index": prefix.decide_index,
-             "action_index": len(sequence.rows) - 1, "candidates": ids}
+    basis = {
+        "tokens": sequence.to_bytes()[108:],
+        "decide_index": prefix.decide_index,
+        "action_index": len(sequence.rows) - 1,
+        "candidates": ids,
+    }
     names = (f"synthetic-rho-1000-{index}" for index in range(6000))
     fit_game = next(game for game in names if calibration_is_fit(game))
     check_games = [game for game in names if not calibration_is_fit(game)][:1000]
@@ -74,17 +86,35 @@ def case():
         response[event], response[MASKED] = 16.0, 1000.0
         ranks = [(16.0, 0.0, 0.0, 0.0)] * 21
         ranks[RARE] = (0.0, 16.0, 0.0, 0.0)
-        return CalibrationRow(game, game + "/decision", ids, (0.0,) * 546, target,
-                              response_logits=tuple(response), rank_logits=tuple(ranks), response_allowed=allowed,
-                              response_target=event, response_valid=True, rank_target=0, value_valid=True)
+        return CalibrationRow(
+            game,
+            game + "/decision",
+            ids,
+            (0.0,) * 546,
+            target,
+            response_logits=tuple(response),
+            rank_logits=tuple(ranks),
+            response_allowed=allowed,
+            response_target=event,
+            response_valid=True,
+            rank_target=0,
+            value_valid=True,
+        )
 
     fit = [row(fit_game, COMMON)]
     check = [row(game, COMMON if index < 990 else RARE) for index, game in enumerate(check_games)]
     binding = RuntimeBinding.current("a" * 64, "b" * 64)
     support = EventSupport(binding.train_manifest_sha256, (500,) * 21, "synthetic, no measured support")
     artifact = calibrate_static_rows(
-        fit, check, split=split, binding=binding, support=support, temperatures=(2.0,),
-        source_reference="1000 independent synthetic cal_check games", diagnostic_fixture=True, quality_policy=policy,
+        fit,
+        check,
+        split=split,
+        binding=binding,
+        support=support,
+        temperatures=(2.0,),
+        source_reference="1000 independent synthetic cal_check games",
+        diagnostic_fixture=True,
+        quality_policy=policy,
     )
     return artifact, support, view, basis, check
 
@@ -105,11 +135,17 @@ def _runtime_buckets(artifact, support, view, rows, record_property):
     for event in (COMMON, RARE):
         group = [row for row in rows if row.response_target == event]
         first = group[0]
-        assert all((row.response_logits, row.response_allowed, row.rank_logits) ==
-                   (first.response_logits, first.response_allowed, first.rank_logits) for row in group)
+        assert all(
+            (row.response_logits, row.response_allowed, row.rank_logits)
+            == (first.response_logits, first.response_allowed, first.rank_logits)
+            for row in group
+        )
         runtime = RuntimePolicy(
-            _StaticCandidatePredictor(artifact.binding, first), options=PolicyOptions("empirical_only", 0.5),
-            calibration=artifact, support=support, allow_diagnostic_calibration=True,
+            _StaticCandidatePredictor(artifact.binding, first),
+            options=PolicyOptions("empirical_only", 0.5),
+            calibration=artifact,
+            support=support,
+            allow_diagnostic_calibration=True,
         )
         result = runtime.decide(view, first.candidates, "synthetic-mass-parity")
         details = result.telemetry["candidates"][str(first.action_target)]
@@ -152,14 +188,29 @@ def test_thousand_independent_games_report_runtime_effective_support_not_train_o
 
 
 def _evaluation_batch(rows, basis):
-    samples = [{**basis, "decision_row_id": row.row_id, "game_id": row.game_id,
-                "action_target": row.action_target, "action_valid": row.action_valid,
-                "response_target": row.response_target, "response_applicable": True,
-                "response_observed": row.response_valid, "final_rank": row.rank_target, "value_valid": row.value_valid,
-                "response_allowed": row.response_allowed} for row in rows]
-    outputs = ModelOutputs(*(torch.tensor([getattr(row, head) for row in rows], dtype=torch.float32) for head in (
-        "policy_logits", "response_logits", "rank_logits"
-    )), action_present=torch.ones(len(rows), dtype=torch.bool))
+    samples = [
+        {
+            **basis,
+            "decision_row_id": row.row_id,
+            "game_id": row.game_id,
+            "action_target": row.action_target,
+            "action_valid": row.action_valid,
+            "response_target": row.response_target,
+            "response_applicable": True,
+            "response_observed": row.response_valid,
+            "final_rank": row.rank_target,
+            "value_valid": row.value_valid,
+            "response_allowed": row.response_allowed,
+        }
+        for row in rows
+    ]
+    outputs = ModelOutputs(
+        *(
+            torch.tensor([getattr(row, head) for row in rows], dtype=torch.float32)
+            for head in ("policy_logits", "response_logits", "rank_logits")
+        ),
+        action_present=torch.ones(len(rows), dtype=torch.bool),
+    )
     return outputs, collate_examples(samples)
 
 
@@ -172,11 +223,19 @@ def test_frozen_roundtrip_evaluation_and_runtime_share_histograms(case, record_p
     # Feed the same decision IDs, game IDs, labels, masks and logits through the
     # actual evaluation helper, not a stand-in histogram calculation.
     for start in range(0, len(rows), 128):
-        add_diagnostics(measured, *_evaluation_batch(rows[start:start + 128], basis),
-                        calibration=loaded, support=support)
+        add_diagnostics(
+            measured, *_evaluation_batch(rows[start : start + 128], basis), calibration=loaded, support=support
+        )
     # No response even with valid action, so the dummy/all-false mask contributes nothing.
-    invalid = replace(rows[-1], row_id="synthetic-no-observed-response", response_valid=False, value_valid=False,
-                      response_target=-1, rank_target=-1, response_allowed=(False,) * 21)
+    invalid = replace(
+        rows[-1],
+        row_id="synthetic-no-observed-response",
+        response_valid=False,
+        value_valid=False,
+        response_target=-1,
+        rank_target=-1,
+        response_allowed=(False,) * 21,
+    )
     add_diagnostics(measured, *_evaluation_batch([invalid], basis), calibration=loaded, support=support)
     merged.merge(measured.state_dict())  # the same wire as distributed evaluation
     details = merged.report(bootstrap_replicates=4)
@@ -213,25 +272,45 @@ def test_event_ece_requalifies_the_calibrated_chi_branch_in_all_three_consumers(
     chi = int(Response.CHI_P1)
     # Preregister the discriminator before evaluating the 900/100 mixture.
     # These are synthetic limits, never defaults for a real fitted model.
-    branches = BranchQualityPolicy(tuple(
-        BranchQualityCriterion(head, event, 5.0 if head == "response" else 1.0,
-                               2.0 if head == "response" else 0.2, 0.2, 10)
-        for head in ("response", "rank") for event in (COMMON, chi, RARE)
-    ), "synthetic 0.2 ECE on response event calibration and conditional rank")
+    branches = BranchQualityPolicy(
+        tuple(
+            BranchQualityCriterion(
+                head, event, 5.0 if head == "response" else 1.0, 2.0 if head == "response" else 0.2, 0.2, 10
+            )
+            for head in ("response", "rank")
+            for event in (COMMON, chi, RARE)
+        ),
+        "synthetic 0.2 ECE on response event calibration and conditional rank",
+    )
     overall = CalibrationQualityPolicy(
-        {"action": 20.0, "response": 1.0, "rank": 1.0}, {head: 2.0 for head in ("action", "response", "rank")},
-        {head: 1.0 for head in ("action", "response", "rank")}, 1, 1, 0.0, "synthetic overall", branches,
+        {"action": 20.0, "response": 1.0, "rank": 1.0},
+        {head: 2.0 for head in ("action", "response", "rank")},
+        {head: 1.0 for head in ("action", "response", "rank")},
+        1,
+        1,
+        0.0,
+        "synthetic overall",
+        branches,
     )
     response = [(-1000.0 if event != MASKED else 1000.0) for event in range(21)]
     response[COMMON], response[chi] = math.log(0.9), math.log(0.1)
     common_logits = {"response_logits": tuple(response), "rank_logits": ((12.0, 0.0, 0.0, 0.0),) * 21}
-    check = [replace(row, response_target=COMMON if index < 900 else chi, **common_logits)
-             for index, row in enumerate(rows)]
+    check = [
+        replace(row, response_target=COMMON if index < 900 else chi, **common_logits) for index, row in enumerate(rows)
+    ]
     assert all(row.response_allowed[chi] and row.response_allowed[RARE] for row in check)
     fit = [replace(check[0], game_id=original.split.fit_games[0], row_id="synthetic-fit-uniform-p")]
-    artifact = calibrate_static_rows(fit, check, split=original.split, binding=original.binding, support=support,
-                                     temperatures=(1.0,), source_reference="immutable synthetic identical predictions",
-                                     diagnostic_fixture=True, quality_policy=overall)
+    artifact = calibrate_static_rows(
+        fit,
+        check,
+        split=original.split,
+        binding=original.binding,
+        support=support,
+        temperatures=(1.0,),
+        source_reference="immutable synthetic identical predictions",
+        diagnostic_fixture=True,
+        quality_policy=overall,
+    )
     measured = artifact.check_metrics
     original_style = measured["response_classification_by_true_event"]
     old_next, old_chi = (original_style[str(event)]["top_label_ece"] for event in (COMMON, chi))
@@ -258,7 +337,10 @@ def test_event_ece_requalifies_the_calibrated_chi_branch_in_all_three_consumers(
     for start in range(0, len(check), 128):
         shard = FullDiagnostics()
         add_diagnostics(
-            shard, *_evaluation_batch(check[start:start + 128], basis), calibration=loaded, support=support,
+            shard,
+            *_evaluation_batch(check[start : start + 128], basis),
+            calibration=loaded,
+            support=support,
         )
         evaluated.merge(shard.state_dict())
     eval_report = evaluated.report(bootstrap_replicates=4)
@@ -266,21 +348,34 @@ def test_event_ece_requalifies_the_calibrated_chi_branch_in_all_three_consumers(
     assert (observed["count"], observed["positive_count"], observed["positive_independent_games"]) == (1000, 100, 100)
     assert observed["ece"] == pytest.approx(0.0, abs=1e-8)
     runtime = RuntimePolicy(
-        _StaticCandidatePredictor(artifact.binding, check[0]), options=PolicyOptions("empirical_only", 0.5),
-        calibration=loaded, support=support, allow_diagnostic_calibration=True,
+        _StaticCandidatePredictor(artifact.binding, check[0]),
+        options=PolicyOptions("empirical_only", 0.5),
+        calibration=loaded,
+        support=support,
+        allow_diagnostic_calibration=True,
     ).decide(view, check[0].candidates, "synthetic-ovr-parity")
     candidate = runtime.telemetry["candidates"][str(check[0].action_target)]
     effective = tuple(event in (COMMON, chi) for event in range(21))
-    for event_set in (candidate["value_supported"], eval_report[EFFECTIVE]["event_supported"],
-                      measured["diagnostics"][EFFECTIVE]["event_supported"]):
+    for event_set in (
+        candidate["value_supported"],
+        eval_report[EFFECTIVE]["event_supported"],
+        measured["diagnostics"][EFFECTIVE]["event_supported"],
+    ):
         assert tuple(event_set) == effective
     assert candidate["response_probabilities"][chi] == pytest.approx(0.1)
     assert candidate["unsupported_mass"] == 0.0 and _counts(eval_report[EFFECTIVE]) == {0: 1000}
 
 
 @pytest.mark.parametrize(
-    "stale", ["old-calibration-version", "old-statistics-version", "legacy-classification", "missing-event-stats",
-              "missing-effective-mass", "wrong-support"]
+    "stale",
+    [
+        "old-calibration-version",
+        "old-statistics-version",
+        "legacy-classification",
+        "missing-event-stats",
+        "missing-effective-mass",
+        "wrong-support",
+    ],
 )
 def test_calibration_loader_does_not_relabel_old_unsupported_mass(case, stale):
     artifact, support, _, _, _ = case

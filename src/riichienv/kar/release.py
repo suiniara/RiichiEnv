@@ -131,9 +131,16 @@ def complete_release_contract(
         "rule_feature_mask_probability": training["feature_mask_probability"],
         "use_rule_features": training["use_rule_features"],
         "training": training,
-        **{key: training[key] for key in (
-            "model_tier", "N_train_half_games", "N_eligible_half_games", "planned_epochs", "effective_batch_size"
-        )},
+        **{
+            key: training[key]
+            for key in (
+                "model_tier",
+                "N_train_half_games",
+                "N_eligible_half_games",
+                "planned_epochs",
+                "effective_batch_size",
+            )
+        },
         "data_manifest_sha256": data_manifest["manifest_sha256"],
         "split_salt": data_manifest["scope"]["split_salt"],
         "rho_E": data_manifest["rho_E"],

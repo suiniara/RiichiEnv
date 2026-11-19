@@ -1,5 +1,5 @@
 <!-- kar-module: riichienv.kar.learning.config -->
-<!-- api: ModelConfig -->
+<!-- api: ModelConfig, frozen_inference_recipe_sha256 -->
 # learning.config — 模型 preset 与参数合同
 
 源码：[config.py](../../../../src/riichienv/kar/learning/config.py) · [learning 索引](../README.md)
@@ -29,6 +29,8 @@ assert config.parameter_count == 5_239_435
 维度必须正整数；width 可整除 heads，单头维度为偶数以用于 RoPE。norm_eps、rope_base 有范围要求。preset 不是预算许可，选大模型仍需 N_train 阶梯、M1 证据和预算放行。
 
 forward版本为 `kar_transformer_v3_semantic_inputs`，另以input_pipeline/public_clock/terminal_public绑定逻辑位置与终局公开语义，并保留LEGAL_SET/SELF_PASS；维度和参数数目不变不等于旧权重精确兼容。特征语义为 `visible_rule_features_v2_ryanmen_pairs`，仅按搭子牌的可见计数排除两面形状；随机置空仍为 `sample_mask_v1`。
+
+`frozen_inference_recipe_sha256(...)` 绑定模型合同、规则特征模式、关闭特征随机置空及 `fp32_no_autocast_single_prefix_v2`。冻结策略校准与部署均使用不含 teacher ACTION/padding、batch size 1 的前缀路径。旧 dense policy 校准拥有不同推理 recipe，不能复用到新冻结预测器；模型参数形状没有因此改变。
 
 ## 接线与状态
 

@@ -27,8 +27,9 @@ class ReplayOpportunity:
         snapshot = ledger.snapshot()
         source = snapshot.pending_kan_actor if snapshot.pending_kan_actor is not None else snapshot.last_discard_actor
         mapped = legal_candidates(observation, source_player=source)
-        return cls(snapshot, tuple(item.global_id for item in mapped), tuple(observation.legal_actions()),
-                   observation, mapped)
+        return cls(
+            snapshot, tuple(item.global_id for item in mapped), tuple(observation.legal_actions()), observation, mapped
+        )
 
     @classmethod
     def from_kan_preview(cls, snapshot: PublicSnapshot, actions: Sequence[Action]) -> ReplayOpportunity:
@@ -45,8 +46,11 @@ class ReplayOpportunity:
         selected = self.observation.select_action_from_mjai(event) if self.observation is not None else None
         if selected is None:
             raise ValueError(f"Observed {event['type']} has no matching frozen native legal action")
-        matching = [item.global_id for item in self.mapped if len(item.actions) == 1
-                    and item.actions[0].to_dict() == selected.to_dict()]
+        matching = [
+            item.global_id
+            for item in self.mapped
+            if len(item.actions) == 1 and item.actions[0].to_dict() == selected.to_dict()
+        ]
         if len(matching) != 1:
             raise ValueError("Observed native action does not have a unique complete action identity")
         return matching[0], selected

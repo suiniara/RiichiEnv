@@ -161,5 +161,15 @@ def candidate_value(
         for probability, utility, supported in zip(probabilities, conditional, covered)
     )
     unsupported = unsupported_response_mass(probabilities, covered)
-    return CandidateValue(action_id, probabilities, conditional, marginal, conservative, unsupported,
-                          tuple(allowed), support.supported, states, covered)
+    return CandidateValue(
+        action_id,
+        probabilities,
+        conditional,
+        marginal,
+        conservative,
+        unsupported,
+        tuple(allowed),
+        support.supported,
+        states,
+        covered,
+    )

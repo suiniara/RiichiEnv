@@ -408,10 +408,7 @@ def test_nagashi_incomplete_history_length_difference_alone_is_not_called_away(
 def test_nagashi_incomplete_history_any_other_possible_player_keeps_category(actor, relative):
     eligible_player = (actor + relative) % 4
     state = _nagashi_incomplete_snapshot(actor)
-    history = tuple(
-        (convert.mjai_to_tid("9p" if player in {actor, eligible_player} else "5s"),)
-        for player in range(4)
-    )
+    history = tuple((convert.mjai_to_tid("9p" if player in {actor, eligible_player} else "5s"),) for player in range(4))
     state = replace(state, discard_history=history, current_rivers=history)
     # Only the candidate disqualifies the actor; exactly one other seat remains.
     expected = [player == eligible_player for player in range(4)]
@@ -483,8 +480,14 @@ def test_tokenizer_still_rejects_each_incomplete_prefix_flag(missing):
 def test_response_v2_reads_only_the_frozen_public_fact_whitelist(actor):
     state = replace(_nagashi_snapshot(actor), observer_player_id=actor)
     allowed_names = {
-        "observer_player_id", "discard_history", "current_rivers", "melds", "riichi_accepted",
-        "remaining_draws", "history_complete", "pending_kan_actor",
+        "observer_player_id",
+        "discard_history",
+        "current_rivers",
+        "melds",
+        "riichi_accepted",
+        "remaining_draws",
+        "history_complete",
+        "pending_kan_actor",
     }
 
     class PublicFactsOnly:
@@ -494,8 +497,13 @@ def test_response_v2_reads_only_the_frozen_public_fact_whitelist(actor):
 
     expected = public_rule_response_mask(state, _nagashi_discard("2m"))
     assert public_rule_response_mask(PublicFactsOnly(), _nagashi_discard("2m")) == expected
-    poisoned = replace(state, hand=(135,) * 13, scores=(1, 2, 3, 4), dora_indicators=(0,),
-                       events=('future/hidden/private-legals must never be parsed here',))
+    poisoned = replace(
+        state,
+        hand=(135,) * 13,
+        scores=(1, 2, 3, 4),
+        dora_indicators=(0,),
+        events=("future/hidden/private-legals must never be parsed here",),
+    )
     assert public_rule_response_mask(poisoned, _nagashi_discard("2m")) == expected
 
 

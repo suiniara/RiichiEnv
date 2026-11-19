@@ -1,4 +1,5 @@
 """Bounded synthetic public streams and actual native Pass submissions; no stages."""
+
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -29,16 +30,32 @@ def _scenario():
     for hand in hands:
         while len(hand) < 13:
             hand.append(pool.pop(0))
-    start = {"type": "start_kyoku", "bakaze": "E", "kyoku": 1, "honba": 0, "kyotaku": 0,
-             "oya": 0, "scores": [25000] * 4, "dora_marker": "C",
-             "tehais": [[convert.tid_to_mjai(tile) for tile in hand] for hand in hands]}
-    events = [{"type": "start_game"}, start, {"type": "tsumo", "actor": 0, "pai": "9s"},
-              {"type": "dahai", "actor": 0, "pai": "E", "tsumogiri": False},
-              {"type": "tsumo", "actor": 1, "pai": "8s"}]
+    start = {
+        "type": "start_kyoku",
+        "bakaze": "E",
+        "kyoku": 1,
+        "honba": 0,
+        "kyotaku": 0,
+        "oya": 0,
+        "scores": [25000] * 4,
+        "dora_marker": "C",
+        "tehais": [[convert.tid_to_mjai(tile) for tile in hand] for hand in hands],
+    }
+    events = [
+        {"type": "start_game"},
+        start,
+        {"type": "tsumo", "actor": 0, "pai": "9s"},
+        {"type": "dahai", "actor": 0, "pai": "E", "tsumogiri": False},
+        {"type": "tsumo", "actor": 1, "pai": "8s"},
+    ]
     for actor, discard, next_actor, drawn in ((1, "8s", 2, "7s"), (2, "7s", 3, "6s"), (3, "6s", 0, "5s")):
-        events.extend([{"type": "dahai", "actor": actor, "pai": discard, "tsumogiri": True},
-                       {"type": "tsumo", "actor": next_actor, "pai": drawn}])
-    wall = [tile for packet in range(3) for hand in hands for tile in hand[packet * 4:packet * 4 + 4]]
+        events.extend(
+            [
+                {"type": "dahai", "actor": actor, "pai": discard, "tsumogiri": True},
+                {"type": "tsumo", "actor": next_actor, "pai": drawn},
+            ]
+        )
+    wall = [tile for packet in range(3) for hand in hands for tile in hand[packet * 4 : packet * 4 + 4]]
     wall.extend(hand[12] for hand in hands)
     wall.extend(draws)
     tail = [*pool, dora]
@@ -63,16 +80,23 @@ def _ids(events, seat):
         env.apply_event(event)
     observation = env.get_observation(seat)
     source = (
-        events[-1].get("actor") if events[-1]["type"] == "dahai"
-        else env.last_discard[0] if env.last_discard else None
+        events[-1].get("actor") if events[-1]["type"] == "dahai" else env.last_discard[0] if env.last_discard else None
     )
     return tuple(candidate.global_id for candidate in legal_candidates(observation, source_player=source))
 
 
 def _private_event():
-    return {"type": "self_pass", "actor": 1, "target": 0, "pai": "E", "trigger_type": "dahai",
-            "trigger_event_id": 3, "confirmed_at_event_id": 4, "confirmed": True,
-            "provenance": "inferred_unique_next_draw_pass"}
+    return {
+        "type": "self_pass",
+        "actor": 1,
+        "target": 0,
+        "pai": "E",
+        "trigger_type": "dahai",
+        "trigger_event_id": 3,
+        "confirmed_at_event_id": 4,
+        "confirmed": True,
+        "provenance": "inferred_unique_next_draw_pass",
+    }
 
 
 def _markers(snapshot):
@@ -116,7 +140,7 @@ def test_private_pass_keeps_current_prefix_and_other_three_next_inputs_byte_iden
             view.apply_event(events[index])
         if events[index]["type"] == "tsumo" and events[index]["actor"] in {0, 2, 3}:
             seat = events[index]["actor"]
-            ids = _ids(events[:index + 1], seat)
+            ids = _ids(events[: index + 1], seat)
             assert (
                 encode_prefix(control[seat].snapshot(), ids).to_bytes()
                 == encode_prefix(changed[seat].snapshot(), ids).to_bytes()
@@ -137,9 +161,18 @@ def test_repeated_confirmation_is_idempotent_and_incremental_history_matches_fre
     assert first.to_bytes() == encode_prefix(view.snapshot(), _ids(events[:5], 1)).to_bytes()
 
 
-@pytest.mark.parametrize("field,value", [("actor", 2), ("target", 3), ("pai", "S"),
-                                         ("trigger_event_id", 99), ("confirmed_at_event_id", 99),
-                                         ("confirmed", False), ("provenance", "guessed_other_player_intent")])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("actor", 2),
+        ("target", 3),
+        ("pai", "S"),
+        ("trigger_event_id", 99),
+        ("confirmed_at_event_id", 99),
+        ("confirmed", False),
+        ("provenance", "guessed_other_player_intent"),
+    ],
+)
 def test_unconfirmed_foreign_or_wrong_source_pass_is_rejected_without_mutation(field, value):
     events, _ = _scenario()
     view = _views(events[:5])[1]
@@ -175,8 +208,11 @@ def test_trusted_offline_label_is_not_added_to_current_prefix_but_enters_later_o
     decisions = []
     result = replay_game(SimpleNamespace(events=tuple(events)), on_decision=decisions.append)
     assert not result["errors"], result
-    passes = [row for row in decisions if row.action_target_global == 221 and row.snapshot.observer_player_id == 1
-              and row.trigger_event_id == 3]
+    passes = [
+        row
+        for row in decisions
+        if row.action_target_global == 221 and row.snapshot.observer_player_id == 1 and row.trigger_event_id == 3
+    ]
     assert len(passes) == 1 and passes[0].action_provenance == "inferred_unique_next_draw_pass"
     assert not any(row["kind"] == 26 for row in passes[0].prefix.rows)
     later = next(row for row in decisions if row.snapshot.observer_player_id == 1 and row.trigger_event_id == 5)
@@ -200,14 +236,25 @@ def _native_window():
     observations = env.reset(wall=wall, oya=0)
     projection = LiveEventProjection()
     projection.observe_native(list(env.rule_log))
-    discard = next(candidate for candidate in legal_candidates(observations[0])
-                   if candidate.spec.action_type == "DISCARD" and candidate.spec.base34 == 27
-                   and not candidate.spec.riichi and not candidate.spec.tsumogiri)
+    discard = next(
+        candidate
+        for candidate in legal_candidates(observations[0])
+        if candidate.spec.action_type == "DISCARD"
+        and candidate.spec.base34 == 27
+        and not candidate.spec.riichi
+        and not candidate.spec.tsumogiri
+    )
     before = len(env.rule_log)
     responses = execute_candidate(env, 0, discard)
     projection.observe_native(list(env.rule_log[before:]))
-    choices = {seat: next(candidate for candidate in legal_candidates(observation, source_player=0)
-                          if candidate.spec.action_type == "PASS") for seat, observation in responses.items()}
+    choices = {
+        seat: next(
+            candidate
+            for candidate in legal_candidates(observation, source_player=0)
+            if candidate.spec.action_type == "PASS"
+        )
+        for seat, observation in responses.items()
+    }
     assert 1 in choices
     return env, projection, choices
 
@@ -297,13 +344,20 @@ class _SpyAgent:
                 selected = replace(selected, _legal_signature=())
         elif self.seat == 0 and self.first_discard:
             selected = next(
-                candidate for candidate in candidates if candidate.spec.action_type == "DISCARD"
-                and candidate.spec.base34 == 27 and not candidate.spec.riichi and not candidate.spec.tsumogiri
+                candidate
+                for candidate in candidates
+                if candidate.spec.action_type == "DISCARD"
+                and candidate.spec.base34 == 27
+                and not candidate.spec.riichi
+                and not candidate.spec.tsumogiri
             )
             self.first_discard = False
         else:
-            selected = next(candidate for candidate in candidates if candidate.spec.action_type == "DISCARD"
-                            and not candidate.spec.riichi)
+            selected = next(
+                candidate
+                for candidate in candidates
+                if candidate.spec.action_type == "DISCARD" and not candidate.spec.riichi
+            )
         return selected, SimpleNamespace(evidence_status="synthetic-forward-only", fallback_reason=None, telemetry={})
 
 
@@ -317,8 +371,11 @@ def test_bounded_run_match_wires_confirmed_choices_into_later_owner_inputs(monke
     assert result["reason"].startswith("decision_cap_reached")
     first_pass = next(snapshot for snapshot, _ in agents[1].seen if snapshot.decision_phase == "discard_response")
     assert not _markers(first_pass)
-    later, ids = next((snapshot, ids) for snapshot, ids in agents[1].seen
-                      if snapshot.decision_phase == "own_act" and snapshot.cutoff_event_id > first_pass.cutoff_event_id)
+    later, ids = next(
+        (snapshot, ids)
+        for snapshot, ids in agents[1].seen
+        if snapshot.decision_phase == "own_act" and snapshot.cutoff_event_id > first_pass.cutoff_event_id
+    )
     assert sum(row["kind"] == 26 for row in encode_prefix(later, ids).rows) == 1
 
 
@@ -352,7 +409,7 @@ def _fixed_native(known, draw):
     for hand in hands:
         while len(hand) < 13:
             hand.append(pool.pop(0))
-    wall = [tile for packet in range(3) for hand in hands for tile in hand[packet * 4:packet * 4 + 4]]
+    wall = [tile for packet in range(3) for hand in hands for tile in hand[packet * 4 : packet * 4 + 4]]
     wall.extend(hand[12] for hand in hands)
     wall.append(drawn)
     tail = [*pool, dora]
@@ -371,15 +428,20 @@ def test_actual_ankan_rob_window_pass_uses_public_trigger_and_keeps_others_priva
     kokushi = ["9m", "1p", "9p", "1s", "9s", "E", "S", "W", "N", "P", "F", "C", "C"]
     env, observations, projection = _fixed_native({0: ["1m"] * 4, 1: kokushi}, "6s")
     kan = next(candidate for candidate in legal_candidates(observations[0]) if candidate.spec.action_type == "ANKAN")
-    declaration = {"type": "ankan", "actor": 0,
-                   "consumed": [convert.tid_to_mjai(tile) for tile in kan.actions[0].consume_tiles]}
+    declaration = {
+        "type": "ankan",
+        "actor": 0,
+        "consumed": [convert.tid_to_mjai(tile) for tile in kan.actions[0].consume_tiles],
+    }
     before = len(env.rule_log)
     responses = execute_candidate(env, 0, kan)
     projection.observe_native(list(env.rule_log[before:]), declared_ankan=declaration, pending_kan_window=True)
     options = {seat: legal_candidates(observation, source_player=0) for seat, observation in responses.items()}
     assert 1 in options and any(candidate.spec.action_type == "RON" for candidate in options[1])
-    choices = {seat: next(candidate for candidate in candidates if candidate.spec.action_type == "PASS")
-               for seat, candidates in options.items()}
+    choices = {
+        seat: next(candidate for candidate in candidates if candidate.spec.action_type == "PASS")
+        for seat, candidates in options.items()
+    }
     receipt = next(trigger for trigger in projection.capture_self_passes(choices) if trigger.observer_player_id == 1)
     assert receipt.trigger_type == "ankan" and receipt.pai == "1m"
     earlier = projection.snapshot(1)
@@ -396,9 +458,14 @@ def test_actual_ankan_rob_window_pass_uses_public_trigger_and_keeps_others_priva
 
 def test_overridden_chi_is_not_relabelled_as_private_pass_online_or_offline():
     env, observations, projection = _fixed_native({0: ["1m"], 1: ["2m", "3m"], 2: ["1m", "1m", "9p"]}, "9s")
-    discard = next(candidate for candidate in legal_candidates(observations[0])
-                   if candidate.spec.action_type == "DISCARD" and candidate.spec.base34 == 0
-                   and not candidate.spec.riichi and not candidate.spec.tsumogiri)
+    discard = next(
+        candidate
+        for candidate in legal_candidates(observations[0])
+        if candidate.spec.action_type == "DISCARD"
+        and candidate.spec.base34 == 0
+        and not candidate.spec.riichi
+        and not candidate.spec.tsumogiri
+    )
     before = len(env.rule_log)
     responses = execute_candidate(env, 0, discard)
     projection.observe_native(list(env.rule_log[before:]))
@@ -419,8 +486,12 @@ def test_overridden_chi_is_not_relabelled_as_private_pass_online_or_offline():
     decisions = []
     replay = replay_game(SimpleNamespace(events=tuple(projection.events)), on_decision=decisions.append)
     assert not replay["errors"], replay
-    assert not any(row.action_target_global == 221 and row.snapshot.observer_player_id == 1
-                   and row.trigger_event_id == trigger.trigger_event_id for row in decisions)
+    assert not any(
+        row.action_target_global == 221
+        and row.snapshot.observer_player_id == 1
+        and row.trigger_event_id == trigger.trigger_event_id
+        for row in decisions
+    )
 
 
 def test_kakan_ledger_trigger_keeps_original_pon_until_commit_and_never_infers_untrusted_pass():
@@ -440,16 +511,31 @@ def test_kakan_ledger_trigger_keeps_original_pon_until_commit_and_never_infers_u
     for hand in hands:
         while len(hand) < 13:
             hand.append(pool.pop(0))
-    events = [{"type": "start_game"}, {"type": "start_kyoku", "bakaze": "E", "kyoku": 1,
-              "honba": 0, "kyotaku": 0, "oya": 0, "scores": [25000] * 4, "dora_marker": "C",
-              "tehais": [[convert.tid_to_mjai(tile) for tile in hand] for hand in hands]},
-              {"type": "tsumo", "actor": 0, "pai": "9s"},
-              {"type": "dahai", "actor": 0, "pai": "5p", "tsumogiri": False},
-              {"type": "pon", "actor": 2, "target": 0, "pai": "5p", "consumed": ["5p", "5p"]},
-              {"type": "dahai", "actor": 2, "pai": "9p", "tsumogiri": False}]
+    events = [
+        {"type": "start_game"},
+        {
+            "type": "start_kyoku",
+            "bakaze": "E",
+            "kyoku": 1,
+            "honba": 0,
+            "kyotaku": 0,
+            "oya": 0,
+            "scores": [25000] * 4,
+            "dora_marker": "C",
+            "tehais": [[convert.tid_to_mjai(tile) for tile in hand] for hand in hands],
+        },
+        {"type": "tsumo", "actor": 0, "pai": "9s"},
+        {"type": "dahai", "actor": 0, "pai": "5p", "tsumogiri": False},
+        {"type": "pon", "actor": 2, "target": 0, "pai": "5p", "consumed": ["5p", "5p"]},
+        {"type": "dahai", "actor": 2, "pai": "9p", "tsumogiri": False},
+    ]
     for actor, tile in ((3, "8s"), (0, "6s"), (1, "5s")):
-        events.extend([{"type": "tsumo", "actor": actor, "pai": tile},
-                       {"type": "dahai", "actor": actor, "pai": tile, "tsumogiri": True}])
+        events.extend(
+            [
+                {"type": "tsumo", "actor": actor, "pai": tile},
+                {"type": "dahai", "actor": actor, "pai": tile, "tsumogiri": True},
+            ]
+        )
     events.extend([{"type": "tsumo", "actor": 2, "pai": "5pr"}, {"type": "kakan", "actor": 2, "pai": "5pr"}])
     view = _views(events)[1]
     trigger = view.pass_trigger()

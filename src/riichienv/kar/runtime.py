@@ -62,14 +62,18 @@ class RuntimePolicy:
         if not context or self.predictor.binding != self.binding:
             raise ValueError("Inference model identity changed or decision identity is empty")
         ids = complete_candidates(candidates)
-        if (not snapshot.history_complete or not snapshot.visibility_complete
-                or getattr(snapshot, "public_clock_version", None) != PUBLIC_CLOCK_VERSION):
+        if (
+            not snapshot.history_complete
+            or not snapshot.visibility_complete
+            or getattr(snapshot, "public_clock_version", None) != PUBLIC_CLOCK_VERSION
+        ):
             raise ValueError("A runtime decision requires a complete visible prefix and current semantic clock")
         artifact = self.calibration
         branch_report = artifact.branch_quality_report if artifact is not None else None
         branch_states = (
             tuple(branch_report["branches"][str(event)]["status"] for event in range(21))
-            if branch_report else ("unavailable",) * 21
+            if branch_report
+            else ("unavailable",) * 21
         )
         temperatures = artifact.temperatures if artifact is not None else (1.0, 1.0, 1.0)
         logits = self.predictor.policy(snapshot, ids, context)

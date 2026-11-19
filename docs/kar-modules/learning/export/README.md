@@ -8,6 +8,8 @@
 
 `export_dataset(acceptance_dir, proto_path, output_dir, ...)` 消费通过 gate 的 split 清单，重新解码/重放真实 raw，通过输入回调写共享历史决策数据。`GameWriter` 接收 `ReplayDecision`，另行构造 action/response/final-rank 监督；`learning_contract()` 给出派生数据必须匹配的版本。
 
+实际加载的协议必须同时匹配验收 scope 与各局清单中的顶层 source SHA 和完整 imported descriptor SHA。SQLite scope、每局恢复元数据和输出 manifest 继续保存这组身份；恢复前严格核对，训练读取端也拒绝缺少任一摘要的 dataset。旧版只保存顶层协议 SHA 的产物需要重新审计、导出，不能仅更新合同版本或重新计算自签摘要。
+
 这不是把旧学习数据库改个文件名，不会继承旧目录的 train/test 标记或训练资格。
 
 ## 数据合同

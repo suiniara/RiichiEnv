@@ -1,5 +1,6 @@
 use crate::agari::{self, Division, Mentsu};
 use crate::types::{Hand, Meld};
+use crate::yaku::winning_interpretations;
 
 // Re-export yaku IDs from the main yaku module
 pub use crate::yaku::{
@@ -141,36 +142,14 @@ pub fn calculate_yaku_3p(
         return best_res;
     }
 
+    let tenhou = ctx.is_tsumo_first_turn && ctx.is_menzen && ctx.is_tsumo && ctx.seat_wind == 27;
     for div in &divisions {
-        let mut win_group_indices = Vec::new();
-        if div.head == win_tile {
-            win_group_indices.push(None);
-        }
-        for (idx, m) in div.body.iter().enumerate() {
-            match m {
-                Mentsu::Koutsu(t) => {
-                    if *t == win_tile {
-                        win_group_indices.push(Some(idx));
-                    }
-                }
-                Mentsu::Shuntsu(t) => {
-                    if win_tile >= *t && win_tile <= *t + 2 {
-                        win_group_indices.push(Some(idx));
-                    }
-                }
-            }
-        }
-
-        if win_group_indices.is_empty() {
-            continue;
-        }
-
-        for wg_idx in win_group_indices {
+        for (wg_idx, win_tile) in winning_interpretations(div, win_tile, tenhou) {
             let mut res = YakuResult::default();
 
             apply_yakuman(&mut res, hand, melds, ctx, div, wg_idx, win_tile);
             if res.han >= 13 {
-                if res.han > best_res.han {
+                if res.is_higher_scoring(&best_res, ctx.seat_wind == 27, ctx.is_tsumo, 3) {
                     best_res = res;
                 }
                 continue;
@@ -387,7 +366,7 @@ pub fn calculate_yaku_3p(
                 res.yaku_names.push("Chantai".to_string());
             }
 
-            if res.han > best_res.han || (res.han == best_res.han && res.fu > best_res.fu) {
+            if res.is_higher_scoring(&best_res, ctx.seat_wind == 27, ctx.is_tsumo, 3) {
                 best_res = res;
             }
         }

@@ -9,7 +9,9 @@ torch = pytest.importorskip("torch")
 from riichienv import Phase
 from riichienv.kar.actions import execute_candidate, execute_joint_responses
 from riichienv.kar.agent import KARAgent
-from riichienv.kar.contracts import MJSOUL_RULESET
+from riichienv.kar.calibration import CalibrationArtifact
+from riichienv.kar.contracts import MJSOUL_RULESET, content_hash
+from riichienv.kar.learning import config as inference_config
 from riichienv.kar.learning.batch import collate_inputs
 from riichienv.kar.learning.config import ModelConfig
 from riichienv.kar.learning.inference import FrozenModelPredictor, model_weights_sha256
@@ -79,11 +81,16 @@ def test_frozen_fp32_ignores_ambient_autocast_for_prefix_and_suffix(frozen_predi
         assert torch.is_autocast_enabled("cpu")
     suffix_in_fp32 = predictor.candidates(view, ids, selected, "ambient-bf16-prefix")
     record_property("max_policy_delta", max(abs(left - right) for left, right in zip(actual_policy, expected_policy)))
-    for label, scores in (("bf16_outer_suffix", suffix_in_bf16), ("bf16_outer_both", same_outer),
-                          ("fp32_outer_suffix", suffix_in_fp32)):
+    for label, scores in (
+        ("bf16_outer_suffix", suffix_in_bf16),
+        ("bf16_outer_both", same_outer),
+        ("fp32_outer_suffix", suffix_in_fp32),
+    ):
         for head, name in enumerate(("response", "rank")):
-            delta = max(float((torch.tensor(scores[action][head]) - torch.tensor(expected[action][head])).abs().max())
-                        for action in selected)
+            delta = max(
+                float((torch.tensor(scores[action][head]) - torch.tensor(expected[action][head])).abs().max())
+                for action in selected
+            )
             record_property(f"{label}/{name}", delta)
     assert actual_policy == expected_policy and suffix_in_bf16 == same_outer == suffix_in_fp32 == expected
     assert predictor.binding.inference_recipe_sha256 == recipe
@@ -92,22 +99,29 @@ def test_frozen_fp32_ignores_ambient_autocast_for_prefix_and_suffix(frozen_predi
 
 @pytest.mark.parametrize("prefix_bf16", [True, False])
 def test_raw_kv_cache_rejects_cross_precision_suffix_even_with_same_model_dtype(
-    frozen_predictor, public_view, prefix_bf16,
+    frozen_predictor,
+    public_view,
+    prefix_bf16,
 ):
     snapshot, ids = public_view
     prefix = encode_prefix(snapshot, ids)
     action = next(action for action in ids if action < 148)
     row = {"candidates": ids, "decision_row_id": "raw-autocast-cache"}
     before = collate_inputs([{**row, "tokens": prefix.to_bytes()[108:], "decide_index": prefix.decide_index}])
-    suffix = collate_inputs([{**row, "tokens": append_action(prefix, action).to_bytes()[-139:],
-                             "decide_index": 0, "action_index": 0}])
+    suffix = collate_inputs(
+        [{**row, "tokens": append_action(prefix, action).to_bytes()[-139:], "decide_index": 0, "action_index": 0}]
+    )
     model = frozen_predictor.model
     with torch.autocast("cpu", dtype=torch.bfloat16, enabled=prefix_bf16):
         cache = model.encode_prefix(before)
         response, rank = model.score_actions(cache, suffix)
     assert torch.isfinite(response).all() and torch.isfinite(rank).all()
-    with torch.autocast("cpu", dtype=torch.bfloat16, enabled=not prefix_bf16), pytest.raises(
-        ValueError, match="cache autocast precision differs",
+    with (
+        torch.autocast("cpu", dtype=torch.bfloat16, enabled=not prefix_bf16),
+        pytest.raises(
+            ValueError,
+            match="cache autocast precision differs",
+        ),
     ):
         model.score_actions(cache, suffix)
 
@@ -165,6 +179,32 @@ def test_feature_recipe_cannot_reuse_calibration_or_cached_prefix_from_another_m
     frozen_predictor.use_rule_features = False
     with pytest.raises(ValueError):
         frozen_predictor.policy(view, ids, "recipe-bound")
+
+
+def test_dense_policy_calibration_recipe_is_rejected_by_single_prefix_inference(
+    frozen_predictor, calibration_fixture, event_support
+):
+    legacy_recipe = content_hash(
+        {
+            "model_config_hash": frozen_predictor.model.config.contract_hash,
+            "feature_version": inference_config.FEATURE_VERSION,
+            "rule_feature_mask_version": inference_config.RULE_FEATURE_MASK_VERSION,
+            "use_rule_features": True,
+            "inference_feature_dropout": 0,
+            "inference_precision": "fp32_no_autocast_v1",
+        }
+    )
+    assert legacy_recipe != frozen_predictor.binding.inference_recipe_sha256
+    support = replace(event_support, train_manifest_sha256=frozen_predictor.binding.train_manifest_sha256)
+    artifact, _, _ = calibration_fixture
+    old = replace(
+        artifact,
+        binding=replace(frozen_predictor.binding, inference_recipe_sha256=legacy_recipe),
+        support_sha256=support.digest,
+    )
+    old.validate(old.binding, support, allow_diagnostic=True)
+    with pytest.raises(ValueError, match="provenance mismatch"):
+        CalibrationArtifact.from_record(old.to_record(), frozen_predictor.binding, support, allow_diagnostic=True)
 
 
 def test_frozen_policy_executes_six_real_agent_windows_without_changing_weights(frozen_predictor, record_property):
