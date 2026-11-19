@@ -41,11 +41,25 @@ class GlobalEpochSampler:
             raise ValueError("Every indexed training decision needs its actual positive token length")
         if min(effective_batch, microbatch, world_size, bucket_window) < 1 or not 0 <= rank < world_size:
             raise ValueError("Invalid global sampler configuration")
-        self.lengths = tuple(lengths)
+        self._lengths = tuple(lengths)
+        self._lengths_sha256 = content_hash(self._lengths)
         self.seed, self.effective_batch, self.microbatch = seed, effective_batch, microbatch
         self.rank, self.world_size, self.bucket_window = rank, world_size, max(bucket_window, effective_batch)
         self.epoch, self.cursor = 0, 0
-        self.order = self._order(0)
+        order = self._order(0)
+        self._epoch_order = (order, content_hash(order))
+
+    @property
+    def lengths(self) -> tuple[int, ...]:
+        return self._lengths
+
+    @property
+    def order(self) -> tuple[int, ...]:
+        return self._epoch_order[0]
+
+    @property
+    def order_sha256(self) -> str:
+        return self._epoch_order[1]
 
     def _order(self, epoch: int) -> tuple[int, ...]:
         order = list(range(len(self.lengths)))
@@ -80,8 +94,10 @@ class GlobalEpochSampler:
     def next_epoch(self) -> None:
         if not self.exhausted:
             raise ValueError("Cannot silently abandon an unfinished epoch")
-        self.epoch += 1
-        self.cursor, self.order = 0, self._order(self.epoch)
+        epoch = self.epoch + 1
+        order = self._order(epoch)
+        self._epoch_order = (order, content_hash(order))
+        self.epoch, self.cursor = epoch, 0
 
     def state_dict(self) -> dict[str, Any]:
         return {
@@ -91,10 +107,10 @@ class GlobalEpochSampler:
             "microbatch": self.microbatch,
             "world_size": self.world_size,
             "bucket_window": self.bucket_window,
-            "lengths_sha256": content_hash(self.lengths),
+            "lengths_sha256": self._lengths_sha256,
             "epoch": self.epoch,
             "cursor": self.cursor,
-            "order_sha256": content_hash(self.order),
+            "order_sha256": self.order_sha256,
         }
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
@@ -107,9 +123,11 @@ class GlobalEpochSampler:
         if type(epoch) is not int or epoch < 0 or type(cursor) is not int or not 0 <= cursor <= len(self.lengths):
             raise ValueError("Corrupt sampler cursor")
         order = self._order(epoch)
-        if content_hash(order) != state["order_sha256"] or (cursor < len(order) and cursor % self.effective_batch):
+        digest = content_hash(order)
+        if digest != state["order_sha256"] or (cursor < len(order) and cursor % self.effective_batch):
             raise ValueError("Resume cursor is not a committed optimizer boundary")
-        self.epoch, self.cursor, self.order = epoch, cursor, order
+        self._epoch_order = (order, digest)
+        self.epoch, self.cursor = epoch, cursor
 
 
 def validation_updates(updates_per_epoch: int) -> tuple[int, ...]:

@@ -7,7 +7,7 @@ import torch
 
 from ..observation import PublicSnapshot
 from ..runtime_contracts import RuntimeBinding
-from ..tokenize import TokenSequence, append_action, encode_prefix
+from ..tokenize import TokenHistoryCache, TokenSequence, append_action, encode_prefix
 from .batch import collate_inputs, rule_feature_view
 from .config import frozen_inference_recipe_sha256
 from .model import KARTransformer, PrefixCache
@@ -38,9 +38,11 @@ class FrozenModelPredictor:
             model_weights_sha256(model), train_manifest_sha256, inference_recipe_sha256=recipe
         )
         self._identity = self._frozen_identity()
+        # Bounded by the four seats, with at most one active stream per seat.
+        self._history_caches: dict[int, tuple[object, TokenHistoryCache]] = {}
         self._cache: PrefixCache | None = None
         self._prefix: TokenSequence | None = None
-        self._context: tuple[str, str, tuple[int, ...]] | None = None
+        self._context: tuple[str, object | None, str, tuple[int, ...]] | None = None
         self.prefix_calls = self.candidate_calls = self.candidates_scored = 0
 
     def _frozen_identity(self):
@@ -59,8 +61,20 @@ class FrozenModelPredictor:
     @torch.no_grad()
     def policy(self, snapshot: PublicSnapshot, candidates: tuple[int, ...], context: str) -> Sequence[float]:
         self._unchanged()
-        self._prefix = encode_prefix(snapshot, candidates)
-        prefix = self._prefix
+        self._cache = self._prefix = self._context = None
+        seat = snapshot.observer_player_id
+        if type(seat) is not int or not 0 <= seat < 4:
+            raise ValueError("Invalid observer for frozen inference")
+        # Detached snapshots without a ledger lifetime do not populate the cache.
+        session = snapshot._history_session
+        history_cache = None
+        if session is not None:
+            slot = self._history_caches.get(seat)
+            if slot is None or slot[0] is not session:
+                slot = (session, TokenHistoryCache())
+                self._history_caches[seat] = slot
+            history_cache = slot[1]
+        prefix = encode_prefix(snapshot, candidates, history_cache=history_cache)
         row = {
             "tokens": prefix.to_bytes()[108:],
             "candidates": candidates,
@@ -75,7 +89,9 @@ class FrozenModelPredictor:
         )
         with torch.autocast(device_type=device.type, enabled=False):
             self._cache = self.model.encode_prefix(batch)
-        self._context = (context, hashlib.sha256(snapshot.to_bytes()).hexdigest(), candidates)
+        self._prefix = prefix
+        snapshot_sha256 = hashlib.sha256(snapshot.to_bytes()).hexdigest()
+        self._context = (context, snapshot._history_session, snapshot_sha256, candidates)
         self.prefix_calls += 1
         return self._cache.policy_logits[0].cpu().tolist()
 
@@ -84,7 +100,7 @@ class FrozenModelPredictor:
         self, snapshot: PublicSnapshot, candidates: tuple[int, ...], supported_discards: tuple[int, ...], context: str
     ) -> Mapping[int, tuple[Sequence[float], Sequence[Sequence[float]]]]:
         self._unchanged()
-        expected = (context, hashlib.sha256(snapshot.to_bytes()).hexdigest(), candidates)
+        expected = (context, snapshot._history_session, hashlib.sha256(snapshot.to_bytes()).hexdigest(), candidates)
         if self._context != expected or self._cache is None or self._prefix is None:
             raise ValueError("Candidate scores cannot reuse another observer/decision prefix")
         if (

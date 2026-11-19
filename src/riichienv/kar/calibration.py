@@ -726,8 +726,9 @@ def calibrate_static_rows(
     inference_device_type: str = "unspecified",
 ) -> CalibrationArtifact:
     split.validate()
-    if any(row.game_id not in split.fit_games for row in fit_rows) or any(
-        row.game_id not in split.check_games for row in check_rows
+    fit_games, check_games = set(split.fit_games), set(split.check_games)
+    if any(row.game_id not in fit_games for row in fit_rows) or any(
+        row.game_id not in check_games for row in check_rows
     ):
         raise ValueError("cal_check cannot fit temperatures or p_min, and foreign games are forbidden")
     if len({row.row_id for row in chain(fit_rows, check_rows)}) != len(fit_rows) + len(check_rows):

@@ -124,6 +124,24 @@ def test_cal_check_does_not_adjust_fit_temperatures_or_gate(binding, event_suppo
         )
 
 
+@pytest.mark.parametrize("side", ["fit", "check"])
+def test_static_calibration_rejects_foreign_games_and_duplicate_decisions(
+    side, binding, event_support, calibration_fixture,
+):
+    artifact, fit, check = calibration_fixture
+    kwargs = {"split": artifact.split, "binding": binding, "support": event_support,
+              "source_reference": "synthetic membership check", "diagnostic_fixture": True}
+    rows = {"fit": fit, "check": check}
+    other = "check" if side == "fit" else "fit"
+    rows[side] = [replace(rows[side][0], game_id="outside-the-frozen-validation-split")]
+    with pytest.raises(ValueError, match="foreign games are forbidden"):
+        calibrate_static_rows(rows["fit"], rows["check"], **kwargs)
+    original = fit if side == "fit" else check
+    rows[side] = [replace(original[0], row_id=rows[other][0].row_id)]
+    with pytest.raises(ValueError, match="Duplicate calibration decision identities"):
+        calibrate_static_rows(rows["fit"], rows["check"], **kwargs)
+
+
 def test_calibration_artifact_binding_integrity_and_fixture_boundary(binding, event_support, calibration_fixture):
     artifact, _, _ = calibration_fixture
     record = artifact.to_record()

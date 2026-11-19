@@ -14,7 +14,9 @@
 
 两条路径 `no_grad`、显式关闭完整模型调用的 autocast、要求 FP32 参数/浮点缓冲；推理 recipe 绑定 `fp32_no_autocast_v1`。推理随机规则置空为零；特征模式不改变模型尺寸。原生 K/V 另记录 autocast 模式，不能跨精度给后缀使用。温度、公开响应 mask、支持罚项、KL 与采样由 [runtime](../../runtime/README.md) 协调，不用真实 E/R 标签挑分支。
 
-上下文同时绑定 context ID、snapshot 字节身份和完整合法集合。参数/缓冲版本、配置、特征模式、训练模式改变会清缓存并拒绝；不能跨观察者/决策或加载权重后复用旧 prefix。
+单次决策 K/V 同时绑定 context ID、snapshot 字节身份、本地历史会话以及完整合法动作集合。模型参数/缓冲、配置、特征模式和训练模式的冻结检查仍在。
+
+另外，`policy()` 使用现有 `TokenHistoryCache` 编码历史。最多保留每一观察席的一个流，使用 `ObserverLedger` 的半庄生命周期身份，不写入 snapshot 序列化或 Token。跨小局只追加；换半庄即使开局完全相同也重建，前缀被修改、历史倒退、positions 改变或迟到 `SELF_PASS` 插入按通用缓存校验失效。没有账本身份的外部快照用新缓存编码。历史缓存不是跨决策 Transformer K/V，不改变注意力。
 
 ## 使用与副作用
 
@@ -22,4 +24,4 @@
 
 ## 测试与状态
 
-对应 [core/test_frozen_inference.py](../../../../tests/kar/core/test_frozen_inference.py)、[m1/test_model.py](../../../../tests/kar/m1/test_model.py)。本轮未加载模型、运行 forward 或测试。记录的 prefix/candidate 调用次数是诊断量，不是棋力证据。
+对应 [core/test_frozen_inference.py](../../../../tests/kar/core/test_frozen_inference.py)、[core/test_frozen_history_cache.py](../../../../tests/kar/core/test_frozen_history_cache.py) 与 [m1/test_model.py](../../../../tests/kar/m1/test_model.py)。合成 CPU 前向和缓存实测见[性能报告](../../../kar-history-sampler-performance.md)，不作棋力证据。

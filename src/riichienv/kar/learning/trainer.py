@@ -602,7 +602,7 @@ def train_production(  # noqa: PLR0915
         prior_third = state.get("third_epoch_decision")
         while sampler.epoch < config.planned_epochs and not (prior_third is not None and not prior_third["allowed"]):
             epoch = sampler.epoch
-            state["epoch_order_sha256"][str(epoch)] = content_hash(sampler.order)
+            state["epoch_order_sha256"][str(epoch)] = sampler.order_sha256
             while not sampler.exhausted:
                 group = sampler.peek()
                 budget_boundary(f"before_update/{state['step']}", group.global_examples)

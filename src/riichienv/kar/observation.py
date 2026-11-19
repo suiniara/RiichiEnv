@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from riichienv import convert
@@ -71,9 +71,13 @@ class PublicSnapshot:
     history_positions: tuple[int, ...] = ()
     visibility_complete: bool = True
     public_clock_version: str | None = None
+    # A process-local ledger lifetime, never a public event or model input.
+    _history_session: object | None = field(default=None, repr=False, compare=False)
 
     def to_bytes(self) -> bytes:
-        return canonical_bytes(asdict(self))
+        record = asdict(self)
+        record.pop("_history_session")
+        return canonical_bytes(record)
 
     def known_counts(self) -> tuple[int, ...] | None:
         """Count physical visible regions only when both ledger and visibility are complete.
@@ -115,6 +119,7 @@ class ObserverLedger:
         if observer_player_id not in range(4) or sorted(initial_seat_order_player_ids) != list(range(4)):
             raise ValueError("Four stable player IDs and an explicit initial seat order are required")
         self.observer = observer_player_id
+        self._history_session = object()  # ObserverLedger owns one complete game's visible log.
         self.initial_order = tuple(initial_seat_order_player_ids)
         self.event_id = -1
         self.have_start = False
@@ -536,6 +541,7 @@ class ObserverLedger:
             history_positions=tuple(self.history_positions),
             visibility_complete=self.visibility_complete,
             public_clock_version=PUBLIC_CLOCK_VERSION,
+            _history_session=self._history_session,
         )
 
     def check_observation(self, observation: Any) -> None:
