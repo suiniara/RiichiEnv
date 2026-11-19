@@ -4,18 +4,20 @@ import json
 import math
 import os
 import time
-from collections.abc import Iterator
+import uuid
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from .contracts import content_hash, model_tier
+from .evaluation_authorization import exclusive_job
 
 PHASE_CAPS = {"M1": 100.0, "M2": 650.0, "M3": 250.0}
 TOTAL_CAP_USD = 1000.0
 BUDGET_VERSION = "budget_ladder_v1"
-LEDGER_VERSION = "reserved_phase_cost_ledger_v2"
+LEDGER_VERSION = "durable_compute_cost_ledger_v3"
 
 
 @dataclass(frozen=True)
@@ -145,11 +147,17 @@ class BudgetExceededError(RuntimeError):
     pass
 
 
-class BudgetLedger:
-    """Durable actual charges plus persistent, explicitly estimated fixed-cost reservations.
+class PendingComputeError(RuntimeError):
+    """An interrupted computation needs an external receipt before more work."""
 
-    Forecasts are never mislabeled as invoices. Until an actual receipt reconciles a
-    job's fixed charge, its unused estimate continues to occupy the phase allowance.
+
+class BudgetLedger:
+    """Append-only charges, fixed estimates, and unfinished compute attempts.
+
+    A compute estimate is never an invoice. A live attempt survives intermediate
+    settlements, and only its owner can finish it using the local monotonic clock.
+    Reopening a ledger cannot recover that clock; an external receipt must close
+    the old attempt before any new computation, including a differently named job.
     """
 
     def __init__(self, path: Path, plan: BudgetPlan, *, job_id: str | None = None, allow_create: bool = True):
@@ -158,10 +166,14 @@ class BudgetLedger:
         self.entries: list[dict[str, Any]] = []
         self._heads: dict[str, int] = {}
         self._reservations: dict[str, float] = {}
+        self._pending_compute: dict[str, dict[str, Any]] = {}
+        self._owned_compute: str | None = None
         self._fixed_paid: dict[str, float] = {}
         self._invoices: dict[str, dict[str, Any]] = {}
         self._sum = self._compensation = 0.0
         self._clock = time.monotonic()
+        self._byte_count = 0
+        self._write_failed = False
         identity = {
             "version": LEDGER_VERSION,
             "phase": plan.phase,
@@ -169,7 +181,11 @@ class BudgetLedger:
             "budget_spent_usd": plan.budget_spent_usd,
         }
         if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
+            raw = path.read_bytes()
+            if raw and not raw.endswith(b"\n"):
+                raise ValueError("Incomplete budget-ledger tail; preserve it for explicit audited recovery")
+            self._byte_count = len(raw)
+            for line in raw.decode("utf-8").splitlines():
                 row = json.loads(line)
                 unsigned = {key: value for key, value in row.items() if key != "entry_sha256"}
                 if (
@@ -187,7 +203,11 @@ class BudgetLedger:
             self._append("identity", identity=identity, category="control", reference="registered phase budget")
         reservation = self._reservations.get(self.job_id)
         if reservation is None:
-            self.assert_room(plan.forecast.fixed_cost_usd)
+            if self._pending_compute:
+                raise PendingComputeError(
+                    "Finish or reconcile the existing compute attempt before registering another ledger job"
+                )
+            self._check_room(plan.forecast.fixed_cost_usd)
             self._append(
                 "fixed_reservation",
                 reserved_usd=plan.forecast.fixed_cost_usd,
@@ -201,7 +221,8 @@ class BudgetLedger:
             self.charge(
                 receipt.usd, category=receipt.category, reference=receipt.reference, receipt_id=receipt.receipt_id
             )
-        self.assert_room(0.0)
+        # An already-recorded overrun must remain readable/reconcilable. New
+        # work is denied by assert_room/reserve_next, not by opening its evidence.
 
     @property
     def head(self) -> str | None:
@@ -217,7 +238,10 @@ class BudgetLedger:
         ):
             raise ValueError("Invalid charge sequence or amount")
         kind = row.get("kind")
-        if kind not in {"identity", "fixed_reservation", "charge"} or (kind == "identity") != (len(self.entries) == 0):
+        if kind not in {
+            "identity", "fixed_reservation", "charge", "compute_reservation", "compute_settlement",
+            "compute_reconciliation",
+        } or (kind == "identity") != (len(self.entries) == 0):
             raise ValueError("Invalid ledger event or identity position")
         job = row["job_id"]
         if kind == "fixed_reservation":
@@ -225,6 +249,38 @@ class BudgetLedger:
             if not math.isfinite(amount) or amount < 0 or job in self._reservations or row["usd"] != 0:
                 raise ValueError("Invalid or duplicated fixed reservation")
             self._reservations[job] = amount
+        elif kind == "compute_reservation":
+            self._apply_compute_reservation(row)
+        elif kind in {"compute_settlement", "compute_reconciliation"}:
+            attempt = row["attempt_id"]
+            previous = self._pending_compute.get(attempt)
+            if previous is None or previous["job_id"] != job or row["category"] != "compute":
+                raise ValueError("Compute settlement has no matching unfinished attempt")
+            if kind == "compute_reconciliation":
+                invoice = row["receipt_id"]
+                if not invoice or invoice in self._invoices or row["basis"] != "external_unsettled_cost_receipt":
+                    raise ValueError("External compute reconciliation requires a unique actual receipt")
+                self._invoices[invoice] = row
+                del self._pending_compute[attempt]
+            else:
+                elapsed = row["elapsed_seconds"]
+                if (
+                    isinstance(elapsed, bool) or not isinstance(elapsed, (int, float))
+                    or not math.isfinite(elapsed) or elapsed < 0
+                    or type(row["closed"]) is not bool
+                    or row["rate_usd_per_hour"] != previous["rate_usd_per_hour"]
+                    or row["usd"] != elapsed * previous["rate_usd_per_hour"] / 3600
+                    or row["basis"] != "measured_elapsed_at_registered_rate"
+                ):
+                    raise ValueError("Invalid measured compute settlement")
+                if row["closed"]:
+                    del self._pending_compute[attempt]
+                else:
+                    self._pending_compute[attempt] = {
+                        **previous,
+                        "reserved_usd": max(0.0, previous["reserved_usd"] - row["usd"]),
+                        "settled_usd": previous["settled_usd"] + row["usd"],
+                    }
         elif kind == "charge" and row["category"] != "compute":
             receipt_id = row["receipt_id"]
             if not receipt_id or receipt_id in self._invoices:
@@ -239,7 +295,37 @@ class BudgetLedger:
         self.entries.append(row)
         self._heads[row["entry_sha256"]] = len(self.entries)
 
+    def _apply_compute_reservation(self, row: dict[str, Any]) -> None:
+        attempt, amount, rate, job = row["attempt_id"], row["reserved_usd"], row["rate_usd_per_hour"], row["job_id"]
+        if (
+            not isinstance(attempt, str) or not attempt
+            or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                   or not math.isfinite(value) or value < 0 for value in (amount, rate))
+            or row["usd"] != 0
+        ):
+            raise ValueError("Invalid compute reservation")
+        previous = self._pending_compute.get(attempt)
+        if previous is None:
+            if any(value["job_id"] == job for value in self._pending_compute.values()):
+                raise ValueError("A job cannot replace an unfinished compute attempt")
+            settled = 0.0
+        else:
+            if (
+                previous["job_id"] != job or previous["rate_usd_per_hour"] != rate
+                or previous["forecast_sha256"] != row["forecast_sha256"]
+                or amount < previous["reserved_usd"]
+            ):
+                raise ValueError("A live compute estimate cannot change identity or silently shrink")
+            settled = previous["settled_usd"]
+        self._pending_compute[attempt] = {
+            "attempt_id": attempt, "job_id": job, "reserved_usd": amount,
+            "rate_usd_per_hour": rate, "forecast_sha256": row["forecast_sha256"],
+            "settled_usd": settled,
+        }
+
     def _append(self, kind: str, *, usd: float = 0.0, **fields: Any) -> dict[str, Any]:
+        if self._write_failed:
+            raise ValueError("A budget write had an uncertain outcome; reopen and verify the retained ledger")
         row = {
             "sequence": len(self.entries),
             "phase": self.plan.phase,
@@ -250,10 +336,21 @@ class BudgetLedger:
             **fields,
         }
         row["entry_sha256"] = content_hash(row)
-        with self.path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(row, sort_keys=True, allow_nan=False) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+        encoded = (json.dumps(row, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+        with exclusive_job(self.path.with_name(self.path.name + ".lock")):
+            size = self.path.stat().st_size if self.path.exists() else 0
+            if size != self._byte_count:
+                raise ValueError("Another writer changed the budget ledger; reopen before appending")
+            try:
+                with self.path.open("ab") as stream:
+                    if stream.write(encoded) != len(encoded):
+                        raise OSError("Incomplete budget journal write")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except BaseException:
+                self._write_failed = True
+                raise
+        self._byte_count += len(encoded)
         self._apply(row)
         return row
 
@@ -269,9 +366,32 @@ class BudgetLedger:
 
     @property
     def committed_usd(self) -> float:
-        return self.spent_usd + self.reserved_fixed_usd
+        return self.spent_usd + self.reserved_fixed_usd + self.reserved_compute_usd
+
+    @property
+    def reserved_compute_usd(self) -> float:
+        return math.fsum(value["reserved_usd"] for value in self._pending_compute.values())
+
+    @property
+    def pending_compute(self) -> tuple[dict[str, Any], ...]:
+        return tuple(dict(self._pending_compute[key]) for key in sorted(self._pending_compute))
+
+    def _require_owned_compute(self) -> None:
+        if self._write_failed:
+            raise ValueError("A budget write had an uncertain outcome; reopen and verify the retained ledger")
+        if self.path.stat().st_size != self._byte_count:
+            raise ValueError("Another writer changed the budget ledger; reopen before computing")
+        if any(attempt != self._owned_compute for attempt in self._pending_compute):
+            raise PendingComputeError(
+                "Unfinished compute from a previous owner requires reconcile_compute() with an actual external "
+                "receipt; estimates and a new process clock cannot close it"
+            )
 
     def assert_room(self, extra_usd: float) -> None:
+        self._require_owned_compute()
+        self._check_room(extra_usd)
+
+    def _check_room(self, extra_usd: float) -> None:
         if not math.isfinite(extra_usd) or extra_usd < 0:
             raise ValueError("A budget reservation cannot be missing, negative or non-finite")
         total = self.committed_usd + extra_usd
@@ -279,13 +399,33 @@ class BudgetLedger:
             raise BudgetExceededError("Actual charges plus outstanding reservations exhausted this phase")
 
     def reserve_next(self, seconds: float, *, fixed_usd: float = 0.0) -> None:
-        if not math.isfinite(seconds) or seconds < 0 or not math.isfinite(fixed_usd) or fixed_usd < 0:
+        if any(isinstance(value, bool) or not isinstance(value, (int, float))
+               or not math.isfinite(value) or value < 0 for value in (seconds, fixed_usd)):
             raise ValueError("Next-work reservation requires an explicit cost estimate")
-        self.assert_room(seconds * self.plan.forecast.resource_usd_per_hour / 3600 + fixed_usd)
+        self._require_owned_compute()
+        elapsed = time.monotonic() - self._clock
+        if elapsed < 0 or not math.isfinite(elapsed):
+            raise ValueError("The local monotonic compute clock moved backwards")
+        rate = self.plan.forecast.resource_usd_per_hour
+        previous = self._pending_compute.get(self._owned_compute or "")
+        held = previous["reserved_usd"] if previous is not None else 0.0
+        requested = max(held, (elapsed + seconds) * rate / 3600)
+        self._check_room(requested - held + fixed_usd)
+        if previous is not None and requested == held:
+            return
+        attempt = self._owned_compute or uuid.uuid4().hex
+        self._append(
+            "compute_reservation", attempt_id=attempt, reserved_usd=requested,
+            rate_usd_per_hour=rate, forecast_sha256=self.plan.forecast.to_record()["forecast_sha256"],
+            category="control", reference="unfinished compute estimate, not an actual charge",
+        )
+        self._owned_compute = attempt
 
     def charge(self, usd: float, *, category: str, reference: str, receipt_id: str | None = None) -> dict[str, Any]:
         if isinstance(usd, bool) or not math.isfinite(usd) or usd < 0 or not category or not reference:
             raise ValueError("Actual cost, category and reference are required")
+        if category == "compute" and self._pending_compute:
+            raise PendingComputeError("Use settle_elapsed/finish_compute, or reconcile an interrupted attempt")
         invoice = (
             None
             if category == "compute"
@@ -306,21 +446,86 @@ class BudgetLedger:
             return previous
         row = self._append("charge", usd=usd, category=category, reference=reference, receipt_id=invoice)
         # Actual invoices are retained even when they reveal an overrun.
-        self.assert_room(0.0)
+        self._check_room(0.0)
         return row
 
     def settle_elapsed(self, reference: str) -> None:
+        """Atomically charge measured work and reduce its estimate, keeping the attempt open."""
+        self._settle_elapsed(reference, close=False)
+
+    def finish_compute(self, reference: str) -> None:
+        """Atomically settle and close only the attempt owned by this live ledger object."""
+        self._settle_elapsed(reference, close=True)
+
+    def _settle_elapsed(self, reference: str, *, close: bool) -> None:
+        self._require_owned_compute()
+        if not reference:
+            raise ValueError("Measured compute settlement needs a reference")
         now = time.monotonic()
-        elapsed, self._clock = now - self._clock, now
-        self.charge(elapsed * self.plan.forecast.resource_usd_per_hour / 3600, category="compute", reference=reference)
+        elapsed = now - self._clock
+        if elapsed < 0 or not math.isfinite(elapsed):
+            raise ValueError("The local monotonic compute clock moved backwards")
+        rate = self.plan.forecast.resource_usd_per_hour
+        usd = elapsed * rate / 3600
+        if self._owned_compute is not None:
+            self._append(
+                "compute_settlement", usd=usd, attempt_id=self._owned_compute, closed=close,
+                elapsed_seconds=elapsed, rate_usd_per_hour=rate,
+                basis="measured_elapsed_at_registered_rate", category="compute", reference=reference,
+            )
+            if close:
+                self._owned_compute = None
+        else:
+            self._append("charge", usd=usd, category="compute", reference=reference, receipt_id=None)
+        # Advance after the durable transaction, even if it reveals an overrun.
+        # A subsequent abort handler must not charge this interval twice.
+        self._clock = now
+        self._check_room(0.0)
+
+    def reconcile_compute(
+        self, attempt_id: str, *, usd: float, receipt_id: str, reference: str,
+    ) -> dict[str, Any]:
+        """Close an interrupted attempt with its additional, previously unrecorded actual cost.
+
+        `usd` is not the estimate or the whole job invoice: subtract any charges
+        already recorded for this attempt. The external receipt/reference must
+        establish that remainder, including zero if no additional cost accrued.
+        """
+        if (isinstance(usd, bool) or not isinstance(usd, (int, float)) or not math.isfinite(usd) or usd < 0
+                or not attempt_id or not receipt_id or not reference):
+            raise ValueError("Interrupted compute needs an actual nonnegative remainder and unique receipt")
+        if receipt_id in self._invoices:
+            previous = self._invoices[receipt_id]
+            if previous.get("kind") != "compute_reconciliation" or any(
+                previous.get(key) != value
+                for key, value in (("attempt_id", attempt_id), ("usd", usd), ("reference", reference))
+            ):
+                raise ValueError("An actual receipt ID was reused with different content")
+            return previous
+        pending = self._pending_compute.get(attempt_id)
+        if pending is None:
+            raise ValueError("No unfinished compute attempt has that identity")
+        if attempt_id == self._owned_compute:
+            raise ValueError("A live owned attempt must finish using its measured clock")
+        row = self._append(
+            "compute_reconciliation", usd=usd, job_id=pending["job_id"], attempt_id=attempt_id,
+            receipt_id=receipt_id, reference=reference, category="compute",
+            basis="external_unsettled_cost_receipt",
+        )
+        self._clock = time.monotonic()
+        self._check_room(0.0)
+        return row
 
     @contextmanager
-    def record_compute(self, reference: str) -> Iterator[BudgetLedger]:
+    def record_compute(self, reference: str) -> Generator[BudgetLedger, None, None]:
+        # Even a zero estimate leaves a durable unfinished marker. An explicit
+        # reserve_next can enlarge it; a new process clock cannot prove it free.
+        self.reserve_next(0.0)
         try:
             yield self
         except BaseException as error:
             try:
-                self.settle_elapsed(reference + "/aborted")
+                self.finish_compute(reference + "/aborted")
             except Exception as accounting_error:
                 note = getattr(error, "add_note", None)
                 message = f"Cost settlement also failed: {type(accounting_error).__name__}: {accounting_error}"
@@ -332,7 +537,7 @@ class BudgetLedger:
                     logging.getLogger(__name__).error(message)
             raise
         else:
-            self.settle_elapsed(reference + "/complete")
+            self.finish_compute(reference + "/complete")
 
     def verify_anchor(self, head: str | None, *, entries: int | None = None) -> None:
         if head is None or head not in self._heads:
@@ -341,6 +546,8 @@ class BudgetLedger:
             raise ValueError("Checkpoint cost-ledger position does not match its anchor")
 
     def verify_state(self, state: dict[str, Any]) -> None:
+        if state.get("version") != LEDGER_VERSION:
+            raise ValueError("Checkpoint budget-ledger version differs; legacy history needs audited migration")
         self.verify_anchor(state.get("ledger_head"), entries=state.get("entries"))
         if state.get("spent_usd", math.inf) > self.spent_usd + 1e-9:
             raise ValueError("Actual phase charges cannot decrease after resume")
@@ -352,10 +559,17 @@ class BudgetLedger:
             "job_id": self.job_id,
             "spent_usd": self.spent_usd,
             "reserved_fixed_usd": self.reserved_fixed_usd,
+            "reserved_compute_usd": self.reserved_compute_usd,
+            "pending_compute": list(self.pending_compute),
             "committed_usd": self.committed_usd,
             "ledger_head": self.head,
             "entries": len(self.entries),
-            "billing_status": "fixed_receipts_pending" if self.reserved_fixed_usd else "recorded_actual_charges",
+            "billing_status": (
+                "compute_reconciliation_required"
+                if any(attempt != self._owned_compute for attempt in self._pending_compute)
+                else "compute_in_progress" if self._pending_compute
+                else "fixed_receipts_pending" if self.reserved_fixed_usd else "recorded_actual_charges"
+            ),
         }
 
 

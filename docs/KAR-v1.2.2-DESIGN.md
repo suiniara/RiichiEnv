@@ -23,7 +23,7 @@
 | Schema 映射 | `riichienv_complete_v1_from_kar_v1_2_2_v1`，legacy compatibility=`not_claimed` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | architecture | `kar_kl_response_value_v1` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | artifact | `kar_riichienv_contract_v4` | [versioning.py](../src/riichienv/kar/versioning.py) |
-| input pipeline | `semantic_public_clock_frozen_decisions_v5_response_pass` | [versioning.py](../src/riichienv/kar/versioning.py) |
+| input pipeline | `semantic_public_clock_frozen_decisions_v6_ryanmen_pairs` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | native replay | `prefix_flags_bridge_v3_native_furiten` | [native_replay.py](../src/riichienv/kar/native_replay.py) |
 | dataset / action labels | `kar_decision_sqlite_v1` / `explicit_and_unique_response_pass_v3` | [learning/export.py](../src/riichienv/kar/learning/export.py) |
 | response opportunity evidence | `frozen_response_opportunities_v1` | [response_supervision.py](../src/riichienv/kar/response_supervision.py) |
@@ -31,7 +31,7 @@
 | public clock | `public_semantic_clock_v1` | [event_semantics.py](../src/riichienv/kar/event_semantics.py) |
 | terminal public resolution | `verified_abort_public_resolution_v1` | [event_semantics.py](../src/riichienv/kar/event_semantics.py) |
 | model computation identity | `kar_transformer_v3_semantic_inputs`，不改变参数形状 | [learning/config.py](../src/riichienv/kar/learning/config.py) |
-| feature semantics / stochastic mask | `visible_rule_features_v1_2_2` / `sample_mask_v1` | [versioning.py](../src/riichienv/kar/versioning.py) |
+| feature semantics / stochastic mask | `visible_rule_features_v2_ryanmen_pairs` / `sample_mask_v1` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | response mask | `public_rule_response_mask_v3_abort_last_draw`，包含已有雀魂流局满贯修正 | [contracts.py](../src/riichienv/kar/contracts.py) |
 | calibration quality / branch quality | `preregistered_calibration_quality_v3_event_ovr` / `preregistered_response_branch_quality_v2_ovr` | [calibration_quality.py](../src/riichienv/kar/calibration_quality.py) |
 | event support | `train_independent_games_v2_branch_quality`（train 计数定义不变） | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
@@ -40,6 +40,7 @@
 | live projection | `native_public_resolution_projection_v5_pass_receipts` | [live_events.py](../src/riichienv/kar/live_events.py) |
 | runtime / finite policy identity | `restricted_kl_runtime_v3_event_ovr` / `calibrated_policy_identity_v3_event_ovr`，KL 数学不变 | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
 | training configuration | `explicit_train_split_scale_v5_decision_time`，配方绑定当前输入版本 | [versioning.py](../src/riichienv/kar/versioning.py) |
+| training startup / cost ledger | `kar_training_startup_v1` / `durable_compute_cost_ledger_v3` | [learning/production_checkpoint.py](../src/riichienv/kar/learning/production_checkpoint.py) / [budget.py](../src/riichienv/kar/budget.py) |
 | training plan / loss / decision bound | `budget_ladder_v1` / `sentinel_safe_v1_2_1` / `one_sided_v1_2_1` | [versioning.py](../src/riichienv/kar/versioning.py) / [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
 | model tier basis | `N_train_half_games` | [versioning.py](../src/riichienv/kar/versioning.py) |
 
@@ -196,7 +197,7 @@ HAND_COUNT.flags[0..2] 是对 P1/P2/P3 的 Genbutsu，3..5 是 full-suji exclusi
 |8|(6,7)|5|
 |9|(7,8)|6|
 
-不跨花色、不循环。目标3的(1,2)和目标7的(8,9)是边张，不列入 Ryanmen。目标 t 四张可见，或每个 P(v) 至少一种搭子牌四张可见，才将 flags[6] 置 True。Full-suji 为 `Opp(v)⊆目标玩家舍牌历史`。这些标志不是绝对安全证书。
+不跨花色、不循环。目标3的(1,2)和目标7的(8,9)是边张，不列入 Ryanmen。仅当每个 P(v) 至少一种搭子牌四张可见时，将 flags[6] 置 True；目标牌本身四张可见不构成充分条件，因为候选舍牌可以来自本家可见手牌，仍能完成对手的两面搭子。Full-suji 为 `Opp(v)⊆目标玩家舍牌历史`。这些标志不是绝对安全证书。旧特征与输入版本的派生审计、导出和缓存必须重新生成，不能只改版本字段复用。
 
 ## 5. 完整动作、响应与监督边界
 
@@ -468,6 +469,8 @@ $$e\in E_{sup}\iff e\in E_{\mathrm{train}}\ \land\ \mathrm{quality}_{\mathrm{res
 
 规则不可能、训练支持不足、质量 failed、质量 unavailable 分别报告，不混入公开规则 mask。无任何有效价值分支时 runtime 使用同一先验，原因 `no_quality_qualified_response_branches`，不做候选前向；仍有合格分支时对其他分支保留 masked 概率、取−1.5并计入 rho_U。有限生产发布同样要求至少一个训练支持且质量合格分支，以及既有总体质量和独立验证策略选型通过。
 
+有限 τ 的验证规划复用同一有效分支判定；即使总体校准通过，若 $E_{sup}$ 为空，也在创建输出、账本和对局前拒绝含有限 τ 的网格。显式只含 infinity 的先验基线评估仍可运行，但不能形成有限策略收益证据。
+
 ### 11.4 公开规则 mask
 
 mask 的1仅表示未被公开事实证明不可能；未知保守允许。实际读取白名单为 observer、候选、公开舍牌历史/当前河、已成立 meld、公开立直接受状态、remaining_draws、history_complete、pending-kan标志和规则开关。不读取他家暗手/私有合法列表/隐藏牌山/未来事件或真实标签。
@@ -534,7 +537,9 @@ weight decay：value_head.weight=.05；其他二维矩阵=.01；所有bias/norm�
 
 Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sampler/分桶游标、所有活动artifact字段、source/native构建指纹、完整训练manifest与split、固定rho/lambda、预算账本/登记身份、温度/log阈值/support/quality与验证策略引用、Rmax/tau_min、证书来源和环境版本。任何核心字段缺失/不匹配拒绝精确续训。
 
-总云资源USD1000独立封顶：M0/M1=100，M2=650，M3=250，包括CPU/GPU、存储、快照和传输。实际spent与未对账fixed reservations分离；收据唯一ID幂等，异常计算也结算，checkpoint绑定账本锚点，拒绝费用回退。不能跨阶段挪用、缩M3样本或隐费用凑预算。
+输出目录与 `startup.json` 身份一起原子发布；身份绑定数据、配方、实现内容、运行布局、原登记及原账本路径。`--resume` 在首份 checkpoint 前仅允许核验过的初始化重入，保留原账本；创建时已有的共享账本还必须保留原始前缀。模型初始化后先保存 step 0 checkpoint，再执行初始完整验证。已提交标记、更新日志或非零 step 代际证据存在时，不得因 checkpoint 缺失而重新初始化；无 startup 记录的既有 checkpoint 仍走原精确恢复校验。
+
+总云资源USD1000独立封顶：M0/M1=100，M2=650，M3=250，包括CPU/GPU、存储、快照和传输。实际spent、未对账fixed reservations及未完成compute reservations分别记录。计算前持久化attempt，阶段内实测结算递减预留但保持attempt，正常结束或可捕获异常才关闭；没有独立初始化预测时，零金额预留仍是未完成标记。硬中断后不把新进程时钟当成旧计算为零的证据，必须通过外部实际费用凭据核销未记账余款后才能继续。收据唯一ID幂等，checkpoint绑定账本锚点，拒绝费用回退；旧账本版本和不完整尾部要求显式审计迁移，不自动重写。不能跨阶段挪用、缩M3样本或隐费用凑预算。
 
 ## 15. 计算与缓存成本
 

@@ -32,6 +32,13 @@ def validation_tau_plan(
     if not subject.calibration.empirical_check_valid:
         raise ValueError("Calibration-quality checks did not pass on independent cal_check")
     values = fixed_tau_grid(grid, max_prior_amplification=subject.options.max_prior_amplification)
+    if any(math.isfinite(tau) for tau in values) and not any(
+        subject.support.value_supported(subject.calibration.value_branch_statuses)
+    ):
+        raise ValueError(
+            "Finite tau selection requires at least one train-supported, quality-qualified response branch; "
+            "keep the calibrated prior"
+        )
     split = subject.calibration.split
     identity = calibrated_policy_identity(
         subject.calibration.binding,

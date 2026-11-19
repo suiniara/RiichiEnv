@@ -22,8 +22,10 @@
 
 每 rank RNG、optimizer/scheduler、sampler、验证历史、条件决策、费用锚点与性能累计进入代际检查点。已有 finished 检查点可只重建完成发布，不再次更新。输出互斥租约防并发写同一运行。
 
-日志记录真实 tokens/s、samples/s、padding 和耗时；完成报告用累计工作量/累计时间，不平均每步速率。已发生异常计算仍记账。M2 原始入口也重验登记和实际 M1 证据，不能换 output/账本重获预算。
+新运行先原子发布含 `startup.json` 的目录，随后绑定原账本锚点并登记未完成计算，再初始化模型。模型就绪后先提交 step 0 checkpoint，才执行初始全量 validation。初始化或首份 checkpoint 写盘失败时，`--resume` 可在同一数据、配方、实现和原账本下重试；M1 也会将已有未完成目录转交此流程。无 checkpoint 且存在已提交标记、更新日志或后续代际证据时拒绝重新初始化。没有启动记录的旧残留目录不会被自动收编。
+
+日志记录真实 tokens/s、samples/s、padding 和耗时；完成报告用累计工作量/累计时间，不平均每步速率。已发生异常计算仍记账；硬中断留下的未完成计算先按 [budget](../../budget/README.md) 的实际凭据核销，再恢复。普通初始化重试也保留原账本，不能清空费用。M2 原始入口重验登记和实际 M1 证据，不能换 output/账本重获预算。
 
 ## 测试与状态
 
-对应 [production/test_full_trainer.py](../../../../tests/kar/production/test_full_trainer.py)、[test_training_contracts.py](../../../../tests/kar/production/test_training_contracts.py)。**实际调用会训练和更新参数。** 本轮只编写 README，未执行训练、恢复、测试或 GPU 查询。
+对应 [production/test_full_trainer.py](../../../../tests/kar/production/test_full_trainer.py)、[test_training_contracts.py](../../../../tests/kar/production/test_training_contracts.py) 和 [test_training_startup.py](../../../../tests/kar/production/test_training_startup.py)。启动故障注入测试禁止 forward/backward/optimizer 更新，只验证初始化、step 0 保存与恢复以及拒绝不安全重启。**实际训练入口会更新参数，仍需完整授权。**

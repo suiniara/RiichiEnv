@@ -5,6 +5,7 @@ import json
 import os
 import random
 import re
+import tempfile
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -14,10 +15,125 @@ import numpy as np
 import torch
 
 from ..contracts import content_hash
+from ..evaluation_authorization import exclusive_job
 from ..versioning import validate_artifact_contract
 from .model import KARTransformer
 
 PRODUCTION_CHECKPOINT_VERSION = "kar_production_exact_resume_v1"
+TRAINING_STARTUP_VERSION = "kar_training_startup_v1"
+
+
+def _sync_directory(path: Path) -> None:
+    if os.name == "posix":
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def _write_startup(directory: Path, record: dict[str, Any]) -> dict[str, Any]:
+    unsigned = {key: value for key, value in record.items() if key != "startup_sha256"}
+    signed = {**unsigned, "startup_sha256": content_hash(unsigned)}
+    target = directory / "startup.json"
+    temporary = target.with_name(target.name + "." + uuid.uuid4().hex + ".tmp")
+    with temporary.open("x", encoding="utf-8") as stream:
+        json.dump(signed, stream, indent=2, allow_nan=False)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(target)
+    _sync_directory(directory)
+    return signed
+
+
+def create_training_directory(directory: Path, *, identity: dict[str, Any], ledger_path: Path) -> None:
+    """Publish a run identity before an output directory can contain any computation."""
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    with exclusive_job(directory.with_name("." + directory.name + ".startup.lock")):
+        if directory.exists():
+            raise ValueError("Refuse to overwrite a training run")
+        previous = ledger_path.read_bytes() if ledger_path.exists() else None
+        origin = (
+            {"bytes": len(previous), "sha256": hashlib.sha256(previous).hexdigest()}
+            if previous is not None
+            else None
+        )
+        with tempfile.TemporaryDirectory(prefix="." + directory.name + ".initializing-", dir=directory.parent) as tmp:
+            staging = Path(tmp)
+            _write_startup(staging, {
+                "version": TRAINING_STARTUP_VERSION,
+                "identity": identity,
+                "phase": "preparing",
+                "ledger_origin": origin,
+                "budget_ledger": None,
+            })
+            staging.rename(directory)
+            _sync_directory(directory.parent)
+
+
+def read_training_startup(
+    directory: Path, *, identity: dict[str, Any], ledger_path: Path, checkpoint_exists: bool
+) -> dict[str, Any] | None:
+    """Only a recorded pre-checkpoint initialization may restart without weights."""
+    path = directory / "startup.json"
+    if not path.is_file():
+        if checkpoint_exists:
+            return None  # Older committed runs still use the complete checkpoint contract.
+        raise ValueError("Resume requires a committed checkpoint or a recorded initialization; never restart silently")
+    if path.stat().st_size > 1024**2:
+        raise ValueError("Oversized training startup record")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    unsigned = {key: value for key, value in record.items() if key != "startup_sha256"}
+    if (
+        record.get("version") != TRAINING_STARTUP_VERSION
+        or record.get("startup_sha256") != content_hash(unsigned)
+        or record.get("identity") != identity
+        or record.get("phase") not in {"preparing", "initializing", "checkpoint_committed"}
+    ):
+        raise ValueError("Training startup identity/phase differs; preserve the original run and ledger")
+    if (
+        (record["phase"] == "preparing" and record.get("budget_ledger") is not None)
+        or (record["phase"] != "preparing" and not isinstance(record.get("budget_ledger"), dict))
+    ):
+        raise ValueError("An initialized run requires its original budget-ledger anchor")
+    origin = record["ledger_origin"]
+    if origin is not None:
+        if (
+            not isinstance(origin, dict) or type(origin.get("bytes")) is not int or origin["bytes"] < 0
+            or not isinstance(origin.get("sha256"), str) or len(origin["sha256"]) != 64
+        ):
+            raise ValueError("Invalid shared-ledger origin evidence")
+        with ledger_path.open("rb") as stream:
+            prefix = stream.read(origin["bytes"])
+        if len(prefix) != origin["bytes"] or hashlib.sha256(prefix).hexdigest() != origin["sha256"]:
+            raise ValueError("The shared phase ledger predating this startup is missing or changed")
+    if not checkpoint_exists:
+        if record["phase"] == "checkpoint_committed":
+            raise ValueError("A committed checkpoint is missing; initialization cannot replace trained weights")
+        if (directory / "run_manifest.json").exists() or any(
+            path.stat().st_size for path in directory.glob("updates-attempt-*.jsonl")
+        ):
+            raise ValueError("Training update evidence forbids initialization restart")
+        for generation in directory.glob("checkpoint.g*.pt"):
+            if not generation.name.startswith("checkpoint.g000000000000-"):
+                raise ValueError("A post-initialization checkpoint generation forbids restart")
+    return record
+
+
+def advance_training_startup(
+    directory: Path, record: dict[str, Any], *, phase: str, budget_ledger: dict[str, Any]
+) -> dict[str, Any]:
+    transitions = {
+        "preparing": {"initializing"},
+        "initializing": {"initializing", "checkpoint_committed"},
+        "checkpoint_committed": {"checkpoint_committed"},
+    }
+    if phase not in transitions[record["phase"]]:
+        raise ValueError("Training startup phases cannot be rewound")
+    if phase == "checkpoint_committed" and not (directory / "checkpoint.json").is_file():
+        raise ValueError("Only a committed checkpoint may close initialization")
+    return _write_startup(directory, {**record, "phase": phase, "budget_ledger": budget_ledger})
 
 
 def rank_rng_state(device: torch.device) -> dict[str, Any]:

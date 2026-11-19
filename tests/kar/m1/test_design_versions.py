@@ -116,6 +116,19 @@ def test_sqlite_scope_cannot_be_relabelled_by_only_changing_the_manifest(synthet
         DecisionDataset(directory, "train")
 
 
+def test_dataset_rejects_previous_ryanmen_semantics_even_with_consistent_storage(synthetic_dataset):
+    directory, manifest, _ = synthetic_dataset
+    manifest["scope"]["feature_contract_version"] = "visible_rule_features_v1_2_2"
+    manifest["scope"]["input_pipeline_version"] = "semantic_public_clock_frozen_decisions_v5_response_pass"
+    database = directory / "decisions.sqlite3"
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE metadata SET value=? WHERE key='scope'", (json.dumps(manifest["scope"]),))
+    manifest["database_sha256"] = _sha(database)
+    _write_manifest(directory, manifest)
+    with pytest.raises(ValueError, match="feature/loss contract differs"):
+        DecisionDataset(directory, "train")
+
+
 def _tamper_checkpoint(path, field, *, production):
     sidecar = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
     generation = path.parent / sidecar["checkpoint_file"] if production else path

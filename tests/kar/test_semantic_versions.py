@@ -15,7 +15,8 @@ from riichienv.kar.versioning import artifact_contract, validate_artifact_contra
 
 LEGACY_FIELDS = {
     "artifact_contract_version": "kar_riichienv_contract_v3",
-    "input_pipeline_version": "semantic_public_clock_frozen_decisions_v4_furiten",
+    "input_pipeline_version": "semantic_public_clock_frozen_decisions_v5_response_pass",
+    "feature_contract_version": "visible_rule_features_v1_2_2",
     "native_replay_version": "prefix_flags_bridge_v2",
     "response_mask_version": "public_rule_response_mask_v2_mjsoul_nagashi",
     "public_clock_version": "source_record_clock_v0",

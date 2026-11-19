@@ -79,14 +79,15 @@ def full_suji_exclusion(target_base34: int, own_discard_history_base34: set[int]
 
 
 def no_visible_possible_ryanmen_shape(target_base34: int, known_count_base34: Sequence[int] | None) -> bool | None:
+    """Whether visible tiles block every two-tile Ryanmen shape for the target."""
     _validate_base34(target_base34)
     if known_count_base34 is None:
         return None
     counts = _validated_counts(known_count_base34)
     if target_base34 >= 27:
         return None
-    if counts[target_base34] == 4:
-        return True
+    # Counts include our own hand. Even four visible target copies can include
+    # the candidate discard that completes an opponent's still-possible shape.
     suit_start = target_base34 // 9 * 9
     rank = target_base34 % 9 + 1
     return all(

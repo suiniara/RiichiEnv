@@ -18,7 +18,7 @@ from ..authorization import UpdateAuthorization, load_update_authorization, requ
 from ..budget import BudgetLedger
 from ..contracts import content_hash, model_tier
 from ..evaluation_authorization import exclusive_job
-from ..release import complete_release_contract
+from ..release import complete_release_contract, implementation_release_identity
 from ..versioning import MODEL_TIER_BASIS
 from .batch import feature_mask_draw, rule_feature_view
 from .config import ModelConfig
@@ -29,8 +29,11 @@ from .inference import model_weights_sha256
 from .losses import Labels, loss_sums
 from .model import KARTransformer
 from .production_checkpoint import (
+    advance_training_startup,
+    create_training_directory,
     rank_rng_state,
     read_production_checkpoint,
+    read_training_startup,
     restore_rank_rng,
     save_production_checkpoint,
 )
@@ -251,6 +254,33 @@ def _append_record(path: Path, record: dict[str, Any]) -> None:
         stream.flush()
 
 
+def _startup_identity(
+    dataset: DecisionDataset,
+    config: ProductionTrainConfig,
+    context: DistributedContext,
+    *,
+    output_dir: Path,
+    ledger_path: Path,
+    registration: dict[str, Any] | None,
+) -> dict[str, Any]:
+    implementation = implementation_release_identity()
+    return {
+        "dataset_manifest_sha256": dataset.manifest["manifest_sha256"],
+        "training": config.to_record(),
+        # Creating run journals must not invalidate initialization through Git's dirty flag.
+        "implementation": {key: implementation[key] for key in (
+            "source_sha256", "native_extension_sha256", "python_version", "python_implementation", "platform"
+        )},
+        "torch_version": str(torch.__version__),
+        "numpy_version": np.__version__,
+        "world_size": context.world_size,
+        "backend": str(dist.get_backend()) if context.world_size > 1 else "single",
+        "output_dir": str(output_dir.resolve()),
+        "ledger_path": str(ledger_path.resolve()),
+        "main_model_registration_sha256": registration["registration_sha256"] if registration is not None else None,
+    }
+
+
 def _model_components(
     train: DecisionDataset, config: ProductionTrainConfig, context: DistributedContext, lengths: list[int], updates: int
 ):
@@ -328,7 +358,7 @@ def _publish_completion(
         try:
             assert ledger is not None
             final_sha = model_weights_sha256(raw)
-            ledger.settle_elapsed("recover_completed_publication" if recovered else "complete_publication")
+            ledger.finish_compute("recover_completed_publication" if recovered else "complete_publication")
             pointer = json.loads(checkpoint.with_suffix(".json").read_text(encoding="utf-8"))
             record = completed_run_record(
                 state,
@@ -366,8 +396,11 @@ def train_production(  # noqa: PLR0915
     require_parameter_updates(
         authorization, operation="train_production", phase=config.phase, recipe_sha256=config.recipe_sha256
     )
-    if resume and (not output_dir.is_dir() or not (output_dir / "checkpoint.json").is_file()):
-        raise ValueError("Exact resume requires an existing committed checkpoint pointer; never restart silently")
+    if resume and (
+        not output_dir.is_dir()
+        or not any((output_dir / name).is_file() for name in ("checkpoint.json", "startup.json"))
+    ):
+        raise ValueError("Resume requires a committed checkpoint or a recorded initialization; never restart silently")
     torch.set_num_threads(config.cpu_threads)
     train = DecisionDataset(dataset_dir, "train")
     validation = DecisionDataset(dataset_dir, "validation")
@@ -398,6 +431,8 @@ def train_production(  # noqa: PLR0915
         config.device, backend=config.distributed_backend, gloo_bind_host=config.gloo_bind_host
     )
     ledger = None
+    startup = None
+    restore_checkpoint = False
     run_lease = None
     lease_entered = False
     error = None
@@ -414,24 +449,52 @@ def train_production(  # noqa: PLR0915
             torch.cuda.manual_seed(config.seed)
             torch.cuda.reset_peak_memory_stats(context.device)
         if context.primary:
-            if output_dir.exists() and not resume:
-                raise ValueError("Refuse to overwrite a training run")
-            output_dir.mkdir(parents=True, exist_ok=resume)
+            actual_ledger_path = ledger_path or output_dir / "costs.jsonl"
+            identity = _startup_identity(
+                train, config, context,
+                output_dir=output_dir, ledger_path=actual_ledger_path, registration=registration,
+            )
+            if not resume:
+                create_training_directory(output_dir, identity=identity, ledger_path=actual_ledger_path)
             run_lease = exclusive_job(output_dir / "training.lock")
             run_lease.__enter__()
             lease_entered = True
-            ledger = BudgetLedger(ledger_path or output_dir / "costs.jsonl", config.budget, allow_create=not resume)
-            if not resume:
+            restore_checkpoint = (output_dir / "checkpoint.json").is_file()
+            startup = read_training_startup(
+                output_dir, identity=identity, ledger_path=actual_ledger_path, checkpoint_exists=restore_checkpoint
+            )
+            may_create_ledger = (
+                not restore_checkpoint and startup is not None
+                and startup["phase"] == "preparing" and startup["ledger_origin"] is None
+            )
+            ledger = BudgetLedger(actual_ledger_path, config.budget, allow_create=may_create_ledger)
+            if startup is not None and startup["budget_ledger"] is not None:
+                ledger.verify_state(startup["budget_ledger"])
+            if not restore_checkpoint:
+                assert startup is not None
+                startup = advance_training_startup(
+                    output_dir, startup, phase="initializing", budget_ledger=ledger.state_dict()
+                )
+            if not restore_checkpoint:
                 ledger.assert_room(config.budget.forecast.seconds * config.budget.forecast.resource_usd_per_hour / 3600)
+            # Initialization has no separate measured forecast. Even a zero-sized
+            # attempt stays pending after a hard interruption until it is reconciled.
+            ledger.reserve_next(0.0)
     except Exception as caught:
         error = caught
     try:
         context.coordinate(error, "production startup")
     except Exception:
+        if context.primary and ledger is not None:
+            try:
+                ledger.finish_compute("aborted_production_startup")
+            except Exception:
+                pass
         if run_lease is not None and lease_entered:
             run_lease.__exit__(None, None, None)
         context.close()
         raise
+    restore_checkpoint = context.gather(restore_checkpoint)[0]
     attempt_id = 0
 
     def primary_log(name: str, record: dict[str, Any]) -> None:
@@ -473,7 +536,7 @@ def train_production(  # noqa: PLR0915
         checkpoint = output_dir / "checkpoint.pt"
         error = None
         try:
-            if resume:
+            if restore_checkpoint:
                 payload = read_production_checkpoint(checkpoint, contract=contract, runtime=runtime)
                 if payload["metadata"]["model_contract_hash"] != raw.config.contract_hash:
                     raise ValueError("Resume model config differs")
@@ -509,6 +572,7 @@ def train_production(  # noqa: PLR0915
                     json.dumps(
                         {
                             "resume": resume,
+                            "initialization_retry": resume and not restore_checkpoint,
                             "starting_committed_step": state["step"],
                             "recipe_sha256": config.recipe_sha256,
                         }
@@ -547,6 +611,7 @@ def train_production(  # noqa: PLR0915
             context.coordinate(caught, "phase budget")
 
         def save() -> None:
+            nonlocal startup
             rank_state = None
             caught = None
             try:
@@ -571,6 +636,10 @@ def train_production(  # noqa: PLR0915
                         runtime=runtime,
                         step=state["step"],
                     )
+                    if startup is not None and startup["phase"] != "checkpoint_committed":
+                        startup = advance_training_startup(
+                            output_dir, startup, phase="checkpoint_committed", budget_ledger=ledger.state_dict()
+                        )
                 except Exception as issue:
                     caught = issue
             context.coordinate(caught, "checkpoint commit")
@@ -595,6 +664,23 @@ def train_production(  # noqa: PLR0915
             budget_boundary(f"after_validation/{epoch}/{within}")
             return report
 
+        if not restore_checkpoint:
+            budget_boundary("before_initial_checkpoint")
+            save()
+        else:
+            # Recover the narrow gap between the first pointer commit and its startup marker.
+            caught = None
+            if (
+                context.primary and ledger is not None and startup is not None
+                and startup["phase"] != "checkpoint_committed"
+            ):
+                try:
+                    startup = advance_training_startup(
+                        output_dir, startup, phase="checkpoint_committed", budget_ledger=ledger.state_dict()
+                    )
+                except Exception as issue:
+                    caught = issue
+            context.coordinate(caught, "initial checkpoint startup marker")
         if not state["validation_history"]:
             validation_pass(0, 0)
             save()
@@ -681,7 +767,7 @@ def train_production(  # noqa: PLR0915
     except BaseException as failure:
         if context.primary and ledger is not None:
             try:
-                ledger.settle_elapsed("aborted_production_run")
+                ledger.finish_compute("aborted_production_run")
             except Exception:
                 pass
             try:

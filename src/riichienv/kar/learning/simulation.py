@@ -265,6 +265,9 @@ def run_m3(config: M3Config, *, authorization: dict[str, Any] | None = None) -> 
         completed = 0
         started = time.perf_counter()
         try:
+            # Loading has closed its own scope. Keep a new durable attempt open
+            # through receipt replay, new matches, and final bootstrap statistics.
+            ledger.reserve_next(0.0)
             for block in plan["blocks"]:
                 pair = []
                 for arm in ("baseline", "candidate"):
@@ -379,7 +382,7 @@ def run_m3(config: M3Config, *, authorization: dict[str, Any] | None = None) -> 
                 "counterfactual_state_equality_claimed": False,
                 "policy_guarantee": "empirical_only_no_uniform_error_certificate",
             }
-            ledger.settle_elapsed("M3_statistics_and_finalize")
+            ledger.finish_compute("M3_statistics_and_finalize")
             report["budget"] = ledger.state_dict()
             report["elapsed_seconds"] = time.perf_counter() - started
             report["report_sha256"] = content_hash(report)
@@ -393,7 +396,7 @@ def run_m3(config: M3Config, *, authorization: dict[str, Any] | None = None) -> 
             return report
         except BaseException as error:
             try:
-                ledger.settle_elapsed("M3_aborted")
+                ledger.finish_compute("M3_aborted")
             except Exception:
                 pass
             failure = {

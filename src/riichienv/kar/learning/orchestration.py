@@ -147,7 +147,7 @@ def run_m1_ablation(
                     directory,
                     config,
                     authorization=authorization,
-                    resume=resume and (directory / "checkpoint.json").exists(),
+                    resume=resume and directory.exists(),
                     ledger_path=output / "M1-costs.jsonl",
                 )
             )

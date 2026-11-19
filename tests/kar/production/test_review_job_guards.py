@@ -198,3 +198,4 @@ def test_frozen_job_failures_settle_last_work_without_any_model_execution(job, m
             )
     ledger = BudgetLedger(output / "costs.jsonl", budget)
     assert ledger.spent_usd == 10.0 and ledger.entries[-1]["reference"].endswith("/aborted")
+    assert not ledger.pending_compute and ledger.reserved_compute_usd == 0.0

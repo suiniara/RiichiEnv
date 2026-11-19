@@ -177,7 +177,8 @@ def test_equal_length_sets_change_raw_policy_through_legal_input(miniature):
         assert not torch.equal(miniature(first).policy_logits, miniature(second).policy_logits)
 
 
-def test_cache_rejects_old_input_version_and_changed_manifest_buffer(miniature):
+@pytest.mark.parametrize("old_version", ["legacy-no-pool", "semantic_public_clock_frozen_decisions_v5_response_pass"])
+def test_cache_rejects_old_input_version_and_changed_manifest_buffer(miniature, old_version):
     miniature.eval()
     prefix, _ = _batch((0, 4))
     dense, _ = _batch((0, 4), action=0)
@@ -186,7 +187,7 @@ def test_cache_rejects_old_input_version_and_changed_manifest_buffer(miniature):
     with torch.no_grad():
         cache = miniature.encode_prefix(prefix)
         with pytest.raises(ValueError, match="input/model contract"):
-            miniature.score_actions(replace(cache, input_pipeline_version="legacy-no-pool"), suffix)
+            miniature.score_actions(replace(cache, input_pipeline_version=old_version), suffix)
         miniature.embedding.action_factors[0, 1] = 2
         with pytest.raises(ValueError, match="Stale"):
             miniature.score_actions(cache, suffix)

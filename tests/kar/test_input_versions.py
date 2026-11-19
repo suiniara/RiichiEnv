@@ -13,7 +13,7 @@ def test_old_artifact_cannot_omit_or_retag_new_input_semantics():
     assert current["response_mask_version"] == "public_rule_response_mask_v3_abort_last_draw"
     assert current["artifact_contract_version"] == "kar_riichienv_contract_v4"
     assert current["input_pipeline_version"] == INPUT_PIPELINE_VERSION == (
-        "semantic_public_clock_frozen_decisions_v5_response_pass"
+        "semantic_public_clock_frozen_decisions_v6_ryanmen_pairs"
     )
     assert current["native_replay_version"] == "prefix_flags_bridge_v3_native_furiten"
     assert MODEL_VERSION == "kar_transformer_v3_semantic_inputs"
@@ -39,7 +39,8 @@ def test_old_forecast_recipe_and_configuration_cannot_silently_cross_input_chang
              "training_config_version": "explicit_train_split_scale_v4_semantics"}
     with pytest.raises(ValueError, match="version differs"):
         ProductionTrainConfig.from_record(stale)
-    for old in ("semantic_public_clock_frozen_decisions_v3", "semantic_public_clock_frozen_decisions_v4_furiten"):
+    for old in ("semantic_public_clock_frozen_decisions_v3", "semantic_public_clock_frozen_decisions_v4_furiten",
+                "semantic_public_clock_frozen_decisions_v5_response_pass"):
         with pytest.raises(ValueError, match="version differs"):
             ProductionTrainConfig.from_record({**record, "input_pipeline_version": old})
     record.pop("input_pipeline_version")

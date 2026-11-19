@@ -2,8 +2,11 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
-from riichienv import GameRule, RiichiEnv, convert
+from riichienv import GameRule, Phase, RiichiEnv, convert
+from riichienv.kar.actions import legal_candidates
+from riichienv.kar.contracts import Response
 from riichienv.kar.observation import ObserverLedger, extract_rule_features
+from riichienv.kar.response_mask import public_rule_response_mask
 from riichienv.kar.rule_features import (
     OTHER_WAITS_BY_RANK,
     RYANMEN_PAIRS_BY_RANK,
@@ -14,6 +17,9 @@ from riichienv.kar.rule_features import (
     no_visible_possible_ryanmen_shape,
     public_dora_types,
 )
+from riichienv.kar.settlement import verify_settlements
+from riichienv.kar.tokenize import TokenHistoryCache, encode_prefix
+from tests.kar.test_decision_time_parity import _Episode
 
 RANK_CASES = (
     (1, ((2, 3),), (4,)),
@@ -66,13 +72,53 @@ def test_visible_ryanmen_requires_every_possible_pair_to_be_blocked(suit_start, 
 
     counts = [0] * 34
     counts[target] = 4
-    assert no_visible_possible_ryanmen_shape(target, counts) is True
+    # A candidate discard can be one of these four visible target tiles.
+    assert no_visible_possible_ryanmen_shape(target, counts) is False
 
     counts = [0] * 34
     another_suit = (suit_start + 9) % 27
     for left, _ in pairs:
         counts[another_suit + left - 1] = 4
     assert no_visible_possible_ryanmen_shape(target, counts) is False
+
+
+def test_four_held_target_tiles_do_not_exclude_a_real_ryanmen_ron():
+    # 23m + 456p + 789p + EEE + NN waits on 1m/4m; East supplies a yaku.
+    # _Episode deals a complete, unique 136-tile wall and executes native actions.
+    waiting_hand = ("2m", "3m", "4p", "5p", "6p", "7p", "8p", "9p", "E", "E", "E", "N", "N")
+    episode = _Episode({0: ("1m",) * 4, 1: waiting_hand}, ("2s",))
+    snapshot = episode.live.snapshot(0)
+    counts = snapshot.known_counts()
+    assert counts is not None and counts[0] == 4
+    assert sum(tile // 4 == 0 for tile in snapshot.hand) == 4
+    assert no_visible_possible_ryanmen_shape(0, counts) is False
+    assert extract_rule_features(snapshot)["hand_count_flags"][0][6] == 1
+
+    candidates = legal_candidates(episode.obs[0])
+    discard = next(candidate for candidate in candidates
+                   if candidate.spec.action_type == "DISCARD" and candidate.spec.base34 == 0
+                   and not candidate.spec.riichi)
+    assert public_rule_response_mask(snapshot, discard.global_id)[Response.RON_MASK_1]
+    ids = tuple(candidate.global_id for candidate in candidates)
+    cache = TokenHistoryCache()
+    for _ in range(2):
+        prefix = encode_prefix(snapshot, ids, history_cache=cache)
+        hand_count = next(row for row in prefix.rows
+                          if row["kind"] == 4 and row["tiles"][0] == discard.spec.tile37 + 1)
+        assert hand_count["flags"][6] == 1
+        assert prefix.to_bytes() == encode_prefix(snapshot, ids).to_bytes()
+
+    episode.act(tile="1m")
+    assert episode.env.phase == Phase.WaitResponse and 1 in episode.env.active_players
+    assert any(candidate.spec.action_type == "RON"
+               for candidate in legal_candidates(episode.obs[1], source_player=0))
+    episode.resolve("RON", seat=1)
+    end = next(index for index, event in enumerate(episode.live.events) if event["type"] == "end_kyoku")
+    events = episode.live.events[:end + 1]
+    win = next(event for event in events if event["type"] == "hora")
+    assert (win["actor"], win["target"], win["pai"]) == (1, 0, "1m")
+    assert win["scores"] == [23700, 26300, 25000, 25000]
+    assert verify_settlements(events)["status"] == "PASS"
 
 
 @pytest.mark.parametrize("suit_start", [0, 9, 18])
@@ -119,7 +165,7 @@ def test_known_count_preserves_distinct_copies_across_public_regions():
     assert counts[4] == 4
     assert counts[27] == 1
     assert sum(counts) == 5
-    assert no_visible_possible_ryanmen_shape(4, counts) is True
+    assert no_visible_possible_ryanmen_shape(4, counts) is False
 
 
 def test_called_away_discard_remains_in_history_but_not_the_current_river():
@@ -356,7 +402,7 @@ def test_rule_features_preserve_each_completeness_dependency(
     assert len(flags) == 34 and all(len(row) == 16 for row in flags)
     # Genbutsu P1/P2/P3 then Full Suji P1/P2/P3: 0=Unknown, 1=False, 2=True.
     assert flags[13][:6] == ((2, 2, 1, 2, 1, 1) if history_complete else (0,) * 6)
-    assert flags[13][6] == (2 if reliable_counts else 0)
+    assert flags[13][6] == (1 if reliable_counts else 0)
     # The explicitly given public 5p indicator still identifies 6p as dora,
     # independently of missing history or unrelated physical/visibility gaps.
     assert flags[14][7] == 2 and flags[13][7] == 1
@@ -377,7 +423,7 @@ def test_missing_history_keeps_physical_counts_but_not_genbutsu_or_full_suji():
     assert state.known_counts()[13] == 4
     flags = extract_rule_features(state)["hand_count_flags"]
     assert all(row[:6] == (0,) * 6 for row in flags)
-    assert flags[13][6] == 2
+    assert flags[13][6] == 1
 
 
 def test_no_public_dora_indicator_is_unknown_not_confirmed_non_dora():
