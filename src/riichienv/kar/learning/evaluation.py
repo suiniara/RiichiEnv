@@ -9,7 +9,7 @@ import torch
 from ..calibration import CalibrationArtifact
 from ..calibration_roles import CALIBRATION_SPLIT_SALT, calibration_is_fit
 from ..policy import support_discards
-from ..probability import masked_log_softmax
+from ..probability import legal_prior, masked_log_softmax
 from ..statistics import FullDiagnostics
 from ..support import EventSupport
 from .batch import rule_feature_view
@@ -93,9 +93,12 @@ def add_diagnostics(
         "response": labels.response_target.cpu().tolist(),
         "rank": labels.final_rank_target.cpu().tolist(),
     }
-    # Match runtime's scalar normalization for event calibration and the mass
-    # histogram. Batched FP32 softmax can move observations at bin edges.
-    response_logits = outputs.response_logits.float().cpu().tolist()
+    # Match runtime's scalar normalization for gates, event calibration and mass
+    # histograms. Batched FP32 softmax can change threshold/bin membership.
+    policy_logits, response_logits = (
+        outputs.policy_logits.float().cpu().tolist() if calibration is not None else [],
+        outputs.response_logits.float().cpu().tolist(),
+    )
     response_masks = labels.response_allowed.cpu().tolist()
     for index, game in enumerate(batch.game_ids):
         ids = tuple(action for action in candidates[index] if action != 546)
@@ -140,11 +143,14 @@ def add_diagnostics(
             and target < 148
             and sum(action < 148 for action in ids) >= 2
         ):
-            selected = support_discards(ids, logs["action"][index], calibration.log_threshold)
+            # Gate membership and mass must use calibration/runtime's exact
+            # normalization; retain FP32 above for the existing loss diagnostics.
+            prior, gate_logs = legal_prior(policy_logits[index], ids, temperatures[0])
+            selected = support_discards(ids, gate_logs, calibration.log_threshold)
             metrics.add_gate(
                 retained=target in selected,
                 support_size=len(selected),
-                mass=sum(probabilities["action"][index][action] for action in selected),
+                mass=math.fsum(prior[action] for action in selected),
                 slices=tuple(slices),
             )
 

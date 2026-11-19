@@ -56,8 +56,6 @@ def test_m3_cached_receipt_completion_and_failure_close_compute_attempt(tmp_path
     ledger = BudgetLedger(output / "costs.jsonl", budget)
     (output / "receipts").mkdir()
     (output / "replays").mkdir()
-    replay = output / "replays" / "synthetic.archive"
-    replay.write_bytes(b"cached synthetic metadata, not a real match")
     latency = LatencyDistribution()
     latency.add(0.01)
     stats = {
@@ -75,6 +73,8 @@ def test_m3_cached_receipt_completion_and_failure_close_compute_attempt(tmp_path
         "decision_latency_distribution": latency.state_dict(),
     }
     for arm in ("baseline", "candidate"):
+        replay = output / "replays" / f"pair-00000-{arm}.json.gz"
+        replay.write_bytes(b"cached synthetic metadata, not a real match")
         simulation._atomic_record(
             output / "receipts" / f"pair-00000-{arm}.json",
             {

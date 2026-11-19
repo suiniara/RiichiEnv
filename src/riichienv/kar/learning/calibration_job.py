@@ -147,12 +147,11 @@ def _archive_and_fit(
         )
         fit_games = set(split.fit_games)
         for start in range(0, len(validation), microbatch):
+            stop = min(start + microbatch, len(validation))
             ledger.reserve_next(
-                microbatch / ledger.plan.forecast.measured_units_per_second * ledger.plan.forecast.safety_multiplier
+                (stop - start) / ledger.plan.forecast.measured_units_per_second * ledger.plan.forecast.safety_multiplier
             )
-            batch = collate_examples(
-                [validation[index] for index in range(start, min(start + microbatch, len(validation)))]
-            ).to(device)
+            batch = collate_examples([validation[index] for index in range(start, stop)]).to(device)
             inputs = rule_feature_view(
                 batch.inputs,
                 torch.zeros(batch.inputs.size, dtype=torch.bool, device=device),
@@ -280,6 +279,10 @@ def collect_and_calibrate(
         raise ValueError("Production calibration cannot silently use a probe validation subset")
     if microbatch < 1 or budget.phase not in {"M1", "M2"} or budget.forecast.recipe_sha256 != plan_sha256:
         raise ValueError("Calibration requires its registered full-validation budget")
+    # Calibration work units are validation decision rows, not games or batches.
+    # The bound recipe's measured rate must include collection, archive and fit/check.
+    if budget.forecast.work_units < len(validation):
+        raise ValueError("Calibration cost forecast must cover every validation decision row")
     output.mkdir(parents=True, exist_ok=False)
     ledger = BudgetLedger(output / "costs.jsonl", budget)
     with ledger.record_compute("calibration_logits_fit_check"):

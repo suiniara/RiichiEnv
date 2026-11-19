@@ -25,6 +25,33 @@ jobs:
       - name: Run pytests
         run: uv run --python 3.14 pytest
 
+  kar-ml-test:
+    name: pytest (KAR ML)
+    runs-on: ubuntu-latest
+    env:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install KAR ML dependencies
+        run: uv sync --locked --python 3.14 --all-extras --dev --group kar-ml
+
+      - name: Require KAR ML imports
+        run: >-
+          uv run --locked --python 3.14 --all-extras --dev --group kar-ml
+          python -c "import numpy; import torch; print('NumPy', numpy.__version__, 'Torch', torch.__version__)"
+
+      - name: Run KAR functional tests
+        run: uv run --locked --python 3.14 --all-extras --dev --group kar-ml pytest tests/kar
+
   py-lint:
     name: ruff and ty
     runs-on: ubuntu-latest

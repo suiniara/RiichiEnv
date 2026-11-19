@@ -47,6 +47,12 @@
 
 `train`、`probe`、`gpu_preflight`、`benchmark`、`metrics`、`checkpoint` 保留用于历史有界诊断或共享原语。它们的 Small 参数更新、8 样本过拟合和候选后缀吞吐不等于完整 M1/M2/M3，也不代表棋力。
 
+## 训练代码的 CI 验证
+
+GitHub Actions 的 `pytest (KAR ML)` 任务在安装与执行阶段都显式选择 `kar-ml` dependency group，并在收集测试前直接导入 Torch、NumPy。缺少这些依赖时任务失败，不能把 `pytest.importorskip("torch")` 跳过后的结果当成训练代码验收。基础 Python 测试仍可独立运行。
+
+本地对应命令为 `uv run --locked --python 3.14 --all-extras --dev --group kar-ml pytest tests/kar`。这是功能测试入口；带 `parameter_updates` 标记的诊断仍遵循根测试配置中的显式 opt-in，不由 CI 的依赖安装自动授权。
+
 ## 使用前必须满足
 
 - 使用已核验的完整数据与当前合同；不把 synthetic 测试数据当作真实 Golden。
