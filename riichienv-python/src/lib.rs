@@ -1,6 +1,9 @@
 use pyo3::prelude::*;
 
 mod env;
+mod observer;
+mod public_rules;
+mod rules;
 
 #[pyfunction]
 #[pyo3(name = "calculate_score", signature = (han, fu, is_oya, is_tsumo, honba, num_players=4))]
@@ -47,6 +50,10 @@ fn calculate_shanten_3p_py(hand_tiles: Vec<u32>) -> i32 {
 
 #[pymodule]
 fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("NATIVE_RULES_VERSION", riichienv_core::NATIVE_RULES_VERSION)?;
+    observer::register(m)?;
+    public_rules::register(m)?;
+    rules::register(m)?;
     m.add_class::<riichienv_core::types::Meld>()?;
     m.add_class::<riichienv_core::types::MeldType>()?;
     m.add_class::<riichienv_core::types::Wind>()?;

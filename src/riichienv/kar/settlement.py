@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from riichienv import Conditions, HandEvaluator, Meld, MeldType, convert
+from riichienv._riichienv import native_round_transition
 
 from .contracts import MJSOUL_RULESET, Ruleset
 from .kan_transactions import COMMITTED_KAN_KINDS, pending_kan_commits
@@ -12,7 +13,7 @@ from .observation import ObserverLedger, PublicMeld
 from .payments import EvaluatedWin, draw_payments, end_game_pot, win_payments
 from .response import draw_response
 
-SETTLEMENT_VERSION = "independent_mjsoul_settlement_v1"
+SETTLEMENT_VERSION = "native_mjsoul_settlement_v2"
 
 
 class SettlementError(ValueError):
@@ -78,6 +79,7 @@ class _Verifier:
         if ruleset != MJSOUL_RULESET:
             raise SettlementUnavailableError("This settlement contract is frozen to Mahjong Soul four-player hanchan")
         self.ruleset = ruleset
+        self.native_rule = ruleset.engine_rule()
         self.views = [ObserverLedger(seat, (0, 1, 2, 3)) for seat in range(4)]
         self.points: tuple[int, ...] | None = (25000,) * 4
         self.pot = 0
@@ -303,7 +305,7 @@ class _Verifier:
         body = hand + [fact.winning_tile] + [tile for meld in melds for tile in meld.tiles]
         _physical_tiles(body)
         calculator = HandEvaluator(hand, [_meld(meld) for meld in melds])
-        waits = set(calculator.get_waits())
+        waits = set(calculator.get_waits(rule=self.native_rule))
         if not tsumo and waits.intersection(tile // 4 for tile in view.discard_history[seat]):
             raise SettlementError("Winner is permanently furiten on the current wait set")
         ura = fact.ura_markers if self.accepted[seat] else ()
@@ -351,20 +353,17 @@ class _Verifier:
             "liable_yakuman_units": win.liable_yakuman_units,
         }
 
-    def _next_round(self, renchan: bool, draw: bool, abortive: bool = False) -> None:
-        dealer = self.oya if renchan else (self.oya + 1) % 4
-        wind = self.wind + int(not renchan and dealer == 0)
-        honba = self.honba + 1 if renchan or draw else 0
-        self.expected_round = wind, dealer, honba
-        if self.points is None:
-            self.rule_requires_match_end = None
-            return
-        points = self.points
-        top = min(range(4), key=lambda seat: (-points[seat], seat))
-        all_last = self.wind > 1 or (self.wind == 1 and self.oya == 3)
-        agari_yame = not abortive and renchan and all_last and top == self.oya and self.points[self.oya] >= 30000
-        regular_end = not abortive and not renchan and wind >= 2 and (max(self.points) >= 30000 or wind > 2)
-        self.rule_requires_match_end = min(self.points) < 0 or agari_yame or regular_end
+    def _next_round(self, renchan: bool, draw: bool, abortive: bool = False, *, winner_count: int = 1) -> None:
+        kind = "abortive_draw" if abortive else "exhaustive_draw" if draw else "win"
+        # The next round's identity is independent of scores.  When the audit
+        # chain lacks points, discard the kernel's termination answer as well.
+        transition = native_round_transition(
+            self.points if self.points is not None else (0, 0, 0, 0),
+            self.oya, self.wind, self.honba, 2, kind, renchan, winner_count,
+            rule=self.ruleset.engine_rule(),
+        )
+        self.expected_round = tuple(transition[:3])
+        self.rule_requires_match_end = None if self.points is None else transition[4]
 
     def _compare(self, row: dict[str, Any], events: list[dict[str, Any]], delta: tuple[int, ...]) -> None:
         expected = None if self.points is None else tuple(score + change for score, change in zip(self.points, delta))
@@ -419,7 +418,7 @@ class _Verifier:
                 [win for win, _ in scored], oya=self.oya, target=target, honba=self.honba, riichi_sticks=self.pot
             )
             self._compare(row, events, delta)
-            self._next_round(self.oya in {fact.player_id for fact in facts}, False)
+            self._next_round(self.oya in {fact.player_id for fact in facts}, False, winner_count=len(facts))
         except (SettlementUnavailableError, SettlementError, ValueError) as exc:
             row.update(
                 status="BLOCKED" if isinstance(exc, SettlementUnavailableError) else "FAIL",
@@ -460,7 +459,7 @@ class _Verifier:
                     _physical_tiles(hand + [tile for meld in melds for tile in meld.tiles])
                     if len(hand) + 3 * len(melds) != 13:
                         raise SettlementError("Draw hand does not have thirteen structural tiles")
-                    tenpai.append(HandEvaluator(hand, [_meld(meld) for meld in melds]).is_tenpai())
+                    tenpai.append(HandEvaluator(hand, [_meld(meld) for meld in melds]).is_tenpai(rule=self.native_rule))
                     river = view.discard_history[seat]
                     unclaimed = len(river) == len(view.current_rivers[seat])
                     if unclaimed and all(tile // 4 >= 27 or tile // 4 % 9 in {0, 8} for tile in river):

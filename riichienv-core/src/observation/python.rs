@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyDictMethods};
 
 use crate::action::{Action, ActionEncoder, ActionType};
+use crate::rule::GameRule;
 use crate::shanten;
 use crate::types::{Meld, MeldType};
 use crate::yaku_checker;
@@ -14,7 +15,7 @@ use super::helpers::get_next_tile;
 impl Observation {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (player_id, hands, melds, discards, dora_indicators, scores, riichi_declared, legal_actions, events, honba, riichi_sticks, round_wind, oya, kyoku_index, waits, is_tenpai, riichi_sutehais, last_tedashis, last_discard, drawn_tile=None, forced_tedashi=false))]
+    #[pyo3(signature = (player_id, hands, melds, discards, dora_indicators, scores, riichi_declared, legal_actions, events, honba, riichi_sticks, round_wind, oya, kyoku_index, waits, is_tenpai, riichi_sutehais, last_tedashis, last_discard, drawn_tile=None, forced_tedashi=false, rule=None))]
     pub fn py_new(
         player_id: u8,
         hands: Vec<Vec<u8>>,
@@ -37,6 +38,7 @@ impl Observation {
         last_discard: Option<u32>,
         drawn_tile: Option<u8>,
         forced_tedashi: bool,
+        rule: Option<GameRule>,
     ) -> Self {
         let hands: [Vec<u8>; 4] = hands.try_into().expect("expected 4 hands");
         let melds: [Vec<Meld>; 4] = melds.try_into().expect("expected 4 melds");
@@ -73,6 +75,7 @@ impl Observation {
             drawn_tile,
         );
         obs.forced_tedashi = forced_tedashi;
+        obs.rule = rule.unwrap_or_default();
         obs
     }
 
@@ -96,6 +99,12 @@ impl Observation {
     #[pyo3(name = "legal_actions")]
     pub fn legal_actions_method_py(&self) -> Vec<Action> {
         self.legal_actions_method()
+    }
+
+    #[pyo3(name = "legal_riichi_discards")]
+    pub fn legal_riichi_discards_py(&self) -> PyResult<Vec<Action>> {
+        self.legal_riichi_discard_actions()
+            .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     #[pyo3(name = "mask")]
@@ -167,6 +176,7 @@ impl Observation {
         dict.set_item("riichi_sticks", self.riichi_sticks)?;
         dict.set_item("round_wind", self.round_wind)?;
         dict.set_item("oya", self.oya)?;
+        dict.set_item("rule", self.rule)?;
 
         Ok(dict.unbind().into())
     }

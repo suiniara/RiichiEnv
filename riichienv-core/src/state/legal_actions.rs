@@ -1,6 +1,60 @@
 use crate::action::{Action, ActionType, Phase};
+use crate::rule::GameRule;
 use crate::state::GameState;
 use crate::types::{Conditions, Meld, MeldType, Wind, is_terminal_tile};
+
+/// Filter already-permitted discards by the resulting hand's tenpai status.
+/// Both the legacy two-step API and complete riichi actions use this one rule.
+pub(crate) fn tenpai_discards<'a>(
+    hand: &'a [u8],
+    melds: &'a [Meld],
+    candidates: &'a [u8],
+    rule: &'a GameRule,
+) -> impl Iterator<Item = u8> + 'a {
+    let mut tenpai_by_kind = [None; 34];
+    candidates.iter().copied().filter(move |&tile| {
+        if tile >= 136 || !hand.contains(&tile) {
+            return false;
+        }
+        *tenpai_by_kind[(tile / 4) as usize].get_or_insert_with(|| {
+            let mut remaining = hand.to_vec();
+            let index = remaining.iter().position(|&value| value == tile).unwrap();
+            remaining.remove(index);
+            crate::hand_evaluator::HandEvaluator::new(remaining, melds.to_vec())
+                .is_tenpai_with_rule(rule)
+        })
+    })
+}
+
+impl GameState {
+    /// Complete declarations preserve the native physical discard identity.
+    /// The old RIICHI-without-tile action remains available for API compatibility.
+    pub fn legal_riichi_discards(&self, pid: u8) -> Vec<Action> {
+        if pid >= 4 {
+            return Vec::new();
+        }
+        let legal = self._get_legal_actions_internal(pid);
+        if !legal
+            .iter()
+            .any(|action| action.action_type == ActionType::Riichi)
+        {
+            return Vec::new();
+        }
+        let discards = legal
+            .iter()
+            .filter(|action| action.action_type == ActionType::Discard)
+            .filter_map(|action| action.tile)
+            .collect::<Vec<_>>();
+        tenpai_discards(
+            &self.players[pid as usize].hand,
+            &self.players[pid as usize].melds,
+            &discards,
+            &self.rule,
+        )
+        .map(|tile| Action::new(ActionType::Riichi, Some(tile), vec![], Some(pid)))
+        .collect()
+    }
+}
 
 pub trait GameStateLegalActions {
     fn _get_legal_actions_internal(&self, pid: u8) -> Vec<Action>;
@@ -14,7 +68,7 @@ impl GameStateLegalActions for GameState {
         let mut hand = self.players[pid_us].hand.clone();
         hand.sort();
 
-        if self.is_done {
+        if self.is_done || (self.phase == Phase::WaitAct && self.needs_tsumo) {
             return legals;
         }
 
@@ -78,25 +132,29 @@ impl GameStateLegalActions for GameState {
                 // Riichi declared this turn but not yet committed (the Riichi
                 // action came in without a tile, e.g. from an mjai `reach`
                 // event). The follow-up discard must keep the hand tenpai.
-                for &t in self.players[pid_us].hand.iter() {
-                    let is_forbidden = self.players[pid_us]
-                        .forbidden_discards
-                        .iter()
-                        .any(|&f| f / 4 == t / 4);
-                    if is_forbidden {
-                        continue;
-                    }
-                    let mut temp_hand = self.players[pid_us].hand.clone();
-                    if let Some(idx) = temp_hand.iter().position(|&x| x == t) {
-                        temp_hand.remove(idx);
-                    }
-                    let calc = crate::hand_evaluator::HandEvaluator::new(
-                        temp_hand,
-                        self.players[pid_us].melds.clone(),
-                    );
-                    if calc.is_tenpai() {
-                        legals.push(Action::new(ActionType::Discard, Some(t), vec![], Some(pid)));
-                    }
+                let candidates = self.players[pid_us]
+                    .hand
+                    .iter()
+                    .copied()
+                    .filter(|&tile| {
+                        !self.players[pid_us]
+                            .forbidden_discards
+                            .iter()
+                            .any(|&forbidden| forbidden / 4 == tile / 4)
+                    })
+                    .collect::<Vec<_>>();
+                for tile in tenpai_discards(
+                    &self.players[pid_us].hand,
+                    &self.players[pid_us].melds,
+                    &candidates,
+                    &self.rule,
+                ) {
+                    legals.push(Action::new(
+                        ActionType::Discard,
+                        Some(tile),
+                        vec![],
+                        Some(pid),
+                    ));
                 }
             } else {
                 for &t in self.players[pid_us].hand.iter() {
@@ -113,19 +171,19 @@ impl GameStateLegalActions for GameState {
                     && self.wall.drawable_count >= 4
                     && self.players[pid_us].melds.iter().all(|m| !m.opened)
                 {
-                    let mut can_riichi = false;
-                    for skip_idx in 0..self.players[pid_us].hand.len() {
-                        let mut temp_hand = self.players[pid_us].hand.clone();
-                        temp_hand.remove(skip_idx);
-                        let calc = crate::hand_evaluator::HandEvaluator::new(
-                            temp_hand,
-                            self.players[pid_us].melds.clone(),
-                        );
-                        if calc.is_tenpai() {
-                            can_riichi = true;
-                            break;
-                        }
-                    }
+                    let candidates = legals
+                        .iter()
+                        .filter(|action| action.action_type == ActionType::Discard)
+                        .filter_map(|action| action.tile)
+                        .collect::<Vec<_>>();
+                    let can_riichi = tenpai_discards(
+                        &self.players[pid_us].hand,
+                        &self.players[pid_us].melds,
+                        &candidates,
+                        &self.rule,
+                    )
+                    .next()
+                    .is_some();
                     if can_riichi {
                         legals.push(Action::new(ActionType::Riichi, None, vec![], Some(pid)));
                     }
@@ -188,7 +246,7 @@ impl GameStateLegalActions for GameState {
                                 hand_pre,
                                 self.players[pid_us].melds.clone(),
                             );
-                            let mut waits_pre = calc_pre.get_waits();
+                            let mut waits_pre = calc_pre.get_waits_with_rule(&self.rule);
                             waits_pre.sort();
 
                             let mut hand_post = self.players[pid_us].hand.clone();
@@ -204,7 +262,7 @@ impl GameStateLegalActions for GameState {
                             ));
                             let calc_post =
                                 crate::hand_evaluator::HandEvaluator::new(hand_post, melds_post);
-                            let mut waits_post = calc_post.get_waits();
+                            let mut waits_post = calc_post.get_waits_with_rule(&self.rule);
                             waits_post.sort();
 
                             if waits_pre == waits_post && !waits_pre.is_empty() {
@@ -296,7 +354,7 @@ impl GameStateLegalActions for GameState {
             };
 
             let mut is_furiten = false;
-            let waits = calc.get_waits_u8();
+            let waits = calc.get_waits_u8_with_rule(&self.rule);
             for &w in &waits {
                 if self.players[i_us].discards.iter().any(|&d| d / 4 == w) {
                     is_furiten = true;

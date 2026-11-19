@@ -168,8 +168,7 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
             if typ == "start_kyoku":
                 next_draw_player = event["oya"]
             elif typ == "tsumo":
-                if not env.needs_tsumo or env.done():
-                    raise ValueError("Draw is not allowed before a mandatory discard or after round termination")
+                env.validate_replay_draw(event["actor"])
                 if event["actor"] != next_draw_player:
                     raise ValueError("Draw actor does not match the public turn or replacement-draw order")
                 next_draw_player = None
@@ -256,7 +255,7 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
             # Always apply public results in source order to the current state.
             # In particular, neither a dora reveal nor a deposit refreshes an
             # already-open decision opportunity.
-            bridge.prepare(event, [ledger.snapshot() for ledger in ledgers])
+            bridge.prepare(event)
             env.apply_event(event)
             bridge.after_apply(event)
             for ledger in ledgers:
@@ -341,7 +340,7 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
     result: dict[str, Any] = {
         "status": status,
         "events_total": len(events),
-        "draw_phase_contract": "native_needs_tsumo_and_public_turn_v1",
+        "draw_phase_contract": "native_observed_draw_and_public_turn_v2",
         "events_applied": applied,
         "discard_decisions_checked": discard_count,
         "complete_response_windows": full_windows,

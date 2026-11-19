@@ -6,15 +6,15 @@
 
 ## 职责与接口
 
-`observed_raw_final_scores(game)` 读取按稳定座位对应的原始最终分数作为比较目标。`certify_completion(game, replay_result)` 将完整 replay、独立结算、冻结终止规则和 raw 结束证据结合，判定是否可用于完整半庄监督与最终名次。
+`observed_raw_final_scores(game)` 读取按稳定座位对应的原始最终分数作为比较目标。`certify_completion(game, replay_result)` 将完整 replay、独立结算、冻结终止规则和 raw 结束证据结合，判定是否可用于完整半庄监督与最终名次。Python 验证最后一局身份、赢家组或庄家听牌证据，再调用 `native_round_transition(..., rule=MJSOUL_RULESET.engine_rule())`；终止规则与采用雀魂配置的在线状态机及 `settlement` 共用 [Rust 内核](../../../riichienv-core/src/rules/settlement.rs)，不再另算一份终止条件。
 
-它不把原生 `ranks()`、最后一条服务器排名标签或分数相等单独当作完整性证书。
+它不把原生 `ranks()`、最后一条服务器排名标签、分数相等或共享内核的 `match_end` 单独当作完整性证书。来源覆盖、结束证据和 FAIL/BLOCKED 分类仍属于 Python 审计职责。
 
 ## 证据合同
 
 旧牌谱可能没有显式 `end_game`。仅当初局/回合链完整、全部事件消费、合法动作/响应、独立款项和实际终局条件都满足，才能签发派生终局结果；保留 `explicit_end_game=false`，不补造原始事件。
 
-固定起家东/南/西/北破同分，当前 `oya` 不改变映射。header 原始分只能用于核对，不能替代缺失的独立计分链；未知里宝或未消费事件不能靠 header 排名修复。
+固定起家东/南/西/北破同分，当前 `oya` 不改变映射。header 原始分只能用于核对，不能替代缺失的独立计分链；未知里宝或未消费事件不能靠 header 排名修复。KAR 雀魂西入普通荒牌达标时结束，途中流局及庄家双荣和等已有例外单独处理；天凤的普遍连庄优先不能沿用到此证书。两平台由 `extension_dealer_repeat_priority` 区分，见[官方来源与差异表](../../kar-native-rule-boundary.md#3-平台差异与-kar-雀魂修复)。
 
 ## 输入、输出与调用方
 
@@ -24,4 +24,4 @@
 
 ## 测试与状态
 
-对应 [test_completion.py](../../../tests/kar/test_completion.py)、[test_draw_obligations.py](../../../tests/kar/test_draw_obligations.py)、[test_audit.py](../../../tests/kar/test_audit.py)。本轮未执行证书生成；历史证书必须核对绑定的原始数据及源码版本。
+对应 [test_completion.py](../../../tests/kar/test_completion.py)、[test_draw_obligations.py](../../../tests/kar/test_draw_obligations.py)、[test_audit.py](../../../tests/kar/test_audit.py)、[test_native_settlement_kernel.py](../../../tests/kar/test_native_settlement_kernel.py)。实际验证范围见[边界迁移记录](../../kar-native-rule-boundary.md)；历史证书必须重新核对原始数据、当前规则、结算和源码/原生构建绑定，不能重贴标签冒充新证书。

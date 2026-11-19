@@ -277,11 +277,15 @@ class HandEvaluator:
 
         return calc_obj.calc(win_tile, dora_inds_136, ura_inds_136, rust_conditions)
 
-    def is_tenpai(self) -> bool:
-        return self.calc_rust.is_tenpai()
+    def is_tenpai(self, *, rule: rust_core.GameRule | None = None) -> bool:
+        if rule is None:
+            return self.calc_rust.is_tenpai()
+        return self.calc_rust.is_tenpai_with_rule(rule)
 
-    def get_waits(self) -> list[int]:
-        return self.calc_rust.get_waits()
+    def get_waits(self, *, rule: rust_core.GameRule | None = None) -> list[int]:
+        if rule is None:
+            return self.calc_rust.get_waits()
+        return self.calc_rust.get_waits_with_rule(rule)
 
 
 def _to_rust_conditions(conditions: Conditions) -> "rust_core.Conditions":

@@ -199,13 +199,13 @@ def _native_window():
     env = MJSOUL_RULESET.create_env(seed=42)
     observations = env.reset(wall=wall, oya=0)
     projection = LiveEventProjection()
-    projection.observe_native(list(env.mjai_log))
+    projection.observe_native(list(env.rule_log))
     discard = next(candidate for candidate in legal_candidates(observations[0])
                    if candidate.spec.action_type == "DISCARD" and candidate.spec.base34 == 27
                    and not candidate.spec.riichi and not candidate.spec.tsumogiri)
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     responses = execute_candidate(env, 0, discard)
-    projection.observe_native(list(env.mjai_log[before:]))
+    projection.observe_native(list(env.rule_log[before:]))
     choices = {seat: next(candidate for candidate in legal_candidates(observation, source_player=0)
                           if candidate.spec.action_type == "PASS") for seat, observation in responses.items()}
     assert 1 in choices
@@ -220,11 +220,11 @@ def test_real_native_pass_submission_enters_only_its_owners_next_prefix():
     before_prefix = encode_prefix(before_snapshot, ids)
     old_bytes = before_prefix.to_bytes()
     assert not _markers(before_snapshot)
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     observations = execute_joint_responses(env, choices)
-    raw = list(env.mjai_log[before:])
+    raw = list(env.rule_log[before:])
     control = LiveEventProjection()
-    control.observe_native(list(env.mjai_log[:before]))
+    control.observe_native(list(env.rule_log[:before]))
     control.observe_native(raw)
     projection.observe_native(raw, confirmed_self_passes=(receipt,))
     assert projection.events == control.events and all(event["type"] != "self_pass" for event in projection.events)
@@ -260,14 +260,14 @@ def test_batched_and_incremental_projection_materialize_identical_private_histor
 def test_capture_cancel_and_failed_atomic_submission_never_record_success():
     env, projection, choices = _native_window()
     before = [projection.snapshot(seat).to_bytes() for seat in range(4)]
-    public = len(env.mjai_log)
+    public = len(env.rule_log)
     projection.capture_self_passes(choices)  # Capture then cancel: no side effect.
     assert all(projection.snapshot(seat).to_bytes() == before[seat] for seat in range(4))
     bad = dict(choices)
     bad[1] = replace(bad[1], _legal_signature=())
     with pytest.raises(ValueError):
         execute_joint_responses(env, bad)
-    assert len(env.mjai_log) == public
+    assert len(env.rule_log) == public
     assert all(projection.snapshot(seat).to_bytes() == before[seat] for seat in range(4))
 
 
@@ -363,7 +363,7 @@ def _fixed_native(known, draw):
     env = MJSOUL_RULESET.create_env(seed=9)
     observations = env.reset(wall=wall, oya=0)
     projection = LiveEventProjection()
-    projection.observe_native(list(env.mjai_log))
+    projection.observe_native(list(env.rule_log))
     return env, observations, projection
 
 
@@ -373,9 +373,9 @@ def test_actual_ankan_rob_window_pass_uses_public_trigger_and_keeps_others_priva
     kan = next(candidate for candidate in legal_candidates(observations[0]) if candidate.spec.action_type == "ANKAN")
     declaration = {"type": "ankan", "actor": 0,
                    "consumed": [convert.tid_to_mjai(tile) for tile in kan.actions[0].consume_tiles]}
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     responses = execute_candidate(env, 0, kan)
-    projection.observe_native(list(env.mjai_log[before:]), declared_ankan=declaration, pending_kan_window=True)
+    projection.observe_native(list(env.rule_log[before:]), declared_ankan=declaration, pending_kan_window=True)
     options = {seat: legal_candidates(observation, source_player=0) for seat, observation in responses.items()}
     assert 1 in options and any(candidate.spec.action_type == "RON" for candidate in options[1])
     choices = {seat: next(candidate for candidate in candidates if candidate.spec.action_type == "PASS")
@@ -383,9 +383,9 @@ def test_actual_ankan_rob_window_pass_uses_public_trigger_and_keeps_others_priva
     receipt = next(trigger for trigger in projection.capture_self_passes(choices) if trigger.observer_player_id == 1)
     assert receipt.trigger_type == "ankan" and receipt.pai == "1m"
     earlier = projection.snapshot(1)
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     execute_joint_responses(env, choices)
-    projection.observe_native(list(env.mjai_log[before:]), confirmed_self_passes=(receipt,))
+    projection.observe_native(list(env.rule_log[before:]), confirmed_self_passes=(receipt,))
     assert not _markers(earlier)
     marker = _markers(projection.snapshot(1))[0]
     assert marker["trigger_type"] == "ankan" and marker["target"] == 0 and marker["pai"] == "1m"
@@ -399,9 +399,9 @@ def test_overridden_chi_is_not_relabelled_as_private_pass_online_or_offline():
     discard = next(candidate for candidate in legal_candidates(observations[0])
                    if candidate.spec.action_type == "DISCARD" and candidate.spec.base34 == 0
                    and not candidate.spec.riichi and not candidate.spec.tsumogiri)
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     responses = execute_candidate(env, 0, discard)
-    projection.observe_native(list(env.mjai_log[before:]))
+    projection.observe_native(list(env.rule_log[before:]))
     trigger = projection.ledgers[1].pass_trigger()
     choices = {}
     for seat, observation in responses.items():
@@ -410,9 +410,9 @@ def test_overridden_chi_is_not_relabelled_as_private_pass_online_or_offline():
         choices[seat] = next(candidate for candidate in candidates if candidate.spec.action_type == family)
     captured = projection.capture_self_passes(choices)
     assert all(receipt.observer_player_id != 1 for receipt in captured)
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     execute_joint_responses(env, choices)
-    projection.observe_native(list(env.mjai_log[before:]), confirmed_self_passes=captured)
+    projection.observe_native(list(env.rule_log[before:]), confirmed_self_passes=captured)
     assert projection.events[-1]["type"] == "pon" and not _markers(projection.snapshot(1))
     with pytest.raises(ValueError, match="cannot be inferred"):
         projection.ledgers[1].record_self_pass(trigger, provenance="inferred_unique_next_draw_pass")

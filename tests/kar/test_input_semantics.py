@@ -28,7 +28,7 @@ def new_round_data(start, draw):
 
 def opening_pair(seed=42):
     env = MJSOUL_RULESET.create_env(seed=seed)
-    raw = list(env.mjai_log)
+    raw = list(env.rule_log)
     start = next(event for event in raw if event["type"] == "start_kyoku")
     draw = next(event for event in raw if event["type"] == "tsumo")
     # A container closure is needed by the decoder, but is outside every tested cutoff.
@@ -107,7 +107,7 @@ def test_source_packing_cannot_set_reach_dora_or_draw_positions(packing):
 
 def test_kan_commit_ack_and_implicit_commit_share_semantic_positions():
     env = deal({0: ("E",) * 4}, ["9s"])
-    raw = list(env.mjai_log)
+    raw = list(env.rule_log)
     declaration = {"type": "ankan", "actor": 0, "consumed": ["E"] * 4}
     occupied = {tile for event in raw if event["type"] == "start_kyoku" for hand in event["tehais"] for tile in hand}
     indicator = next(convert.tid_to_mjai(tile) for tile in range(136) if convert.tid_to_mjai(tile) not in occupied)
@@ -148,7 +148,7 @@ def test_delayed_old_dora_and_optional_kan_ack_have_identical_history():
 @pytest.mark.parametrize("chunks", [1, 2, 100])
 def test_kyushu_public_reveal_and_zero_settlement_match_through_next_real_decision(seat, chunks):
     env = deal({0: ("1m", "9m", "1p", "9p", "1s", "9s", "E", "S", "W", "N", "P", "F", "C")}, ["2m"])
-    initial = list(env.mjai_log)
+    initial = list(env.rule_log)
     start = next(event for event in initial if event["type"] == "start_kyoku")
     draw = initial[-1]
     live = LiveEventProjection()
@@ -158,11 +158,11 @@ def test_kyushu_public_reveal_and_zero_settlement_match_through_next_real_decisi
     chosen = next(item for item in legal_candidates(env.get_observation(0), drawn_tile=env.drawn_tile)
                   if item.global_id == 220)
     execute_candidate(env, 0, chosen)
-    terminal = list(env.mjai_log[len(initial):])
+    terminal = list(env.rule_log[len(initial):])
     # Advance the same actual environment to the next public round/first draw.
     if not any(event["type"] == "start_kyoku" for event in terminal):
         env.step({})
-        terminal = list(env.mjai_log[len(initial):])
+        terminal = list(env.rule_log[len(initial):])
     next_start = next(event for event in terminal if event["type"] == "start_kyoku")
     next_draw = next(event for event in terminal[terminal.index(next_start) + 1:] if event["type"] == "tsumo")
     for begin in range(0, len(terminal), chunks):
@@ -194,7 +194,7 @@ def test_kyushu_public_reveal_and_zero_settlement_match_through_next_real_decisi
 @pytest.mark.parametrize("bad", ["actor", "tiles", "late", "not-nine"])
 def test_kyushu_reconstruction_rejects_unproven_identity_or_tiles(bad):
     env = deal({0: ("1m", "9m", "1p", "9p", "1s", "9s", "E", "S", "W", "N", "P", "F", "C")}, ["2m"])
-    raw = list(env.mjai_log)
+    raw = list(env.rule_log)
     start = next(event for event in raw if event["type"] == "start_kyoku")
     data = new_round_data(start, raw[-1])
     terminal = {"type": 1, "seat": 0, "tiles": data["tiles0"].copy()}
@@ -216,21 +216,21 @@ def test_kyushu_reconstruction_rejects_unproven_identity_or_tiles(bad):
 def test_confirmed_private_pass_does_not_change_public_clock_or_other_observers():
     env = deal({0: ("E",), 1: ("E", "E")}, ["9s", "8s"])
     live = LiveEventProjection()
-    live.observe_native(env.mjai_log)
+    live.observe_native(env.rule_log)
     discard = next(item for item in legal_candidates(env.get_observation(0), drawn_tile=env.drawn_tile)
                    if item.global_id < 148 and item.actions[-1].tile // 4 == 27)
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     responses = execute_candidate(env, 0, discard)
-    live.observe_native(env.mjai_log[before:])
+    live.observe_native(env.rule_log[before:])
     choices = {seat: next(item for item in legal_candidates(observation, source_player=0) if item.global_id == 221)
                for seat, observation in responses.items() if observation.legal_actions()}
     assert any(item.spec.action_type == "PON" for item in legal_candidates(env.get_observation(1), source_player=0))
     receipt = tuple(trigger for trigger in live.capture_self_passes(choices) if trigger.observer_player_id == 1)
     old = live.snapshot(1)
     old_bytes = encode_prefix(old, (221,)).to_bytes()
-    before = len(env.mjai_log)
+    before = len(env.rule_log)
     execute_joint_responses(env, choices)
-    live.observe_native(env.mjai_log[before:], confirmed_self_passes=receipt)
+    live.observe_native(env.rule_log[before:], confirmed_self_passes=receipt)
     offline = ledger([{**event, "source_record_index": 0} for event in live.events], 1)
     trigger = offline._pass_triggers[receipt[0].trigger_event_id]
     offline.record_self_pass(trigger, provenance="inferred_unique_next_draw_pass")
@@ -248,22 +248,22 @@ def test_actual_multi_ron_group_is_independent_of_native_batch_boundaries(chunk_
     common = ("1m", "2m", "3m", "4p", "5p", "6p", "7s", "8s", "9s")
     env = deal({0: ("E",), 1: common + ("P",) * 3 + ("E",),
                 2: common + ("F",) * 3 + ("E",)}, ["C"])
-    prefix = list(env.mjai_log)
+    prefix = list(env.rule_log)
     discard = next(item for item in legal_candidates(env.get_observation(0), drawn_tile=env.drawn_tile)
                    if item.global_id < 148 and not item.spec.riichi and item.actions[-1].tile // 4 == 27)
     responses = execute_candidate(env, 0, discard)
-    public_before = list(env.mjai_log)
+    public_before = list(env.rule_log)
     choices = {seat: next(item for item in legal_candidates(observation, source_player=0)
                           if item.spec.action_type == ("RON" if seat in {1, 2} else "PASS"))
                for seat, observation in responses.items() if observation.legal_actions()}
     execute_joint_responses(env, choices)
-    tail = list(env.mjai_log[len(public_before):])
+    tail = list(env.rule_log[len(public_before):])
     assert sum(event["type"] == "hora" for event in tail) == 2
     if reverse_winners:
         end = next(index for index, event in enumerate(tail) if event["type"] != "hora")
         tail = list(reversed(tail[:end])) + tail[end:]
     whole, streamed = LiveEventProjection(), LiveEventProjection()
-    whole.observe_native(env.mjai_log)
+    whole.observe_native(env.rule_log)
     streamed.observe_native(public_before)
     old = streamed.snapshot(3)
     old_bytes = encode_prefix(old, (221,)).to_bytes()

@@ -83,9 +83,10 @@ def content_hash(value: Any) -> str:
 
 @dataclass(frozen=True)
 class Ruleset:
-    # v2 makes the FAQ-backed nagashi interpretation explicit in every artifact
-    # binding; own calls/kans do not disqualify (docs/kar-nagashi-rules.md).
-    name: str = "mahjong_soul_4p_red_half_v2"
+    # v3 binds the shared native rules, including own-four-copy tenpai and
+    # sudden-death exhaustive-draw termination. Old audit/label artifacts must
+    # be regenerated; changing their version strings is not a migration.
+    name: str = "mahjong_soul_4p_red_half_v3_native_rules"
     engine_commit: str = ENGINE_COMMIT
     game_mode: str = GAME_MODE
     rank_tiebreak: str = "initial_seat_order_east_south_west_north"
@@ -98,6 +99,8 @@ class Ruleset:
     sanchaho_is_draw: bool = False
     kuikae_forbidden: bool = True
     dealer_first_discard_is_tedashi: bool = True
+    allow_fifth_copy_tenpai: bool = False
+    extension_dealer_repeat_priority: bool = False
     chi_allowed: bool = True
     four_winds_abort: bool = True
     four_riichi_abort: bool = True
@@ -120,6 +123,8 @@ class Ruleset:
             "sanchaho_is_draw",
             "kuikae_forbidden",
             "dealer_first_discard_is_tedashi",
+            "allow_fifth_copy_tenpai",
+            "extension_dealer_repeat_priority",
         ):
             setattr(rule, name, getattr(self, name))
         return rule

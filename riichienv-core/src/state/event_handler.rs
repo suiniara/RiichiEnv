@@ -34,6 +34,11 @@ impl GameState {
 
 impl GameStateEventHandler for GameState {
     fn apply_mjai_event(&mut self, event: MjaiEvent) {
+        if let Err(error) = self.advance_mjai_context(&event) {
+            self.last_error = Some(error);
+            return;
+        }
+        self.last_error = None;
         if matches!(
             &event,
             MjaiEvent::Tsumo { .. }
@@ -42,16 +47,6 @@ impl GameStateEventHandler for GameState {
                 | MjaiEvent::Kan { .. }
         ) {
             self.record_mjai_discard_ron_declines();
-        }
-        if matches!(
-            &event,
-            MjaiEvent::Pon { .. }
-                | MjaiEvent::Chi { .. }
-                | MjaiEvent::Kan { .. }
-                | MjaiEvent::Ankan { .. }
-                | MjaiEvent::Kakan { .. }
-        ) {
-            self.is_first_turn = false;
         }
         match event {
             MjaiEvent::StartGame { .. } => {
@@ -307,43 +302,10 @@ impl GameStateEventHandler for GameState {
                 self.active_players = vec![actor as u8];
                 self.needs_tsumo = true;
             }
-            MjaiEvent::Ankan { actor, consumed } => {
-                let mut tiles = Vec::new();
-                for c in &consumed {
-                    let t = parse_mjai_tile(c);
-                    tiles.push(t);
-                    if let Some(idx) = self.players[actor].hand.iter().position(|&x| x == t) {
-                        self.players[actor].hand.remove(idx);
-                    }
-                }
-                self.players[actor].melds.push(Meld {
-                    meld_type: MeldType::Ankan,
-                    tiles,
-                    opened: false,
-                    from_who: -1,
-                    called_tile: None,
-                });
-                self.current_player = actor as u8;
-                self.phase = Phase::WaitAct;
-                self.active_players = vec![actor as u8];
-                self.needs_tsumo = true;
-            }
-            MjaiEvent::Kakan { actor, pai } => {
-                let tile = parse_mjai_tile(&pai);
-                if let Some(idx) = self.players[actor].hand.iter().position(|&x| x == tile) {
-                    self.players[actor].hand.remove(idx);
-                }
-                for m in self.players[actor].melds.iter_mut() {
-                    if m.meld_type == MeldType::Pon && m.tiles[0] / 4 == tile / 4 {
-                        m.meld_type = MeldType::Kakan;
-                        m.tiles.push(tile);
-                        break;
-                    }
-                }
-                self.current_player = actor as u8;
-                self.phase = Phase::WaitAct;
-                self.active_players = vec![actor as u8];
-                self.needs_tsumo = true;
+            MjaiEvent::Ankan { actor, .. } | MjaiEvent::Kakan { actor, .. } => {
+                // The declaration opens the native response window. Concealed
+                // tiles and the original Pon stay unchanged until public commit.
+                self.open_replay_kan_window(actor as u8);
             }
             MjaiEvent::Reach { actor } => {
                 self.players[actor].riichi_stage = true;
@@ -909,7 +871,7 @@ impl GameStateEventHandler for GameState {
                                 p.hand.clone(),
                                 p.melds.clone(),
                             );
-                            tenpai[i] = calc.is_tenpai();
+                            tenpai[i] = calc.is_tenpai_with_rule(&self.rule);
                         }
                     }
                     let num_tp = tenpai.iter().filter(|&&t| t).count();

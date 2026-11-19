@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::action::{Action, ActionEncoder, ActionType};
 use crate::errors::{RiichiError, RiichiResult};
+use crate::rule::GameRule;
 use crate::types::Meld;
 
 #[cfg_attr(
@@ -57,6 +58,10 @@ pub struct Observation {
     /// the drawn tile. Keep drawn_tile available for winning and hand features.
     #[serde(default)]
     pub forced_tedashi: bool,
+    /// Preserve the producing environment's formal-tenpai rules in frozen
+    /// observations. Old serialized observations keep the legacy default.
+    #[serde(default)]
+    pub rule: GameRule,
 }
 
 /// Pure Rust methods (no PyO3 dependency).
@@ -112,11 +117,50 @@ impl Observation {
             last_discard,
             drawn_tile,
             forced_tedashi: false,
+            rule: GameRule::default(),
         }
     }
 
     pub fn legal_actions_method(&self) -> Vec<Action> {
         self._legal_actions.clone()
+    }
+
+    /// Complete riichi declarations from this frozen, observer-local legal set.
+    /// No opponent concealed information is accessed by this projection.
+    pub fn legal_riichi_discard_actions(&self) -> Result<Vec<Action>, String> {
+        if self.player_id >= 4 {
+            return Err("Expected a four-player observer".into());
+        }
+        if !self
+            ._legal_actions
+            .iter()
+            .any(|action| action.action_type == ActionType::Riichi)
+        {
+            return Ok(Vec::new());
+        }
+        let hand = self.hands[self.player_id as usize]
+            .iter()
+            .map(|&tile| {
+                u8::try_from(tile)
+                    .ok()
+                    .filter(|&tile| tile < 136)
+                    .ok_or("Invalid physical hand tile")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let candidates = self
+            ._legal_actions
+            .iter()
+            .filter(|action| action.action_type == ActionType::Discard)
+            .filter_map(|action| action.tile)
+            .collect::<Vec<_>>();
+        Ok(crate::state::legal_actions::tenpai_discards(
+            &hand,
+            &self.melds[self.player_id as usize],
+            &candidates,
+            &self.rule,
+        )
+        .map(|tile| Action::new(ActionType::Riichi, Some(tile), vec![], Some(self.player_id)))
+        .collect())
     }
 
     pub fn find_action(&self, action_id: usize) -> Option<Action> {

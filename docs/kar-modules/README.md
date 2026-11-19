@@ -6,6 +6,8 @@
 
 KAR 以 **RiichiEnv** 为宿主。`from riichienv.kar import ...` 仅导出 `MJSOUL_RULESET`、`SCHEMA_ID`、`Response`、`Ruleset`，不自动加载 Torch、训练模型或启动对局。完整设计到实现的对应关系见[58项覆盖表](../kar-implementation-coverage.md)，端到端工作流见[生产代码说明](../kar-production-code.md)。
 
+当前 KAR 四人规则计算、观察事实、重放 flag、完整立直与规范事件由 Rust 持有；KAR 显式采用雀魂规则，原生通用接口保留 Tenhou/default 及平台开关。Python 管理来源核对、历史/时钟、监督、训练和产物。平台差异、共享规则与独立审计的区别、活动版本及旧产物迁移要求见[原生规则边界](../kar-native-rule-boundary.md)。
+
 ## 共同约束
 
 - 当前 Schema 为 `kar-riichienv-v1`：546 全局动作、最多 32 个完整候选、62 个状态槽；不按候选下标替代动作身份，不 Top-K 截断。
@@ -46,15 +48,15 @@ KAR 以 **RiichiEnv** 为宿主。`from riichienv.kar import ...` 仅导出 `MJS
 | `acceptance` | [说明](acceptance/README.md) | 单/多分片最终 gate |
 | `golden` | [说明](golden/README.md) | 真实来源 Golden 核验 |
 | `event_semantics` | [说明](event_semantics/README.md) | 规范公共时钟与终局公开事实验证 |
-| `observation` | [说明](observation/README.md) | 白名单观察者账本 |
+| `observation` | [说明](observation/README.md) | 原生观察事实适配、历史/时钟与本家 Pass |
 | `tokenize` | [说明](tokenize/README.md) | 前缀、ACTION、历史缓存 |
 | `rule_features` | [说明](rule_features/README.md) | 确定性公开规则特征 |
 | `response` | [说明](response/README.md) | 实际响应窗口标签 |
-| `response_mask` | [说明](response_mask/README.md) | 公开规则允许类别 |
+| `response_mask` | [说明](response_mask/README.md) | 纯原生公开可能性的白名单适配 |
 | `response_supervision` | [说明](response_supervision/README.md) | 冻结机会、可证 Pass 与删失统计 |
 | `kan_transactions` | [说明](kan_transactions/README.md) | 公共杠提交判据 |
-| `native_replay` | [说明](native_replay/README.md) | 原生重放上下文桥 |
-| `payments` | [说明](payments/README.md) | 独立付款与供托 |
+| `native_replay` | [说明](native_replay/README.md) | 原生重放接口/事件配对，无 flag 回写 |
+| `payments` | [说明](payments/README.md) | 共享原生付款与供托适配 |
 | `settlement` | [说明](settlement/README.md) | 独立番符/款项链核验 |
 | `completion` | [说明](completion/README.md) | 完整半庄终局证书 |
 
@@ -68,7 +70,7 @@ KAR 以 **RiichiEnv** 为宿主。`from riichienv.kar import ...` 仅导出 `MJS
 | `runtime` | [说明](runtime/README.md) | logits 到最终策略协调 |
 | `runtime_contracts` | [说明](runtime_contracts/README.md) | 模型/数据/推理绑定 |
 | `agent` | [说明](agent/README.md) | 在线选择与半庄 runner |
-| `live_events` | [说明](live_events/README.md) | 原生增量转公开事件 |
+| `live_events` | [说明](live_events/README.md) | 原生规则事件分批协调与观察历史 |
 | `calibration` | [说明](calibration/README.md) | 三头温度、log 门控、标定产物 |
 | `calibration_roles` | [说明](calibration_roles/README.md) | 不变的 game 级校准角色 |
 | `calibration_quality` | [说明](calibration_quality/README.md) | 预登记质量判定 |

@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from riichienv._riichienv import native_pending_kan_commits
+
+from .contracts import canonical_bytes
+
 KAN_TRANSACTION_VERSION = "public_kan_commit_evidence_v2"
 COMMITTED_KAN_KINDS = frozenset({"ankan", "kakan", "daiminkan"})
 
@@ -14,13 +18,6 @@ def pending_kan_commits(event: Mapping[str, Any], *, actor: int, committed_kans:
     have unrevealed indicators, a dora event cannot prove the newest declaration.
     An explicit native commit acknowledgement or the actor's replacement draw can.
     """
-    typ = event["type"]
-    if typ in {"tsumo", "kan_commit"}:
-        if event.get("actor") != actor:
-            raise ValueError("Kan commitment/replacement draw belongs to another actor")
-        return True
-    if typ != "dora":
-        return False
-    if committed_kans < 0 or indicators < 1 or indicators > committed_kans + 1:
-        raise ValueError("Public kan/indicator accounting is inconsistent")
-    return indicators == committed_kans + 1
+    return native_pending_kan_commits(
+        canonical_bytes(dict(event)).decode("utf-8"), actor, committed_kans, indicators,
+    )

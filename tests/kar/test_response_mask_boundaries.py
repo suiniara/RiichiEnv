@@ -15,7 +15,7 @@ from tests.kar.test_nagashi_consistency import _run_round
 
 
 def sync(env, live, begin):
-    live.observe_native(env.mjai_log[begin:])
+    live.observe_native(env.rule_log[begin:])
 
 
 def pass_window(env, live):
@@ -26,13 +26,13 @@ def pass_window(env, live):
             source = view.pending_kan_actor if view.pending_kan_actor is not None else view.last_discard_actor
             choices[seat] = next(item for item in legal_candidates(env.get_observation(seat), source_player=source)
                                  if item.global_id == 221)
-        begin = len(env.mjai_log)
+        begin = len(env.rule_log)
         execute_joint_responses(env, choices)
         sync(env, live, begin)
 
 
 def perform(env, live, chosen):
-    begin = len(env.mjai_log)
+    begin = len(env.rule_log)
     execute_candidate(env, env.current_player, chosen)
     sync(env, live, begin)
     pass_window(env, live)
@@ -43,7 +43,7 @@ def four_riichi(distinct_discards=False):
     draws = ("6m", "7m", "8m", "9m") if distinct_discards else ("9m",) * 4
     env = deal({seat: shape for seat in range(4)}, draws)
     live = LiveEventProjection()
-    live.observe_native(env.mjai_log)
+    live.observe_native(env.rule_log)
     for actor in range(3):
         assert env.current_player == actor
         chosen = next(item for item in legal_candidates(env.get_observation(actor), drawn_tile=env.drawn_tile)
@@ -90,7 +90,7 @@ def test_native_four_winds_is_terminal_after_ron_priority():
     shape = ("1m", "2m", "3m", "1p", "2p", "3p", "7p", "8p", "9p", "1s", "2s", "3s", "E")
     env = deal({seat: shape for seat in range(4)}, ("9m",) * 4)
     live = LiveEventProjection()
-    live.observe_native(env.mjai_log)
+    live.observe_native(env.rule_log)
     for actor in range(4):
         chosen = next(item for item in legal_candidates(env.get_observation(actor), drawn_tile=env.drawn_tile)
                       if item.global_id < 148 and not item.spec.riichi and item.actions[-1].tile // 4 == 27)
@@ -112,7 +112,7 @@ def test_four_legal_native_kans_distinguish_one_and_multiple_owners(single_owner
     env = deal(specials, ("N",) if single_owner else ("9m", "8m"),
                rinshan=("N", "N") if single_owner else ())
     live = LiveEventProjection()
-    live.observe_native(env.mjai_log)
+    live.observe_native(env.rule_log)
     for owner, count in ((0, 4),) if single_owner else ((0, 2), (1, 2)):
         assert env.current_player == owner
         for _ in range(count):

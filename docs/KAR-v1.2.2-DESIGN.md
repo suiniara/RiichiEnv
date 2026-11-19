@@ -1,14 +1,14 @@
 # KAR-v1.2.2 / RiichiEnv V4 完整主设计
 
-**版本：** 算法 `KAR-v1.2.2` · 宿主合同 `RiichiEnv V4`（`kar_riichienv_contract_v4`） · 文档修订 `design-sync-3`。最后一项仅标识文档，不是新的算法、输入或产物版本。
+**版本：** 算法 `KAR-v1.2.2` · 宿主合同 `RiichiEnv V4`（`kar_riichienv_contract_v4`） · 文档修订 `design-sync-4`。最后一项仅标识文档，不是新的算法、输入或产物版本。
 
 **唯一正文：** `docs/KAR-v1.2.2-DESIGN.md`。对外分发时应从该正文制作逐字节快照，不另维护规范；相对链接以仓库 `docs/` 为基准。此前 `design-sync-1` 的分发文件只对应当时的 `f70684e`，不自动升级。
 
-**适用实现：** `suiniara/RiichiEnv` · `kar/riichienv-v1-20261117`。本修订以 `4c09e9eb1f02fde3bb4ce0a2fe4d769b634e3610` 为基线，含[响应监督、冻结 FP32 和验证统计修订](kar-response-fp32-validation-repair.md)。宿主、重放、合法动作及运行时均为 RiichiEnv；Kanachan 仅是 546 动作和 tile37 编号来源。RiichiEnv 上游参考提交为 `0ee1236a283b15508f3ac28407027f340b81e1de`。
+**适用实现：** `suiniara/RiichiEnv`。本修订以 `kar/riichienv-v1-20261117` 的 `7626166246ec3ed698d5e6d95b27b2068afbe604` 为改动前基线，在已有[响应监督、冻结 FP32 和验证统计修订](kar-response-fp32-validation-repair.md)上实施[原生规则边界收敛](kar-native-rule-boundary.md)。宿主、重放、合法动作及运行时均为 RiichiEnv；Kanachan 仅是 546 动作和 tile37 编号来源。RiichiEnv 上游参考提交为 `0ee1236a283b15508f3ac28407027f340b81e1de`。
 
 **历史来源：** 外部附件 `KAR-v1.2.2-DESIGN(3).md` 的字节 SHA-256 为 `4349039c44175ece77f6dddad3a2106fbd3e0e0339935122df242175c83cbdba`。它保留历史身份，不作为 V4 实施规范。见[相对旧附件的差异与迁移说明](kar-design-v4-migration.md)。
 
-**证据范围：** [design-sync-1 校验](kar-design-v4-validation.md)、[分批 Pass／有效未支持质量报告](kar-pass-rho-math-repair.md)和[振听／逐事件校准报告](kar-furiten-event-calibration-repair.md)各保留原范围。此次实跑见[响应监督、冻结 FP32 与验证统计报告](kar-response-fp32-validation-repair.md)。设计不授予真实数据处理、参数更新、GPU、校准或 M3 许可。
+**证据范围：** [design-sync-1 校验](kar-design-v4-validation.md)、[分批 Pass／有效未支持质量报告](kar-pass-rho-math-repair.md)、[振听／逐事件校准报告](kar-furiten-event-calibration-repair.md)和[响应监督、冻结 FP32 与验证统计报告](kar-response-fp32-validation-repair.md)各保留原范围。本轮规则迁移的实现、验证与旧产物边界见[迁移记录](kar-native-rule-boundary.md)，历史通过数不自动覆盖当前原生构建。设计不授予真实数据处理、参数更新、GPU、校准或 M3 许可。
 
 ## 0. 冻结结论与活动版本
 
@@ -23,8 +23,11 @@
 | Schema 映射 | `riichienv_complete_v1_from_kar_v1_2_2_v1`，legacy compatibility=`not_claimed` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | architecture | `kar_kl_response_value_v1` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | artifact | `kar_riichienv_contract_v4` | [versioning.py](../src/riichienv/kar/versioning.py) |
-| input pipeline | `semantic_public_clock_frozen_decisions_v6_ryanmen_pairs` | [versioning.py](../src/riichienv/kar/versioning.py) |
-| native replay | `prefix_flags_bridge_v3_native_furiten` | [native_replay.py](../src/riichienv/kar/native_replay.py) |
+| ruleset | `mahjong_soul_4p_red_half_v3_native_rules` | [contracts.py](../src/riichienv/kar/contracts.py) |
+| native rules | `riichienv_native_rules_v1`，产物显式绑定 `native_rules_version` | [core/lib.rs](../riichienv-core/src/lib.rs)、[versioning.py](../src/riichienv/kar/versioning.py) |
+| input pipeline | `semantic_public_clock_frozen_decisions_v7_native_rules` | [versioning.py](../src/riichienv/kar/versioning.py) |
+| native replay | `native_replay_context_v4` | [native_replay.py](../src/riichienv/kar/native_replay.py) |
+| settlement | `native_mjsoul_settlement_v2` | [settlement.py](../src/riichienv/kar/settlement.py) |
 | dataset / action labels | `kar_decision_sqlite_v1` / `explicit_and_unique_response_pass_v3` | [learning/export.py](../src/riichienv/kar/learning/export.py) |
 | response opportunity evidence | `frozen_response_opportunities_v1` | [response_supervision.py](../src/riichienv/kar/response_supervision.py) |
 | frozen model precision recipe | `fp32_no_autocast_v1` | [learning/config.py](../src/riichienv/kar/learning/config.py) |
@@ -37,7 +40,7 @@
 | event support | `train_independent_games_v2_branch_quality`（train 计数定义不变） | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
 | calibration | `heldout_temperatures_log_gate_v6_event_ovr` | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
 | diagnostics report / merge state | `whole_game_cluster_statistics_v4_event_ovr` | [statistics.py](../src/riichienv/kar/statistics.py) |
-| live projection | `native_public_resolution_projection_v5_pass_receipts` | [live_events.py](../src/riichienv/kar/live_events.py) |
+| live projection | `native_rule_event_projection_v6` | [live_events.py](../src/riichienv/kar/live_events.py) |
 | runtime / finite policy identity | `restricted_kl_runtime_v3_event_ovr` / `calibrated_policy_identity_v3_event_ovr`，KL 数学不变 | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
 | training configuration | `explicit_train_split_scale_v5_decision_time`，配方绑定当前输入版本 | [versioning.py](../src/riichienv/kar/versioning.py) |
 | training startup / cost ledger | `kar_training_startup_v1` / `durable_compute_cost_ledger_v3` | [learning/production_checkpoint.py](../src/riichienv/kar/learning/production_checkpoint.py) / [budget.py](../src/riichienv/kar/budget.py) |
@@ -45,6 +48,8 @@
 | model tier basis | `N_train_half_games` | [versioning.py](../src/riichienv/kar/versioning.py) |
 
 完整宿主 kind、字段、139 字节 little-endian Token、944 Embedding 行及 62 状态槽已物化。`schema_hash` 对活动 [Schema JSON](../src/riichienv/kar/token_schema.riichienv.v1.json) 的规范化内容计算；`reference_overlay_sha256` 对历史 overlay 的原始文件字节计算，两者不可互换。不要求合并缺失的 Kanachan 父注册表，不把设计引用改写为活动 ID。
+
+本轮 Rust/Python 职责收敛不改 546 动作 manifest、21 类响应、Token 布局或模型参数形状。KAR 雀魂规则与输入身份仍须升级：本家四枚单骑形式听牌及西入普通荒牌终止的规则选择可能改变合法性、公开揭牌、完成证书和最终名次监督。天凤在这两处允许不同结果，原生内核必须按 `GameRule` 区分；同 shape 不构成旧 KAR 产物兼容证明。
 
 ### 0.1 不声称什么
 
@@ -84,6 +89,8 @@ $$v_\theta(R\mid X,A,e)=\operatorname{Softmax}_{r=1..4}f_V(h_{ACTION})[e,r].$$
 名义分支效用 `m̂=Σr vθ(r|x,a,e)(2.5-r)`；名义候选价值 `Q̂=Σe p̂(e)m̂(e)`。实际重排使用第 10、11 节的保守评分，不以名义诊断值绕过分支支持。
 
 ## 4. 输入协议与可见性
+
+观察者的手牌、河/历史、副露、立直、分数、阶段和杠事务由 Rust `ObserverState` 从规范事件归约；它不读取 `GameState`、隐藏牌山或对手真实合法动作，只保留所选观察者的私有牌。Python `ObserverLedger` 管理模型历史、公共语义时钟、cutoff、来源及本家 Pass 确认，读取分离的原生事实投影。终局揭示的来源真实性由在线原生裁定或离线审计先行验证，不能由投影器自行补全。
 
 ### 4.1 行布局与 Tensor
 
@@ -473,7 +480,7 @@ $$e\in E_{sup}\iff e\in E_{\mathrm{train}}\ \land\ \mathrm{quality}_{\mathrm{res
 
 ### 11.4 公开规则 mask
 
-mask 的1仅表示未被公开事实证明不可能；未知保守允许。实际读取白名单为 observer、候选、公开舍牌历史/当前河、已成立 meld、公开立直接受状态、remaining_draws、history_complete、pending-kan标志和规则开关。不读取他家暗手/私有合法列表/隐藏牌山/未来事件或真实标签。
+mask 的1仅表示未被公开事实证明不可能；未知保守允许。Python 验证完整候选整数 ID 为 `0..147` 且不是 bool，并拒绝 pending-kan 快照；再将 observer、候选牌种/立直位、公开舍牌历史/当前河、副露种类、公开立直接受状态、remaining_draws、history_complete 和规则开关传入 Rust 纯 `PublicRuleContext`。绑定不接 snapshot 或 `GameState`，不读取他家暗手/私有合法列表/隐藏牌山/未来事件或真实标签。迁入 Rust 保持 mask v3 的类别次序与公开可能性语义。
 
 1. 字牌不能 CHI，只有相对下家可吃；已立直者不能吃碰大明杠。
 2. 完整公开历史中，目标玩家自己舍过候选同基本牌种，排除包含该玩家的 RON mask；不猜隐藏等待或临时振听。
@@ -515,13 +522,26 @@ mask 的1仅表示未被公开事实证明不可能；未知保守允许。实�
 
 离线 GameDetailRecords.actions 只读 `.result`，绝不读 `.user_input`。下载 pb2 不 import 执行；协议由可信 proto 静态字段和描述符核对。source_record_index/hash保留来源，不影响模型时间。
 
-离线 replay 在已知 cutoff 调观察；不得用将未来日志注入 current_claims 的 helper 构造决策前合法集合。在线在完整原子执行成功后投影公开事件，模型只收本家白名单 snapshot，不收四家全知协调对象。
+离线 replay 在已知 cutoff 调观察；不得用将未来日志注入 current_claims 的 helper 构造决策前合法集合。原生 `ReplayContext` 在 MJAI 事件入口推进一发、双立直、岭上和杠见逃等规则上下文；Python 桥只验证版本、预览及事件配对，不从快照推导或回写 flag。真实合法响应只用于审计/冻结机会证据，不能输入公开 mask。
 
-立直复合完整动作在声明前冻结输入，再执行reach与对应discard；结构听牌即可，不因可见等待牌四张（空听）而排除合法立直。拒绝失败提交后伪造成功。
+在线在完整原子执行成功后消费 Rust `rule_log`；原生输出暗杠声明/提交、终局实际应公开手牌及结算。legacy `mjai_log` 接口保留，Python 不再补暗杠声明、调用 `HandEvaluator` 决定在线听牌揭示或自行分配终局供托。全局规则日志可能包含私有牌张，模型只收经原生观察投影后的本家 snapshot，不收四家全知协调对象。
+
+立直复合完整动作在声明前冻结输入；完整可舍牌来自保存环境规则的原生 Observation 的 `legal_riichi_discards()`，执行通过 `step_riichi_discard` 原子提交 reach 与对应 discard，失败不能留下部分声明。结构听牌即可，不因外部可见等待牌四张（空听）而排除合法立直。本节固定雀魂规则排除本家已持四枚的单骑形式听牌；不能将此规定扩大为所有平台的通用听牌定义。
 
 暗/加杠分声明、抢杠窗口和提交；KAKAN声明时仍是原PON。仅有本次有效dora/替换draw/匹配ACK证据才提交，旧杠延迟Dora不证明新声明；被抢杠不提前改meld。对手暗杠红牌组成按可见性过滤，不从全知记录泄露。
 
 冻结雀魂规则包括赤牌、三家和、抢暗杠国士、倍役满、包牌、喰替、起家顺破平、终局及流局满贯。规则hash与数据来源必须一致，不混用天凤规则。流局满贯外部依据见[雀魂规则取证](kar-nagashi-rules.md)。
+
+四人在线与独立审计共用 Rust `rules::settlement` 的支付、残余供托、连庄和终止内核，但平台规则由显式 `GameRule` 决定。KAR 固定雀魂；以下差异依据[雀魂官方段位战规则](https://mahjongsoul.com/news/46/)与[天凤官方四人段位战规则](https://tenhou.net/man/#RULE)：
+
+| 条件 / 原生开关 | 天凤 / `GameRule::default()` | KAR 雀魂 |
+|---|---|---|
+| 本家碰三枚且暗手单张同牌、纯手未用四枚的形式听牌 / `allow_fifth_copy_tenpai` | 允许，`true` | 不允许本家四枚单骑，`false` |
+| 西入普通荒牌后他家达三万点且庄家听牌但不是第一 / `extension_dealer_repeat_priority` | 连庄优先，`true` | 达标结束，`false`；保留官方庄家双荣和例外 |
+
+无规则参数的 `HandEvaluator.is_tenpai/get_waits_u8/get_waits` 保留旧的天凤兼容枚数语义；Rust 显式 `*_with_rule(&GameRule)` 与高层 Python `is_tenpai(rule=...)`、`get_waits(rule=...)` 区分平台，KAR 显式传入 `MJSOUL_RULESET.engine_rule()`。回合推进同样显式传规则，旧序列化 `GameRule` 缺少这两个字段时恢复兼容的 `true`，不能把它误作新的 KAR 雀魂合同。
+
+独立审计仍从原始牌张/事件重建事实，服务器支付、header 终分和 `apply_event` 分数仅作比较目标；共享公式不替代来源完整性、已知规则案例或完整半庄证据。三人状态机不在本轮迁移范围，不能声称其雀魂规则差异已修复或验收。
 
 ## 14. 训练配置与授权边界
 
@@ -577,10 +597,12 @@ Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sam
 - 总体通过但罕见分支失败时，1000 局合成反例要求校准报告、加载后报告、evaluation 与 runtime 对同一冻结集合得出同样的有效质量分布 `{0: 990, 99: 10}`。train-only 必须独立，缺冻结质量的 evaluation 不能伪报实测有效质量。
 - 安全哨兵、全无目标、固定rho、DDP/累积梯度等价及恢复、名义/保守误差域、完整有限集合KL/E1/E2反例；本轮禁止反向时不得执行梯度节点而伪记通过。
 - red5/普通5完整动作、空听立直合法、声明前不扣棒、多Ron完整mask、PON优先窗口、DAIMINKAN后岭上自摸、被抢KAKAN不提交、对手暗杠赤牌隐私、同game四视角同split、未来/隐藏扰动不影响已封存输入。
+- 公开状态相同但隐藏 Ron 能力不同仍产生相同公开 mask；原生 ObserverState 不保留对手暗手；完整立直失败不部分提交；直接 MJAI 重放不依赖 Python 写规则 flag；rule_log 的声明/提交及终局揭牌按批次投影一致。
+- 同一本家成立碰加暗手第四枚单骑，雀魂不听而天凤/default 保留形式听牌；无参旧接口兼容、显式规则与旧序列化默认值可区分。合法第四枚/外部空听不误删；西入普通荒牌跨三万点时雀魂结束而天凤庄家听牌继续，KAR 在线、独立结算及完成证书显式使用雀魂并保持一致，保留平台规定的例外。
 - Ryanmen九点查表、3/7边张排除、full-suji双侧要求、被叫走历史与物理并集去重、起家顺tie-break、真实零/缺失presence、kind-specific字段、whole-sample随机置空及参数量不变。
 - 数据/SQLite/checkpoint/calibration/support/发布所有新字段的缺失/旧值拒绝，即使校验和有效也不能静默补字段迁移。
 
-这些是设计要求，不是本次运行结果。各历史通过数只归属各自的提交和验证范围，不能迁入[本次文档校验](kar-design-v4-validation.md)。
+这些是设计要求，不是本次运行结果。各历史通过数只归属各自的提交和验证范围；本轮原生构建与回归结果单独记录在[边界迁移记录](kar-native-rule-boundary.md#7-验证位置与当前证据)，不能以历史文档校验替代。
 
 ## 19. 旧产物拒绝与真实重建
 
@@ -600,6 +622,8 @@ Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sam
 
 以 `4c09e9e` 为基线的响应监督修订还会补入非平凡 Pass、改变可证私有历史，并记录不可辨认机会；旧 audit、接受快照、训练 SQLite、索引／样本序、计数与绑定指纹应由可信原始结果重建。固定 rho 的计算与使用方式不变；新导出如因补行改变 train 样本数，其 manifest 比例由实际训练集重新计算，而非在训练中动态再估。冻结 FP32 recipe hash 也已变化，旧缓存和旧绑定的静态 logits／校准／有限策略及发布证据不能重贴。新验收不覆盖原始数据或旧训练产物。
 
+以 `7626166` 为基线的原生规则收敛进一步升级 KAR 雀魂 ruleset、input v7、native replay v4、settlement v2 和 live projection v6，并新增 `native_rules_version`。雀魂规则 hash 显式包含 `allow_fifth_copy_tenpai=false` 与 `extension_dealer_repeat_priority=false`；旧真实 Golden、audit/接受报告和原始数据必须用新扩展重新核验，不能由旧默认值推定平台。受影响的合法候选、终局公开历史、完成/名次标签及派生 SQLite、缓存、索引、统计和绑定需真实重建或验证。绑定旧规则/输入的 checkpoint、校准 logits、有限策略与发布证据不能因 546 Schema 和参数形状未变而直接复用。给旧 JSON 补字段或换 hash 不是迁移；本轮也不自动处理已有训练产物。具体范围见[原生规则边界](kar-native-rule-boundary.md)。
+
 ## 20. 风险与声明边界
 
 响应稀疏、条件混杂、有限网络误校准、行为先验偏差、对手分布漂移、长期随机性、粗事件粒度、独立游戏不足、规则/数据来源差异和同分规则漂移仍是风险。规则特征不增加理想预测器信息量；其可能作用只是有限模型归纳偏置。SHA是内容一致性与来源绑定，不是秘密签名或恶意发布者认证；checkpoint只从可信来源读取。
@@ -608,19 +632,22 @@ Checkpoint保存模型、optimizer/scheduler、Python/NumPy/Torch/CUDA RNG、sam
 
 | 模块 | 职责 |
 |---|---|
+|Rust `rules::settlement` / `HandEvaluator`|按显式平台规则共享四人支付/终局与听牌/和牌评估；KAR 使用雀魂|
+|Rust `ObserverState` / `public_rules`|观察者事实与可见性投影、仅显式公开上下文的 21 类可能性|
+|Rust `ReplayContext` / `GameState.rule_log`|重放 flag 与杠事务、在线规范声明/提交及终局揭示|
 |`mjsoul`|可信result-only协议解码与离线规范化|
 |`event_semantics`|公共语义时钟、九种九牌宣布者手牌验证|
-|`live_events` / `observation`|在线原子结果、终局组与各观察者白名单/私有事实|
-|`tokenize` / `schema` / `actions`|完整宿主编码、历史缓存、全局动作因子|
-|`response_mask` / `response`|公开不可能性与实际响应标签，二者分开|
+|`live_events` / `observation`|规范事件批次、终局组、历史/时钟与本家 Pass 来源，适配原生观察事实|
+|`tokenize` / `schema` / `actions`|完整宿主编码、历史缓存、546 ID 与原生完整动作适配|
+|`response_mask` / `response`|公开规则白名单适配与实际响应标签，二者分开|
 |`rule_features`|物理known-count、Genbutsu、Ryanmen/Suji、rank/gap|
 |`calibration_quality` / `calibration`|预登记总体/逐分支判据、heldout指标和校准身份|
 |`support` / `runtime` / `policy`|train支持∩质量准入、悲观值、受限KL与证书边界|
 |`versioning` / `runtime_contracts`|统一活动身份，拒绝缺字段和旧合同|
 |`learning`|数据、模型、损失、预算训练/恢复、冻结推理与发布|
-|`audit` / `settlement` / `completion`|原生合法性、独立结算与完整半庄证明|
+|`audit` / `settlement` / `completion`|来源重建、原生合法性/共享规则调用、独立比较与完整半庄证据|
 
-详细API见[74模块 README 索引](kar-modules/README.md)。[设计一致性](kar-design-consistency.md)、[输入链历史说明](kar-input-chain-repair.md)和[实现覆盖](kar-implementation-coverage.md)是来源/实现/证据说明，不是并行主设计；若存在旧版本文字，不能代替本文的活动规范。
+详细 API 见[模块 README 索引](kar-modules/README.md)。[原生规则边界](kar-native-rule-boundary.md)、[设计一致性](kar-design-consistency.md)、[输入链历史说明](kar-input-chain-repair.md)和[实现覆盖](kar-implementation-coverage.md)是来源/实现/证据说明，不是并行主设计；若存在旧版本文字，不能代替本文的活动规范。
 
 ## 22. 最终实施规格摘要
 
@@ -630,6 +657,7 @@ RiichiEnv宿主；完整Schema/hash固定；源record不决定时间；同语义
 
 - 原始设计及其SHA见页首；Kanachan动作/tile37仅来源参考，非当前工程目标。
 - [RiichiEnv 上游冻结基线](https://github.com/smly/RiichiEnv/tree/0ee1236a283b15508f3ac28407027f340b81e1de)；本仓库的 [原生合法动作](../riichienv-core/src/state/legal_actions.rs) 和 [状态规则](../riichienv-core/src/state/mod.rs) 定义原生鸣牌余量及荣和/途中流局优先级。
+- [雀魂官方段位战规则](https://mahjongsoul.com/news/46/)与[天凤官方手册的四人规则](https://tenhou.net/man/#RULE)分别规定形式听牌和延长局连庄优先级；两者不能互相替代。平台差异及 API 兼容见[原生规则边界](kar-native-rule-boundary.md#3-平台差异与-kar-雀魂修复)。
 - 雀魂 `RecordLiuJu` 源协议字段号包括 `type=1`、`gameend=2`、`seat=3`、`tiles=4`、`liqi=5`、`allplayertiles=6`。只采用公开语义所需字段；协议来源和当时证据见[历史 V4 实现报告](kar-semantic-branch-repair.md)，本次文档校验未重新审计真实牌谱。
 - [雀魂官方FAQ](https://mahjongsoul.com/faq/)及[API](https://mahjongsoul.com/api/faq/list)的流局满贯条文，相关取证见仓库规则文档；自己鸣牌不取消资格。
 - [Guo et al., 温度校准](https://proceedings.mlr.press/v70/guo17a.html)、[Canonne, KL/TV](https://arxiv.org/abs/2202.07198)、[torch.gather](https://docs.pytorch.org/docs/stable/generated/torch.gather.html)、[CrossEntropyLoss](https://docs.pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html)。这些方法不替代当前数据/误差/棋力验收。

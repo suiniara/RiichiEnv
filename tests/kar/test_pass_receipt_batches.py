@@ -23,28 +23,30 @@ def _open_robbable_ankan(env, actor, waiter, projections):
                if item.spec.action_type == "ANKAN" and item.spec.base34 == 0)
     declare = {"type": "ankan", "actor": actor,
                "consumed": [convert.tid_to_mjai(tile) for tile in kan.actions[0].consume_tiles]}
-    begin = len(env.mjai_log)
+    begin = len(env.rule_log)
     responses = execute_candidate(env, actor, kan)
-    assert env.phase == Phase.WaitResponse and not env.mjai_log[begin:]
+    raw = list(env.rule_log[begin:])
+    assert env.phase == Phase.WaitResponse and raw == [declare]
     assert any(item.spec.action_type == "RON" for item in legal_candidates(responses[waiter], source_player=actor))
     for projection in projections:
-        projection.observe_native([], declared_ankan=declare, pending_kan_window=True)
+        projection.observe_native(raw)
     return _pass_choices(responses, actor)
 
 
 def _native_pass_resolution(env, choices):
-    begin = len(env.mjai_log)
+    begin = len(env.rule_log)
     execute_joint_responses(env, choices)
-    raw = list(env.mjai_log[begin:])
-    assert [event["type"] for event in raw] == ["ankan", "dora", "tsumo"]
+    raw = list(env.rule_log[begin:])
+    assert [event["type"] for event in raw] == ["kan_commit", "dora", "tsumo"]
+    assert raw[0] == {"type": "kan_commit", "actor": raw[2]["actor"], "kan_type": "ankan"}
     return raw
 
 
-@pytest.mark.parametrize("receipt_only", [False, True], ids=["with-ankan", "empty-callback"])
+@pytest.mark.parametrize("receipt_only", [False, True], ids=["with-commit", "empty-callback"])
 def test_successful_ankan_pass_matches_whole_batch_at_every_final_field(receipt_only, record_property):  # noqa: PLR0915
     env, _, whole = _fixed_native({0: ["1m"] * 4, 1: KOKUSHI_MISSING_1M}, "6s")
     split = LiveEventProjection()
-    split.observe_native(env.mjai_log)
+    split.observe_native(env.rule_log)
     choices = _open_robbable_ankan(env, 0, 1, (whole, split))
     old = split.snapshot(1)
     ids = tuple(item.global_id for item in legal_candidates(env.get_observation(1), source_player=0))
@@ -111,15 +113,15 @@ def _two_receipts():
     )
     discard = next(item for item in legal_candidates(observations[0], drawn_tile=env.drawn_tile)
                    if item.spec.base34 == 27 and item.spec.riichi is False and item.spec.tsumogiri is False)
-    begin = len(env.mjai_log)
+    begin = len(env.rule_log)
     responses = execute_candidate(env, 0, discard)
-    projection.observe_native(env.mjai_log[begin:])
+    projection.observe_native(env.rule_log[begin:])
     assert any(item.spec.action_type == "PON" for item in legal_candidates(responses[3], source_player=0))
     choices = _pass_choices(responses, 0)
     ready = next(item for item in projection.capture_self_passes(choices) if item.observer_player_id == 3)
-    begin = len(env.mjai_log)
+    begin = len(env.rule_log)
     execute_joint_responses(env, choices)
-    projection.observe_native(env.mjai_log[begin:])
+    projection.observe_native(env.rule_log[begin:])
     assert projection.events[-1]["type"] == "tsumo" and env.current_player == 1
     choices = _open_robbable_ankan(env, 1, 2, (projection,))
     waiting = next(item for item in projection.capture_self_passes(choices) if item.observer_player_id == 2)

@@ -6,7 +6,7 @@
 
 ## 职责与接口
 
-`artifact_contract()` 返回数据、运行时、检查点和发布共用的显式身份。活动格式为 `kar_riichienv_contract_v4`、输入 `semantic_public_clock_frozen_decisions_v6_ryanmen_pairs`、特征 `visible_rule_features_v2_ryanmen_pairs`；显式绑定 `native_replay_version`、公开时钟、终局公开事实与 one-vs-rest 分支质量。保留完整 host Schema、N_train 口径和 Response Mask v3。旧语义或缺字段的产物明确拒绝，不因参数形状相同而兼容。完整表见[主设计](../../KAR-v1.2.2-DESIGN.md)。
+`artifact_contract()` 返回数据、运行时、检查点和发布共用的显式身份。活动格式为 `kar_riichienv_contract_v4`、输入 `semantic_public_clock_frozen_decisions_v7_native_rules`、特征 `visible_rule_features_v2_ryanmen_pairs`；新增 `native_rules_version=riichienv_native_rules_v1`，绑定 `native_replay_version=native_replay_context_v4`、公开时钟、终局公开事实与 one-vs-rest 分支质量。保留完整 host Schema、N_train 口径和 Response Mask v3。旧语义或缺字段的产物明确拒绝，不因参数形状相同而兼容。完整表见[主设计](../../KAR-v1.2.2-DESIGN.md)。
 
 `validate_artifact_contract(record, context=...)` 对每个必需字段检查精确值；缺失不填当前默认值，旧记录必须明确拒绝。
 
@@ -16,7 +16,9 @@
 
 `kar-v1.2.2` 是规范引用，`kar-riichienv-v1` 是独立完整注册表身份；overlay SHA 不是完整 canonical Schema hash。映射记录不声称 legacy 字节或 checkpoint 兼容，不改 ID、参数形状或输入编码。
 
-读取合同会校验包内 Schema 文件，但本模块不导入 Torch、不创建模型、不写数据、不运行训练或自动迁移。所有 hash 都是内容/来源检查，不是秘密签名。
+读取合同会校验包内 Schema 文件和原生规则能力版本，但本模块不导入 Torch、不创建模型、不写数据、不运行训练或自动迁移。旧扩展须重建，旧验收/派生产物须按[规则迁移要求](../../kar-native-rule-boundary.md#6-旧数据与产物的迁移)重新验证或生成，不能补版本字段、换 hash 冒充迁移。所有 hash 都是内容/来源检查，不是秘密签名。
+
+`Ruleset` 的两个平台开关显式绑定 KAR 雀魂的 `false` 值；原生 Tenhou/default 和无规则参数的旧听牌 API 保留兼容行为。通用原生 API 能读取旧规则对象，不表示旧对象或旧训练产物满足当前 KAR 雀魂合同。
 
 ## 调用、错误与测试
 

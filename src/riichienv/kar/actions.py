@@ -4,7 +4,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 
-from riichienv import Action, ActionType, HandEvaluator, Observation, Phase, RiichiEnv
+from riichienv import Action, ActionType, Observation, Phase, RiichiEnv
 
 ACTION_COUNT = 546
 MAX_CANDIDATES = 32
@@ -320,6 +320,11 @@ def legal_candidates(
         raise ValueError("The drawn discard context is not in the observer's hand")
     signature = tuple(_native_key(action) for action in native)
     reach = next((action for action in native if action.action_type == ActionType.RIICHI), None)
+    # Native owns all hand/rule checks. An old extension must fail explicitly,
+    # never silently resume Python's former per-discard tenpai loop.
+    if reach is not None and not hasattr(observation, "legal_riichi_discards"):
+        raise RuntimeError("Complete native riichi candidates are missing; rebuild the RiichiEnv extension")
+    riichi_tiles = {action.tile for action in observation.legal_riichi_discards()} if reach is not None else set()
     mapped: dict[int, MappedAction] = {}
 
     def add(global_id: int, actions: tuple[Action, ...], *, ambiguous: bool = False) -> None:
@@ -352,15 +357,9 @@ def legal_candidates(
                 forced_tedashi=forced_tedashi,
                 declared=declared,
             )
-            can_reach = False
-            if reach is not None:
-                assert action.tile is not None
-                remaining = list(hand)
-                remaining.remove(action.tile)
-                can_reach = HandEvaluator(remaining, list(observation.melds[player_id])).is_tenpai()
             for global_id, ambiguous in variants:
                 add(global_id, (action,), ambiguous=ambiguous)
-                if can_reach and reach is not None:
+                if action.tile in riichi_tiles and reach is not None:
                     add(global_id + 1, (reach, action), ambiguous=ambiguous)
         elif kind == ActionType.TSUMO:
             add(219, (action,))
@@ -425,10 +424,10 @@ def execute_candidate(env: RiichiEnv, player_id: int, mapped: MappedAction) -> A
             raise ValueError("Riichi discard disagrees with the mapped tile")
         if any(_native_key(action) not in current for action in mapped.actions):
             raise ValueError("Riichi sequence is not currently legal")
-        # Reach consumes an intermediate observation delta that must remain available to the caller.
-        reach_observations = env.step({player_id: mapped.actions[0]})
-        discard_observations = env.step({player_id: discard})
-        return ActionExecution((reach_observations, discard_observations))
+        if not hasattr(env, "step_riichi_discard"):
+            raise RuntimeError("Atomic native riichi execution is missing; rebuild the RiichiEnv extension")
+        complete = Action(ActionType.RIICHI, discard.tile, [], player_id)
+        return ActionExecution(tuple(env.step_riichi_discard(player_id, complete)))
     if len(mapped.actions) != 1 or _native_key(mapped.actions[0]) not in current:
         raise ValueError("Mapped native action is not currently legal")
     return ActionExecution((env.step({player_id: mapped.actions[0]}),))

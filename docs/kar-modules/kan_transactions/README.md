@@ -6,7 +6,7 @@
 
 ## 职责与接口
 
-`pending_kan_commits(event, actor=..., committed_kans=..., indicators=...) -> bool` 是纯公共事实函数，供观察者、tokenizer、原生上下文桥和独立结算共同消费，避免各层使用不同的杠接受规则。
+`pending_kan_commits(event, actor=..., committed_kans=..., indicators=...) -> bool` 是纯公共事实适配器；判据由 [Rust observer::pending_kan_commits](../../../riichienv-core/src/observer.rs) 持有，Rust 观察者和重放上下文直接调用，Python tokenizer/独立结算经绑定调用。各层共享判据，Python 不再保留另一份杠接受公式。
 
 合同版本为 `public_kan_commit_evidence_v2`。`COMMITTED_KAN_KINDS` 仅计已经成立的暗杠、加杠和大明杠，不把 pending 声明当完成副露。
 

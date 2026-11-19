@@ -115,6 +115,9 @@ pub enum MjaiEvent {
     Kakan { actor: usize, pai: String },
     #[serde(rename = "ankan")]
     Ankan { actor: usize, consumed: Vec<String> },
+    /// Native canonical stream acknowledgement: the robbery window is closed.
+    #[serde(rename = "kan_commit")]
+    KanCommit { actor: usize },
     #[serde(rename = "dora")]
     Dora { dora_marker: String },
     #[serde(rename = "reach")]

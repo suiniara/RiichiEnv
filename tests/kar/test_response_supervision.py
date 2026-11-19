@@ -28,10 +28,11 @@ def completed():
         assert selection is not None
         frozen_bytes = selection.prefix.to_bytes()
         receipts = ep.live.capture_self_passes(choices)
-        raw, public = len(ep.env.mjai_log), len(ep.live.events)
+        raw, public = len(ep.env.rule_log), len(ep.live.events)
         ep.obs = execute_joint_responses(ep.env, choices)
-        ep.live.observe_native(list(ep.env.mjai_log)[raw:], confirmed_self_passes=receipts)
-        assert ep.live.events[public]["type"] == after
+        ep.live.observe_native(list(ep.env.rule_log)[raw:], confirmed_self_passes=receipts)
+        semantic_results = [event for event in ep.live.events[public:] if event["type"] != "kan_commit"]
+        assert semantic_results[0]["type"] == after
         family = desired.get(seat, "PASS")
         # Only a selected action that actually became public has a result ID.
         selection.record_index = (ep._find_result(public, seat, family.lower()) if family.lower() == after
@@ -105,10 +106,24 @@ def _check_pass(game, trigger, live, later, exported, *, kind, provenance, recor
     assert not _marker(prefix.snapshot, trigger)
     compared = _comparison((game.events, rows), later)
     offline_marker, native_marker = _marker(compared.snapshot, trigger), _marker(later.snapshot, trigger)
-    assert offline_marker == {**native_marker, "provenance": provenance}
+    # Native transport includes explicit kan_commit acknowledgements; the
+    # server path proves the same commitment with its replacement draw. Map
+    # public IDs by that one transport difference, retaining every marker fact.
+    native_public = [event for raw in later.snapshot.events
+                     if (event := json.loads(raw))["type"] != "self_pass"]
+    semantic_ids = [index for index, event in enumerate(native_public) if event["type"] != "kan_commit"]
+    to_offline = {native_id: offline_id for offline_id, native_id in enumerate(semantic_ids)}
+    expected = {**native_marker, "provenance": provenance}
+    for field in ("trigger_event_id", "round_event_id", "confirmed_at_event_id"):
+        expected[field] = to_offline[native_marker[field]]
+        native_event, offline_event = native_public[native_marker[field]], game.events[expected[field]]
+        assert (native_event["type"], native_event.get("actor")) == (offline_event["type"], offline_event.get("actor"))
+    assert offline_marker == expected
     assert offline_marker["confirmed_at_event_id"] == closing_event_id
+    native_positions = tuple(position for raw, position in zip(later.snapshot.events, later.snapshot.history_positions)
+                             if json.loads(raw)["type"] != "kan_commit")
     assert (compared.prefix.to_record() == later.prefix.to_record()
-            and compared.snapshot.history_positions == later.snapshot.history_positions)
+            and compared.snapshot.history_positions == native_positions)
     return prefix
 
 
