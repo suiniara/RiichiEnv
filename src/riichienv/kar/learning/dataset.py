@@ -39,10 +39,39 @@ class TrainingBatch:
 
 
 def collate_examples(examples: list[dict[str, Any]]) -> TrainingBatch:
-    inputs = collate_inputs(examples)
+    if not examples:
+        raise ValueError("Cannot collate an empty source-decision batch")
+    expanded: list[dict[str, Any]] = []
+    response_weights: list[float] = []
+    value_weights: list[float] = []
+    for source in examples:
+        branches = list(source.get("candidate_branches", ()))
+        base = {key: value for key, value in source.items() if key != "candidate_branches"}
+        if branches:
+            # A complete branch group replaces factual auxiliary labels for this
+            # source decision. Policy supervision remains on the one factual row.
+            base["response_applicable"] = False
+            base["response_observed"] = False
+            base["value_valid"] = False
+            expanded.append(base)
+            response_weights.append(0.0)
+            value_weights.append(0.0)
+            branch_weight = 1.0 / len(branches)
+            for branch in branches:
+                expanded.append(branch)
+                response_weights.append(branch_weight)
+                value_weights.append(branch_weight)
+        else:
+            expanded.append(base)
+            response_weights.append(
+                1.0 if base["response_applicable"] and base["response_observed"] else 0.0
+            )
+            value_weights.append(1.0 if base["value_valid"] else 0.0)
+
+    inputs = collate_inputs(expanded)
 
     def vector(name: str, *, boolean: bool = False) -> torch.Tensor:
-        return torch.tensor([example[name] for example in examples], dtype=torch.bool if boolean else torch.int64)
+        return torch.tensor([example[name] for example in expanded], dtype=torch.bool if boolean else torch.int64)
 
     labels = Labels(
         vector("action_target"),
@@ -52,11 +81,12 @@ def collate_examples(examples: list[dict[str, Any]]) -> TrainingBatch:
         vector("response_observed", boolean=True),
         vector("final_rank"),
         vector("value_valid", boolean=True),
-        torch.tensor([example["response_allowed"] for example in examples], dtype=torch.bool),
+        torch.tensor([example["response_allowed"] for example in expanded], dtype=torch.bool),
+        torch.tensor(response_weights, dtype=torch.float32),
+        torch.tensor(value_weights, dtype=torch.float32),
     )
     labels.validate(inputs.size)
-    return TrainingBatch(inputs, labels, tuple(example["game_id"] for example in examples))
-
+    return TrainingBatch(inputs, labels, tuple(example["game_id"] for example in expanded), len(examples))
 
 class DecisionDataset(Dataset[dict[str, Any]]):
     def __init__(self, directory: Path | str, split: str, *, verify_hash: bool = True, history_cache_items: int = 32):
