@@ -121,6 +121,8 @@ class GameWriter:
         for row in rows:
             row["source_decision_row_id"] = source_row_id
             row["split"] = self.split
+            row.pop("branch_sha256", None)
+            row["branch_sha256"] = content_hash(row)
             branch_id = content_hash(
                 {
                     "source_decision_row_id": source_row_id,
