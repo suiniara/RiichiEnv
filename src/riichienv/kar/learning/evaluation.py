@@ -376,12 +376,14 @@ def _global_validation_report(
     merged = FullDiagnostics()
     total = 0
     selected_sums = dict.fromkeys(gathered[0]["selection"], 0)
+    validation_sums = dict.fromkeys(gathered[0]["validation_loss"], 0)
     selected_games: set[str] = set()
     for state in gathered:
         merged.merge(state["metrics"])
         total += state["examples"]
         for key in selected_sums:
             selected_sums[key] += state["selection"][key]
+            validation_sums[key] += state["validation_loss"][key]
         selected_games.update(state["selection_games"])
     if total != len(dataset):
         raise ValueError("Distributed validation omitted or duplicated decision rows")
@@ -391,11 +393,10 @@ def _global_validation_report(
         "aggregation": perf_counter() - aggregation_started,
     }
     details = merged.report(bootstrap_replicates=bootstrap_replicates, timings=timings)
-    heads = merged.heads
     objective = (
-        heads["action"].nll
-        + 0.25 * heads["response"].nll / dataset.manifest["rho_E"]
-        + 0.1 * heads["rank"].nll / dataset.manifest["rho_V"]
+        validation_sums["action"]
+        + 0.25 * validation_sums["response"] / dataset.manifest["rho_E"]
+        + 0.1 * validation_sums["rank"] / dataset.manifest["rho_V"]
     ) / total
     return {
         "partition": "validation",
@@ -404,7 +405,15 @@ def _global_validation_report(
         "full_validation_split_evaluated": True,
         "stochastic_feature_mask_probability": 0.0,
         "validation_objective": objective,
-        **{f"{head}_nll": value.nll / value.count if value.count else None for head, value in heads.items()},
+        "action_nll": validation_sums["action"] / validation_sums["action_count"]
+        if validation_sums["action_count"]
+        else None,
+        "response_nll": validation_sums["response"] / validation_sums["response_count"]
+        if validation_sums["response_count"]
+        else None,
+        "rank_nll": validation_sums["rank"] / validation_sums["rank_count"]
+        if validation_sums["rank_count"]
+        else None,
         "model_selection": {
             "partition": "cal_fit",
             "calibration_split_salt": CALIBRATION_SPLIT_SALT,
