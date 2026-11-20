@@ -41,7 +41,7 @@ CREATE INDEX samples_game ON samples(game_id,observer,ordinal);
 CREATE TABLE branch_samples (
  branch_id TEXT PRIMARY KEY, source_game_id TEXT NOT NULL, source_decision_row_id TEXT NOT NULL,
  split TEXT NOT NULL, candidate_action_id INTEGER NOT NULL, replicate INTEGER NOT NULL,
- status TEXT NOT NULL, payload TEXT NOT NULL);
+ status TEXT NOT NULL, tokens BLOB NOT NULL, payload TEXT NOT NULL);
 CREATE INDEX branch_samples_source ON branch_samples(source_game_id,source_decision_row_id);
 """
 
@@ -128,8 +128,10 @@ class GameWriter:
                     "continuation_policy": row["continuation_policy"],
                 }
             )
+            tokens = bytes.fromhex(row["tokens_hex"])
+            payload = {key: value for key, value in row.items() if key != "tokens_hex"}
             self.db.execute(
-                "INSERT INTO branch_samples VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO branch_samples VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     branch_id,
                     self.game.game_id,
@@ -138,7 +140,8 @@ class GameWriter:
                     row["candidate_action_id"],
                     row["replicate"],
                     row["status"],
-                    json.dumps(row, sort_keys=True, separators=(",", ":"), allow_nan=False),
+                    tokens,
+                    json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False),
                 ),
             )
             self.branch_counts[row["status"]] += 1
@@ -386,6 +389,7 @@ def export_dataset(  # noqa: PLR0915
         name: _file_sha(package / name)
         for name in (
             "learning/export.py",
+            "candidate_branches.py",
             "audit.py",
             "completion.py",
             "mjsoul.py",
