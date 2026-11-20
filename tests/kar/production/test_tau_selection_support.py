@@ -43,6 +43,8 @@ def prior_release(tmp_path):
             "b" * 64,
             (499 if state == "train_insufficient" else 500,) + (0,) * 20,
             "synthetic support counts; no real training evidence",
+            10,
+            (10,) * 148,
         )
         branch = BranchQualityPolicy(
             (
