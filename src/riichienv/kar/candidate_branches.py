@@ -18,7 +18,7 @@ CONTINUATION_POLICY_VERSION = "uniform_native_legal_v1"
 
 
 def _wall_seed(master_seed: int, game_id: str, cutoff_event_id: int, replicate: int) -> int:
-    payload = "\\0".join(
+    payload = "\0".join(
         (str(master_seed), game_id, str(cutoff_event_id), str(replicate), "shared-wall", CONTINUATION_POLICY_VERSION)
     ).encode()
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
