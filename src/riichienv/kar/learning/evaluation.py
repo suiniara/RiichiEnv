@@ -167,32 +167,77 @@ def add_diagnostics(
 
 
 @torch.no_grad()
-def cal_fit_loss_summary(outputs: ModelOutputs, batch: TrainingBatch) -> dict[str, Any]:
+def cal_fit_loss_summary(
+    outputs: ModelOutputs, batch: TrainingBatch, *, fit_only: bool = True
+) -> dict[str, Any]:
     membership = tuple(calibration_is_fit(game) for game in batch.game_ids)
-    selected = torch.tensor(membership, dtype=torch.bool, device=batch.labels.action_valid.device)
+    selected = (
+        torch.tensor(membership, dtype=torch.bool, device=batch.labels.action_valid.device)
+        if fit_only
+        else torch.ones(batch.inputs.size, dtype=torch.bool, device=batch.labels.action_valid.device)
+    )
     labels = batch.labels
+    response_weight = labels.response_weight
+    value_weight = labels.value_weight
+    if response_weight is None or value_weight is None:
+        raise ValueError("Auxiliary loss weights must be materialized")
     selected_labels = Labels(
         labels.action_target,
         labels.action_valid & selected,
         labels.response_target,
-        labels.response_applicable,
-        labels.response_observed,
+        labels.response_applicable & selected,
+        labels.response_observed & selected,
         labels.final_rank_target,
         labels.value_valid & selected,
         labels.response_allowed,
+        response_weight * selected.float(),
+        value_weight * selected.float(),
     )
     sums = loss_sums(outputs, selected_labels, batch.inputs.legal_mask)
+    context_ids = batch.inputs.context_ids
+    selected_games = {
+        game for game, include in zip(batch.game_ids, membership) if include
+    } if fit_only else set(batch.game_ids)
+    selected_contexts = {
+        context for context, include in zip(context_ids, membership) if include
+    } if fit_only else set(context_ids)
     return {
-        "examples": sum(membership),
+        "examples": len(selected_contexts),
         "action": float(sums.action),
         "response": float(sums.response),
         "rank": float(sums.value),
         "action_count": sums.action_count,
         "response_count": sums.response_count,
         "rank_count": sums.value_count,
-        "games": sorted({game for game, fit in zip(batch.game_ids, membership) if fit}),
+        "games": sorted(selected_games),
     }
 
+
+def _factual_validation_view(
+    batch: TrainingBatch, outputs: ModelOutputs
+) -> tuple[TrainingBatch, ModelOutputs]:
+    mask = batch.labels.action_valid
+    if bool(mask.all()):
+        return batch, outputs
+    indices = mask.nonzero().flatten().tolist()
+    inputs = replace(
+        batch.inputs,
+        fields={key: value[mask] for key, value in batch.inputs.fields.items()},
+        candidates=batch.inputs.candidates[mask],
+        decide_index=batch.inputs.decide_index[mask],
+        action_index=batch.inputs.action_index[mask],
+        context_ids=tuple(batch.inputs.context_ids[index] for index in indices),
+    )
+    labels = Labels(**{key: value[mask] for key, value in batch.labels.__dict__.items()})
+    games = tuple(batch.game_ids[index] for index in indices)
+    factual = TrainingBatch(inputs, labels, games, len(indices))
+    selected = ModelOutputs(
+        outputs.policy_logits[mask],
+        outputs.response_logits[mask],
+        outputs.rank_logits[mask],
+        outputs.action_present[mask],
+    )
+    return factual, selected
 
 @torch.no_grad()
 def evaluate_complete(  # noqa: PLR0915
