@@ -16,6 +16,8 @@ class EventSupport:
     train_manifest_sha256: str
     train_game_counts: tuple[int, ...]
     source_reference: str
+    candidate_branch_source_decisions: int = 0
+    candidate_action_source_counts: tuple[int, ...] = (0,) * 148
 
     def __post_init__(self) -> None:
         sha256_value(self.train_manifest_sha256, "train_manifest_sha256")
@@ -25,11 +27,29 @@ class EventSupport:
             raise ValueError("Event support requires twenty-one independent train game counts")
         if not self.source_reference.strip():
             raise ValueError("Event support requires explicit evidence provenance")
+        if (
+            type(self.candidate_branch_source_decisions) is not int
+            or self.candidate_branch_source_decisions < 0
+            or len(self.candidate_action_source_counts) != 148
+            or any(type(value) is not int or value < 0 for value in self.candidate_action_source_counts)
+        ):
+            raise ValueError("Candidate branch support requires 148 nonnegative complete-source counts")
+        if self.candidate_branch_source_decisions == 0 and any(self.candidate_action_source_counts):
+            raise ValueError("Candidate action counts require complete branch source decisions")
+        if any(value > self.candidate_branch_source_decisions for value in self.candidate_action_source_counts):
+            raise ValueError("A candidate action cannot occur in more complete sources than exist")
 
     @property
     def supported(self) -> tuple[bool, ...]:
         """Train-count support only; never a claim of branch calibration."""
         return tuple(count >= 500 for count in self.train_game_counts)
+
+    def candidate_supported(self, action_ids: Sequence[int]) -> bool:
+        ids = tuple(action_ids)
+        return bool(ids) and all(
+            type(action) is int and 0 <= action < 148 and self.candidate_action_source_counts[action] > 0
+            for action in ids
+        )
 
     def value_supported(self, branch_statuses: Sequence[str] | None) -> tuple[bool, ...]:
         states = tuple(branch_statuses) if branch_statuses is not None else ("unavailable",) * 21
@@ -46,6 +66,10 @@ class EventSupport:
             "counting_unit": "distinct_complete_train_game_id",
             "support_threshold": 500,
             "value_gate": "train_count_and_preregistered_branch_quality",
+            "candidate_branch_version": "kar_candidate_branch_probe_v1",
+            "candidate_branch_counting_unit": "distinct_complete_source_decision",
+            "candidate_branch_source_decisions": self.candidate_branch_source_decisions,
+            "candidate_action_source_counts": list(self.candidate_action_source_counts),
             "source_reference": self.source_reference,
             "uniform_error_certificate": False,
         }
@@ -73,7 +97,11 @@ class EventSupport:
         if document["train_manifest_sha256"] != binding.train_manifest_sha256:
             raise ValueError("Support data differs from the model training manifest")
         result = cls(
-            document["train_manifest_sha256"], tuple(document["train_game_counts"]), document["source_reference"]
+            document["train_manifest_sha256"],
+            tuple(document["train_game_counts"]),
+            document["source_reference"],
+            document["candidate_branch_source_decisions"],
+            tuple(document["candidate_action_source_counts"]),
         )
         if result.to_record() != dict(document):
             raise ValueError("Unexpected event-support fields")
@@ -106,7 +134,20 @@ def support_from_train_games(
             raise ValueError("Unknown response event in training evidence")
         for event in set(events):
             counts[event] += 1
-    return EventSupport(digest, tuple(counts), source_reference)
+    branch_counts = train_manifest.get("candidate_branch_counts", {})
+    complete_by_split = branch_counts.get("complete_source_decisions_by_split", {})
+    actions_by_split = branch_counts.get("candidate_action_source_counts_by_split", {})
+    complete_sources = complete_by_split.get("train", 0)
+    action_counts_record = actions_by_split.get("train", {})
+    if type(complete_sources) is not int or complete_sources < 0 or not isinstance(action_counts_record, Mapping):
+        raise ValueError("Candidate branch coverage evidence is missing or malformed")
+    action_counts = [0] * 148
+    for key, value in action_counts_record.items():
+        action = int(key)
+        if not 0 <= action < 148 or type(value) is not int or value < 0:
+            raise ValueError("Candidate action branch coverage contains invalid identities/counts")
+        action_counts[action] = value
+    return EventSupport(digest, tuple(counts), source_reference, complete_sources, tuple(action_counts))
 
 
 def unsupported_response_mass(probabilities: Sequence[float], supported: Sequence[bool]) -> float:
