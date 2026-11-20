@@ -307,9 +307,10 @@ class GameWriter:
         }
 
 
-def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[int, int]:
+def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[int, int, int, dict[int, int]]:
     """Count at most one auxiliary-supervision unit per source decision."""
-    response_count = value_count = 0
+    response_count = value_count = complete_source_decisions = 0
+    action_source_counts: Counter[int] = Counter()
     branch_groups: dict[str, list[tuple[int, int, str, bytes, dict[str, Any]]]] = {}
     for source_row_id, action, replicate, status, tokens, payload in db.execute(
         "SELECT source_decision_row_id,candidate_action_id,replicate,status,tokens,payload "
@@ -364,10 +365,12 @@ def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[i
         if complete:
             response_count += 1
             value_count += 1
+            complete_source_decisions += 1
+            action_source_counts.update(actions)
         else:
             response_count += int(bool(applicable) and bool(observed))
             value_count += int(bool(value_valid))
-    return response_count, value_count
+    return response_count, value_count, complete_source_decisions, dict(action_source_counts)
 
 
 def _selection(acceptance_dir: Path, limits: dict[str, int | None]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
