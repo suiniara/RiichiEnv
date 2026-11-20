@@ -303,6 +303,53 @@ class GameWriter:
         }
 
 
+def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[int, int]:
+    """Count at most one auxiliary-supervision unit per source decision."""
+    response_count = value_count = 0
+    rows = db.execute(
+        "SELECT s.row_id,s.response_applicable,s.response_observed,s.value_valid "
+        "FROM samples s JOIN games g ON s.game_id=g.game_id WHERE g.split=? ORDER BY s.row_id",
+        (split,),
+    )
+    for row_id, applicable, observed, value_valid in rows:
+        branches = db.execute(
+            "SELECT candidate_action_id,replicate,status,payload FROM branch_samples "
+            "WHERE source_decision_row_id=? ORDER BY candidate_action_id,replicate",
+            (row_id,),
+        ).fetchall()
+        complete = False
+        if branches:
+            payloads = [json.loads(item[3]) for item in branches]
+            first = payloads[0]
+            actions = tuple(first.get("expected_branch_action_ids", ()))
+            replicates = first.get("replicates")
+            expected = {
+                (action, replicate)
+                for action in actions
+                for replicate in range(replicates if type(replicates) is int else 0)
+            }
+            actual = {(item[0], item[1]) for item in branches}
+            complete = (
+                bool(actions)
+                and type(replicates) is int
+                and replicates > 0
+                and actual == expected
+                and all(item[2] == "PASS" for item in branches)
+                and all(
+                    tuple(payload.get("expected_branch_action_ids", ())) == actions
+                    and payload.get("replicates") == replicates
+                    for payload in payloads
+                )
+            )
+        if complete:
+            response_count += 1
+            value_count += 1
+        else:
+            response_count += int(bool(applicable) and bool(observed))
+            value_count += int(bool(value_valid))
+    return response_count, value_count
+
+
 def _selection(acceptance_dir: Path, limits: dict[str, int | None]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     accepted = json.loads((acceptance_dir / "audit.json").read_text(encoding="utf-8"))
     unsigned = {key: value for key, value in accepted.items() if key != "acceptance_sha256"}
@@ -482,6 +529,12 @@ def export_dataset(  # noqa: PLR0915
             supervision[split].merge(row["response_opportunities"])
             for key in ("examples", "response_valid", "value_valid"):
                 total[key] += row[key]
+        effective_supervision = {
+            split: _effective_supervision_counts(db, split) for split in ("train", "validation", "test")
+        }
+        for split, (response_count, value_count) in effective_supervision.items():
+            totals[split]["response_valid"] = response_count
+            totals[split]["value_valid"] = value_count
         train = totals["train"]
         if not train["response_valid"] or not train["value_valid"]:
             raise ValueError("Three-head recipe requires positive fixed training rho_E/rho_V")
