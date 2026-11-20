@@ -49,6 +49,8 @@ def resolve_discard_response(  # noqa: PLR0911
     for index in range(trigger_event_id + 1, len(events)):
         event = events[index]
         typ = event["type"]
+        if typ == "self_pass":
+            continue
         if typ == "hora":
             if event["target"] != actor or event["actor"] == actor or event["actor"] in winners:
                 return ResponseResolution(True, False, None, error="conflicting_or_duplicate_ron")
