@@ -71,8 +71,8 @@ class LossSums:
     value: Tensor
     examples: int
     action_count: int
-    response_count: int
-    value_count: int
+    response_count: float
+    value_count: float
 
     def objective(self, *, global_examples: int, world_size: int, rho_e: float, rho_v: float) -> Tensor:
         if global_examples <= 0 or world_size <= 0:
@@ -124,12 +124,15 @@ def loss_sums(outputs: ModelOutputs, labels: Labels, legal_mask: Tensor) -> Loss
     ):
         raise FloatingPointError("Non-finite raw network logits; do not hide with nan_to_num")
     action = _masked_ce(outputs.policy_logits, labels.action_target, labels.action_valid, legal_mask)
+    response_valid = labels.response_valid
+    response_allowed = torch.where(response_valid[:, None], labels.response_allowed, True)
+    response_logits = torch.where(response_valid[:, None], outputs.response_logits.float(), 0.0)
     response_nll = F.cross_entropy(
-        outputs.response_logits.float().masked_fill(~labels.response_allowed, -torch.inf),
-        torch.where(labels.response_valid, labels.response_target, 0),
+        response_logits.masked_fill(~response_allowed, -torch.inf),
+        torch.where(response_valid, labels.response_target, 0),
         reduction="none",
     )
-    response = torch.where(labels.response_valid, response_nll * labels.response_weight, 0.0).sum()
+    response = torch.where(response_valid, response_nll * labels.response_weight, 0.0).sum()
     safe_event = torch.where(labels.value_valid, labels.response_target, 0)
     safe_rank = torch.where(labels.value_valid, labels.final_rank_target, 0)
     selected = outputs.rank_logits.float().gather(1, safe_event[:, None, None].expand(-1, 1, 4)).squeeze(1)
@@ -142,6 +145,6 @@ def loss_sums(outputs: ModelOutputs, labels: Labels, legal_mask: Tensor) -> Loss
         value,
         batch,
         int(labels.action_valid.sum()),
-        int(labels.response_valid.sum()),
-        int(labels.value_valid.sum()),
+        float((labels.response_valid.float() * labels.response_weight).sum()),
+        float((labels.value_valid.float() * labels.value_weight).sum()),
     )
