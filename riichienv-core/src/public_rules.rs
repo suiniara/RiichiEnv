@@ -230,7 +230,10 @@ pub fn public_response_mask(
     allowed[14] = !context.rules.sanchaho_is_draw;
     for relative in 1..4 {
         let player = (context.actor + relative) % 4;
-        if context.riichi_accepted[player] {
+        // Four established melds leave no room for another set. This is a
+        // public capacity restriction even when some of those melds are ankan
+        // or the earlier discard history is incomplete; Ron remains possible.
+        if context.riichi_accepted[player] || context.meld_counts[player] == 4 {
             allowed[1 + relative] = false;
             allowed[4 + relative] = false;
             if relative == 1 {

@@ -64,13 +64,12 @@ class GrpReplayDataset(IterableDataset):
 
     def __iter__(self):
         files = self._get_files()
-        if self.is_train:
-            random.shuffle(files)
-
-        # Shard files across DataLoader workers
+        # Partition the shared stable order before worker-local shuffling.
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is not None:
             files = files[worker_info.id::worker_info.num_workers]
+        if self.is_train:
+            random.shuffle(files)
 
         buffer = []
         for file_path in files:

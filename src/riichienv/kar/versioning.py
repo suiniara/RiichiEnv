@@ -32,7 +32,7 @@ TRAIN_CONFIG_VERSION = "explicit_train_split_scale_v5_decision_time"
 
 
 def artifact_contract() -> dict[str, Any]:
-    if NATIVE_RULES_VERSION != "riichienv_native_rules_v2_scoring":
+    if NATIVE_RULES_VERSION != "riichienv_native_rules_v3_meld_rules":
         raise ValueError("Rebuild the native extension for the active rule contract")
     schema = schema_status()
     if (

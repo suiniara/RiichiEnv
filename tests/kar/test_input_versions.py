@@ -11,7 +11,7 @@ from riichienv.kar.versioning import INPUT_PIPELINE_VERSION, artifact_contract, 
 def test_old_artifact_cannot_omit_or_retag_new_input_semantics():
     current = artifact_contract()
     assert current["schema_id"] == "kar-riichienv-v1"
-    assert current["response_mask_version"] == "public_rule_response_mask_v3_abort_last_draw"
+    assert current["response_mask_version"] == "public_rule_response_mask_v4_meld_capacity"
     assert current["artifact_contract_version"] == "kar_riichienv_contract_v4"
     assert (
         current["input_pipeline_version"]
@@ -19,7 +19,7 @@ def test_old_artifact_cannot_omit_or_retag_new_input_semantics():
         == ("semantic_public_clock_frozen_decisions_v7_native_rules")
     )
     assert current["native_replay_version"] == "native_replay_context_v4"
-    assert current["native_rules_version"] == "riichienv_native_rules_v2_scoring"
+    assert current["native_rules_version"] == "riichienv_native_rules_v3_meld_rules"
     assert MODEL_VERSION == "kar_transformer_v3_semantic_inputs"
     old = dict(current, artifact_contract_version="kar_riichienv_contract_v2")
     old.pop("input_pipeline_version")

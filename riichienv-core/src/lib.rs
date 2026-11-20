@@ -28,4 +28,4 @@ mod yaku_checker;
 pub use hand_evaluator::check_riichi_candidates;
 
 /// Shared production rule/observer contract, exposed to offline data artifacts.
-pub const NATIVE_RULES_VERSION: &str = "riichienv_native_rules_v2_scoring";
+pub const NATIVE_RULES_VERSION: &str = "riichienv_native_rules_v3_meld_rules";

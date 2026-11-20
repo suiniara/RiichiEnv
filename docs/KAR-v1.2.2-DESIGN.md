@@ -24,7 +24,7 @@
 | architecture | `kar_kl_response_value_v1` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | artifact | `kar_riichienv_contract_v4` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | ruleset | `mahjong_soul_4p_red_half_v3_native_rules` | [contracts.py](../src/riichienv/kar/contracts.py) |
-| native rules | `riichienv_native_rules_v2_scoring`，产物显式绑定 `native_rules_version` | [core/lib.rs](../riichienv-core/src/lib.rs)、[versioning.py](../src/riichienv/kar/versioning.py) |
+| native rules | `riichienv_native_rules_v3_meld_rules`，产物显式绑定 `native_rules_version` | [core/lib.rs](../riichienv-core/src/lib.rs)、[versioning.py](../src/riichienv/kar/versioning.py) |
 | protocol identity | `protobuf_source_and_descriptor_v1`，同时绑定主 proto 源字节与完整描述符 | [mjsoul.py](../src/riichienv/kar/mjsoul.py) |
 | input pipeline | `semantic_public_clock_frozen_decisions_v7_native_rules` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | native replay | `native_replay_context_v4` | [native_replay.py](../src/riichienv/kar/native_replay.py) |
@@ -36,7 +36,7 @@
 | terminal public resolution | `verified_abort_public_resolution_v1` | [event_semantics.py](../src/riichienv/kar/event_semantics.py) |
 | model computation identity | `kar_transformer_v3_semantic_inputs`，不改变参数形状 | [learning/config.py](../src/riichienv/kar/learning/config.py) |
 | feature semantics / stochastic mask | `visible_rule_features_v2_ryanmen_pairs` / `sample_mask_v1` | [versioning.py](../src/riichienv/kar/versioning.py) |
-| response mask | `public_rule_response_mask_v3_abort_last_draw`，包含已有雀魂流局满贯修正 | [contracts.py](../src/riichienv/kar/contracts.py) |
+| response mask | `public_rule_response_mask_v4_meld_capacity`，四组面子后禁止继续吃碰大明杠，保留已有途中流局、末巡与流局满贯修正 | [contracts.py](../src/riichienv/kar/contracts.py) |
 | calibration quality / branch quality | `preregistered_calibration_quality_v3_event_ovr` / `preregistered_response_branch_quality_v2_ovr` | [calibration_quality.py](../src/riichienv/kar/calibration_quality.py) |
 | event support | `train_independent_games_v2_branch_quality`（train 计数定义不变） | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
 | calibration | `heldout_temperatures_log_gate_v6_event_ovr` | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
@@ -489,9 +489,9 @@ $$e\in E_{sup}\iff e\in E_{\mathrm{train}}\ \land\ \mathrm{quality}_{\mathrm{res
 
 ### 11.4 公开规则 mask
 
-mask 的1仅表示未被公开事实证明不可能；未知保守允许。Python 验证完整候选整数 ID 为 `0..147` 且不是 bool，并拒绝 pending-kan 快照；再将 observer、候选牌种/立直位、公开舍牌历史/当前河、副露种类、公开立直接受状态、remaining_draws、history_complete 和规则开关传入 Rust 纯 `PublicRuleContext`。绑定不接 snapshot 或 `GameState`，不读取他家暗手/私有合法列表/隐藏牌山/未来事件或真实标签。迁入 Rust 保持 mask v3 的类别次序与公开可能性语义。
+mask 的1仅表示未被公开事实证明不可能；未知保守允许。Python 验证完整候选整数 ID 为 `0..147` 且不是 bool，并拒绝 pending-kan 快照；再将 observer、候选牌种/立直位、公开舍牌历史/当前河、副露种类、公开立直接受状态、remaining_draws、history_complete 和规则开关传入 Rust 纯 `PublicRuleContext`。绑定不接 snapshot 或 `GameState`，不读取他家暗手/私有合法列表/隐藏牌山/未来事件或真实标签。mask v4 补齐四组面子的公开容量约束，21 类次序不变；旧 v3 mask 必须重新生成，不能只修改版本字段。
 
-1. 字牌不能 CHI，只有相对下家可吃；已立直者不能吃碰大明杠。
+1. 字牌不能 CHI，只有相对下家可吃；已立直者或已有四组公开面子者不能吃碰大明杠。已声明的暗杠也计作一组；四组面子仍可单骑荣和，不能因此排除 RON。
 2. 完整公开历史中，目标玩家自己舍过候选同基本牌种，排除包含该玩家的 RON mask；不猜隐藏等待或临时振听。
 3. 三家和按雀魂正常多荣和，保留 RON_MASK_7、排除 ABORT_TRIPLE_RON；相反冻结开关则互换。
 4. 候选之后四风连打、多玩家四杠、四家立直按公开证据分 possible/certain。证明任一途中流局必发生时，NEXT_DRAW/CHI/PON/DAIMINKAN及普通荒牌/流局满贯不再可能；**荣和仍先于途中流局**。终止原因优先级为四风→多人四杠→四立直，只有确定证据才压掉低优先级原因。
@@ -654,6 +654,8 @@ $$L_\tau=\max\!\left(-3,\overline D_\tau-\sqrt{\frac{18\log(K/\alpha)}{n}}\right
 以 `7626166` 为基线的原生规则收敛进一步升级 KAR 雀魂 ruleset、input v7、native replay v4、settlement v2 和 live projection v6，并新增 `native_rules_version`。雀魂规则 hash 显式包含 `allow_fifth_copy_tenpai=false` 与 `extension_dealer_repeat_priority=false`；旧真实 Golden、audit/接受报告和原始数据必须用新扩展重新核验，不能由旧默认值推定平台。受影响的合法候选、终局公开历史、完成/名次标签及派生 SQLite、缓存、索引、统计和绑定需真实重建或验证。绑定旧规则/输入的 checkpoint、校准 logits、有限策略与发布证据不能因 546 Schema 和参数形状未变而直接复用。给旧 JSON 补字段或换 hash 不是迁移；本轮也不自动处理已有训练产物。具体范围见[原生规则边界](kar-native-rule-boundary.md)。
 
 在 `4132c6a` 后的修复将 native rules 升到 `riichienv_native_rules_v2_scoring`，强制重新编译扩展；完整协议身份、Golden/完成证据 v2、单前缀冻结 recipe 与校准 job v3 均有显式绑定。旧计分、旧协议解码或旧 dense policy 校准产物不能直接作为当前训练/发布证据，须从可核验来源重新审计、导出或收集。回归仅证明已覆盖案例中的错误得到修复；未扫描真实历史训练产物，不据此断言已有训练权重或整个语料受污染。
+
+后续鸣牌修复将 native rules 升到 `riichienv_native_rules_v3_meld_rules`，Response Mask 升到 `public_rule_response_mask_v4_meld_capacity`。四组面子的公开容量会改变部分响应概率的归一化范围；旧 mask 导出及绑定产物须由可信来源重新生成或核验，不能仅改版本。自定义 `kuikae_forbidden=False` 的三人碰牌及四人吃碰在线行为也已与重放统一；KAR 冻结雀魂配置仍使用 `True`。动作 Schema、参数形状和损失公式不变，具体回归见[原生规则边界第 9 节](kar-native-rule-boundary.md#9-后续鸣牌修复公开容量与食替开关)。
 
 ## 20. 风险与声明边界
 

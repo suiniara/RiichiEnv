@@ -154,6 +154,7 @@ class BCModelTrainer:
         """Run periodic evaluation."""
         if self.tp_evaluator is None:
             return
+        previous_training = model.training
         try:
             ckpt_path = output_path.replace(".pth", f"_step{step}.pth")
             torch.save(model.state_dict(), ckpt_path)
@@ -163,12 +164,13 @@ class BCModelTrainer:
             model.eval()
             metrics_ = self.tp_evaluator.evaluate(
                 hw, num_episodes=self.evaluator_config.eval_episodes)
-            model.train()
             logline = self.tp_evaluator.metrics_to_logline(metrics_)
             logger.info(f"Eval @ step {step}: {logline}")
             wandb.log(metrics_, step=step)
         except Exception as e:
             logger.error(f"Mortal evaluation failed at step {step}: {e}")
+        finally:
+            model.train(previous_training)
 
     def train(self, output_path: str) -> None:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)

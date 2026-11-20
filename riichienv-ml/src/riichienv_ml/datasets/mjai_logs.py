@@ -52,9 +52,9 @@ class BaseDataset(IterableDataset):
 
     def _get_files(self):
         if isinstance(self.data_sources, list):
-            return self.data_sources
+            return sorted(self.data_sources)
         elif isinstance(self.data_sources, str):
-            return glob.glob(self.data_sources, recursive=True)
+            return sorted(glob.glob(self.data_sources, recursive=True))
         return []
 
 
@@ -67,13 +67,13 @@ class MCDataset(BaseDataset):
 
     def __iter__(self):
         files = self._get_files()
-        if self.is_train:
-            random.shuffle(files)
-
-        # Shard files across DataLoader workers to avoid duplicated work
+        # Assign the same ordered file set before each worker's independent RNG
+        # can shuffle it, otherwise workers may duplicate or omit replays.
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is not None:
             files = files[worker_info.id::worker_info.num_workers]
+        if self.is_train:
+            random.shuffle(files)
 
         skipped = 0
         total = len(files)

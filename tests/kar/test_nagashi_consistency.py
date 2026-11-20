@@ -300,7 +300,7 @@ def test_native_nagashi_keeps_honba_and_riichi_pot_payment_contract():
 def test_old_rule_contract_is_rejected_by_runtime_binding():
     old = replace(MJSOUL_RULESET, name="mahjong_soul_4p_red_half_v1")
     assert old.ruleset_hash != MJSOUL_RULESET.ruleset_hash
-    assert RESPONSE_MASK_VERSION == "public_rule_response_mask_v3_abort_last_draw"
+    assert RESPONSE_MASK_VERSION == "public_rule_response_mask_v4_meld_capacity"
     current = runtime_contract()
     with pytest.raises(ValueError, match="contracts differ"):
         RuntimeBinding("a" * 64, "b" * 64, current["schema_hash"], old.ruleset_hash, current["action_manifest_hash"])

@@ -138,7 +138,7 @@ def test_current_sqlite_contract_loads_without_changing_model_inputs(synthetic_d
     changed = collate_examples([poisoned])
     for key in original.inputs.fields:
         torch.testing.assert_close(original.inputs.fields[key], changed.inputs.fields[key], rtol=0, atol=0)
-    assert manifest["scope"]["response_mask_version"] == "public_rule_response_mask_v3_abort_last_draw"
+    assert manifest["scope"]["response_mask_version"] == "public_rule_response_mask_v4_meld_capacity"
 
 
 @pytest.mark.parametrize("field", ["protocol_sha256", "protocol_descriptor_sha256"])
@@ -179,6 +179,25 @@ def test_dataset_rejects_previous_ryanmen_semantics_even_with_consistent_storage
     directory, manifest, _ = synthetic_dataset
     manifest["scope"]["feature_contract_version"] = "visible_rule_features_v1_2_2"
     manifest["scope"]["input_pipeline_version"] = "semantic_public_clock_frozen_decisions_v5_response_pass"
+    database = directory / "decisions.sqlite3"
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE metadata SET value=? WHERE key='scope'", (json.dumps(manifest["scope"]),))
+    manifest["database_sha256"] = _sha(database)
+    _write_manifest(directory, manifest)
+    with pytest.raises(ValueError, match="feature/loss contract differs"):
+        DecisionDataset(directory, "train")
+
+
+@pytest.mark.parametrize(
+    "field,previous",
+    [
+        ("native_rules_version", "riichienv_native_rules_v2_scoring"),
+        ("response_mask_version", "public_rule_response_mask_v3_abort_last_draw"),
+    ],
+)
+def test_dataset_rejects_previous_meld_rules_even_with_consistent_storage(synthetic_dataset, field, previous):
+    directory, manifest, _ = synthetic_dataset
+    manifest["scope"][field] = previous
     database = directory / "decisions.sqlite3"
     with sqlite3.connect(database) as db:
         db.execute("UPDATE metadata SET value=? WHERE key='scope'", (json.dumps(manifest["scope"]),))

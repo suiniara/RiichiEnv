@@ -79,12 +79,12 @@ Python 适配器仅传候选 base34 牌种及立直位、actor、公开舍牌历
 | 合同 | 本轮活动值 | 变化原因 |
 |---|---|---|
 | `Ruleset.name` | `mahjong_soul_4p_red_half_v3_native_rules` | 显式绑定雀魂的两个 `false` 开关及其行为修复，规则 hash 随内容改变 |
-| `native_rules_version` | `riichienv_native_rules_v2_scoring` | 原生和牌择优及天和最高点解释修复；拒绝仍使用旧计分逻辑的扩展 |
+| `native_rules_version` | `riichienv_native_rules_v3_meld_rules` | 四组面子公开容量与在线食替开关修复，保留已有计分修复；拒绝旧扩展 |
 | `input_pipeline_version` | `semantic_public_clock_frozen_decisions_v7_native_rules` | 原生事实投影及修复后合法性、终局输入链 |
 | `native_replay_version` | `native_replay_context_v4` | 规则上下文由 Rust 自行推进 |
 | `SETTLEMENT_VERSION` | `native_mjsoul_settlement_v2` | 审计共享支付、回合和终止内核 |
 | `LIVE_EVENT_VERSION` | `native_rule_event_projection_v6` | 在线依赖完整原生规则事件与揭牌 |
-| `response_mask_version` | `public_rule_response_mask_v3_abort_last_draw` | 保留原有公开可能性语义，不因实现语言改变升级 |
+| `response_mask_version` | `public_rule_response_mask_v4_meld_capacity` | 按公开面子数排除不可能的第五次吃碰大明杠，保留四组面子的单骑荣和 |
 
 完整 Schema 仍为 `kar-riichienv-v1`，动作 manifest 仍为 546 个 ID，模型输出仍为 `546 / 21 / 21×4`，候选容量、Token 布局和模型参数形状不变。公共时钟、规则特征和损失合同也未因这次职责收敛重定义。相同形状只说明张量结构相容，不证明旧输入、旧监督或旧 checkpoint 满足新语义。
 
@@ -156,4 +156,14 @@ Python 适配器仅传候选 base34 牌种及立直位、actor、公开舍牌历
 
 原生完整牌墙与审计回归位于 [`test_scoring_selection.py`](../tests/env/agari/test_scoring_selection.py)。回归只执行环境实际提供的合法动作，不直接写入中间手牌或分数；修复后的原生结算能通过独立事实审计，把付款改回旧错误值后则以 `independent_settlement_mismatch` 拒绝。新回归与既有特殊手牌回归共同通过 **79 项**。此处的审计仍共享原生评估器，正确性依据包括官方规则、独立写定的期望支付和修复前确实失败的反例，而不仅是两条路径结果相同。
 
-原生能力身份已升为 `riichienv_native_rules_v2_scoring`。新版 Python 合同必须拒绝旧计分扩展，部署或本地验证前需重新编译并载入原生模块。涉及上述牌形的旧结算通过结果、输入导出和绑定产物不能直接沿用；应从可信原始事件重新审计，并按实际变化重新生成依赖产物。更新版本字符串本身不会修正旧结果，也不能证明训练或校准产物已经迁移。
+该次计分修复将原生能力身份升为 `riichienv_native_rules_v2_scoring`，后续鸣牌修复的当前身份见第 9 节。新版 Python 合同必须拒绝旧计分扩展，部署或本地验证前需重新编译并载入原生模块。涉及上述牌形的旧结算通过结果、输入导出和绑定产物不能直接沿用；应从可信原始事件重新审计，并按实际变化重新生成依赖产物。更新版本字符串本身不会修正旧结果，也不能证明训练或校准产物已经迁移。
+
+## 9. 后续鸣牌修复：公开容量与食替开关
+
+`PublicRuleContext.meld_counts` 已提供每家的公开面子数。达到四组时，该家的 CHI、PON、DAIMINKAN 必须为 False；暗杠也占一组。规则不读取他家暗手，也不因历史不完整而忽略已有公开容量事实。该玩家仍可能单骑荣和，因此 RON 不受此条件排除。修复阻止不可能的第五组面子进入 response Softmax 的分母及后续价值混合；不改变响应标签的类别次序。
+
+四人在线 `GameState` 吃、碰及三人在线碰牌后的食替限制现在与重放一致：只在 `kuikae_forbidden=True` 时写入禁打牌。`False` 时允许实际持有的同牌或筋食替牌。KAR 冻结雀魂规则仍为 `True`，开关修复主要影响显式选择 `False` 的调用方。
+
+当前原生能力为 `riichienv_native_rules_v3_meld_rules`，mask 为 `public_rule_response_mask_v4_meld_capacity`。Python 合同拒绝旧原生扩展；数据集、checkpoint、support 与 calibration 继续通过完整合同拒绝旧 mask 身份，即使存储摘要一致也不能冒充当前产物。部署时重建扩展，从可信事件重新生成 mask 及数据导出，再按依赖关系重新验证训练、校准和发布产物；不要仅替换旧 manifest 的版本字符串。
+
+回归见 [`public_meld_capacity.rs`](../riichienv-core/tests/public_meld_capacity.rs)、[`test_public_meld_capacity.py`](../tests/kar/test_public_meld_capacity.py)、[`test_kuikae_rule_parity.py`](../tests/env/rule_validation/test_kuikae_rule_parity.py)。覆盖三组面子仍可继续鸣牌、四组面子包含暗杠、三个相对座位、实际荣和，以及三人/四人完整合法牌墙下食替开关两值的在线/重放一致性。版本回归还检查旧扩展和摘要一致的旧导出、support、calibration 被拒绝。
