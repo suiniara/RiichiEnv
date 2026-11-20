@@ -102,8 +102,7 @@ impl GameState {
     /// Replace the replay placeholder wall with a seeded, physically consistent
     /// continuation wall. All already observed/held physical tiles remain fixed.
     pub fn prepare_replay_continuation_wall(&mut self, seed: u64) -> RiichiResult<()> {
-        use rand::prelude::SliceRandom;
-        use rand::SeedableRng;
+        use rand::prelude::*;
 
         if self.is_done || self.phase != Phase::WaitAct || self.pending_kan.is_some() {
             return Err(RiichiError::InvalidState {
