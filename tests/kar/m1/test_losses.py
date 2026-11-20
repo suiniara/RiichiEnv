@@ -115,6 +115,34 @@ def test_no_valid_auxiliary_labels_produces_connected_zero_gradients_and_na_metr
         assert value.grad is not None and value.grad.count_nonzero() == 0
 
 
+@pytest.mark.parameter_updates
+def test_candidate_branch_auxiliary_labels_do_not_require_policy_action_labels():
+    outputs, labels, legal = _case(3)
+    action_valid = torch.tensor([True, False, False])
+    response_applicable = torch.tensor([False, True, True])
+    response_observed = torch.tensor([False, True, True])
+    value_valid = torch.tensor([False, True, True])
+    labels = replace(
+        labels,
+        action_valid=action_valid,
+        response_applicable=response_applicable,
+        response_observed=response_observed,
+        value_valid=value_valid,
+        response_target=torch.tensor([-255, 2, 2]),
+        final_rank_target=torch.tensor([255, 1, 3]),
+        response_weight=torch.tensor([0.0, 0.5, 0.5]),
+        value_weight=torch.tensor([0.0, 0.5, 0.5]),
+    )
+    result = loss_sums(outputs, labels, legal)
+    assert result.action_count == 1
+    assert result.response_count == pytest.approx(1.0)
+    assert result.value_count == pytest.approx(1.0)
+    assert result.response.item() == pytest.approx(
+        0.5 * F.cross_entropy(outputs.response_logits[1:2], torch.tensor([2]), reduction="sum").item()
+        + 0.5 * F.cross_entropy(outputs.response_logits[2:3], torch.tensor([2]), reduction="sum").item()
+    )
+
+
 def test_value_valid_requires_response_valid():
     outputs, labels, legal = _case()
     with pytest.raises(ValueError, match="implies"):
