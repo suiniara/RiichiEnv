@@ -19,10 +19,19 @@ class Labels:
     final_rank_target: Tensor
     value_valid: Tensor
     response_allowed: Tensor
+    response_weight: Tensor | None = None
+    value_weight: Tensor | None = None
+
+    def __post_init__(self) -> None:
+        if self.response_weight is None:
+            object.__setattr__(self, "response_weight", torch.ones_like(self.action_target, dtype=torch.float32))
+        if self.value_weight is None:
+            object.__setattr__(self, "value_weight", torch.ones_like(self.action_target, dtype=torch.float32))
 
     @property
     def response_valid(self) -> Tensor:
-        return self.action_valid & self.response_applicable & self.response_observed
+        # Candidate branches have auxiliary supervision without an ACTION-policy label.
+        return self.response_applicable & self.response_observed
 
     def to(self, device: torch.device | str) -> Labels:
         return Labels(**{key: value.to(device) for key, value in self.__dict__.items()})
@@ -37,6 +46,11 @@ class Labels:
             elif key in {"action_target", "response_target", "final_rank_target"}:
                 if value.dtype != torch.int64:
                     raise ValueError("All target indices must be int64")
+            elif key in {"response_weight", "value_weight"}:
+                if value.shape != (batch,) or not value.is_floating_point():
+                    raise ValueError("Auxiliary loss weights must be floating [B] vectors")
+                if not torch.isfinite(value).all() or torch.any(value < 0):
+                    raise ValueError("Auxiliary loss weights must be finite and nonnegative")
             elif value.dtype != torch.bool:
                 raise ValueError("Validity/applicability flags must be boolean")
         if torch.any(self.value_valid & ~self.response_valid):
@@ -61,8 +75,8 @@ class LossSums:
     value_count: int
 
     def objective(self, *, global_examples: int, world_size: int, rho_e: float, rho_v: float) -> Tensor:
-        if global_examples <= 0 or global_examples < self.examples or world_size <= 0:
-            raise ValueError("Expected the full positive global accumulation-group size")
+        if global_examples <= 0 or world_size <= 0:
+            raise ValueError("Expected the full positive global source-decision count")
         if not 0 < rho_v <= rho_e <= 1:
             raise ValueError("Fixed manifest rho_V/rho_E must be positive and consistent")
         return world_size / global_examples * (self.action + 0.25 * self.response / rho_e + 0.1 * self.value / rho_v)
@@ -110,15 +124,18 @@ def loss_sums(outputs: ModelOutputs, labels: Labels, legal_mask: Tensor) -> Loss
     ):
         raise FloatingPointError("Non-finite raw network logits; do not hide with nan_to_num")
     action = _masked_ce(outputs.policy_logits, labels.action_target, labels.action_valid, legal_mask)
-    response = _masked_ce(
-        outputs.response_logits, labels.response_target, labels.response_valid, labels.response_allowed
+    response_nll = F.cross_entropy(
+        outputs.response_logits.float().masked_fill(~labels.response_allowed, -torch.inf),
+        torch.where(labels.response_valid, labels.response_target, 0),
+        reduction="none",
     )
+    response = torch.where(labels.response_valid, response_nll * labels.response_weight, 0.0).sum()
     safe_event = torch.where(labels.value_valid, labels.response_target, 0)
     safe_rank = torch.where(labels.value_valid, labels.final_rank_target, 0)
     selected = outputs.rank_logits.float().gather(1, safe_event[:, None, None].expand(-1, 1, 4)).squeeze(1)
     selected = torch.where(labels.value_valid[:, None], selected, 0.0)
     rank_nll = F.cross_entropy(selected, safe_rank, reduction="none")
-    value = torch.where(labels.value_valid, rank_nll, 0.0).sum()
+    value = torch.where(labels.value_valid, rank_nll * labels.value_weight, 0.0).sum()
     return LossSums(
         action,
         response,
