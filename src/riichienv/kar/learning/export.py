@@ -314,11 +314,12 @@ def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[i
     ):
         branch_groups.setdefault(source_row_id, []).append((action, replicate, status, json.loads(payload)))
     rows = db.execute(
-        "SELECT s.row_id,s.response_applicable,s.response_observed,s.value_valid "
+        "SELECT s.row_id,s.candidates,s.response_applicable,s.response_observed,s.value_valid "
         "FROM samples s JOIN games g ON s.game_id=g.game_id WHERE g.split=? ORDER BY s.row_id",
         (split,),
     )
-    for row_id, applicable, observed, value_valid in rows:
+    for row_id, candidate_blob, applicable, observed, value_valid in rows:
+        legal = tuple(value for value in struct.unpack("<32H", candidate_blob) if value != 546)
         branches = branch_groups.get(row_id, [])
         complete = False
         if branches:
@@ -333,6 +334,7 @@ def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[i
             actual = {(item[0], item[1]) for item in branches}
             complete = (
                 bool(actions)
+                and actions == tuple(action for action in legal if action < 148)
                 and type(replicates) is int
                 and replicates > 0
                 and actual == expected
@@ -340,6 +342,8 @@ def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[i
                 and all(
                     tuple(item[3].get("expected_branch_action_ids", ())) == actions
                     and item[3].get("replicates") == replicates
+                    and item[3].get("candidates") == list(legal)
+                    and item[3].get("candidate_action_id") == item[0]
                     for item in branches
                 )
             )
