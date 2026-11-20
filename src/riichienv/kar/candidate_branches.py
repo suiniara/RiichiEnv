@@ -1,0 +1,217 @@
+from __future__ import annotations
+
+import hashlib
+import random
+from typing import Any
+
+from riichienv import Phase, RiichiEnv
+
+from .actions import MappedAction, execute_candidate
+from .contracts import MJSOUL_RULESET, content_hash
+from .decision import ReplayOpportunity
+from .response import resolve_discard_response
+from .response_mask import public_rule_response_mask, validate_response_target
+
+BRANCH_DATA_VERSION = "kar_candidate_branch_probe_v1"
+CONTINUATION_POLICY_VERSION = "uniform_native_legal_v1"
+
+
+def _seed(
+    master_seed: int, game_id: str, cutoff_event_id: int, action_id: int, replicate: int
+) -> int:
+    payload = "\0".join(
+        (str(master_seed), game_id, str(cutoff_event_id), str(action_id), str(replicate), CONTINUATION_POLICY_VERSION)
+    ).encode()
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+
+
+def _continue_uniform_native(
+    env: RiichiEnv, rng: random.Random, *, max_decisions: int
+) -> tuple[bool, int]:
+    """Finish one branch using only native legal actions; no Python rule logic."""
+    decisions = 0
+    while not env.done():
+        if decisions >= max_decisions:
+            return False, decisions
+        if env.phase == Phase.WaitResponse:
+            seats = list(env.active_players)
+            if not seats:
+                raise RuntimeError("Native response phase has no active players")
+            observations = env.get_observations(seats)
+            choices = {}
+            for seat in seats:
+                legal = list(observations[seat].legal_actions())
+                if not legal:
+                    raise RuntimeError("Active native responder has no legal action")
+                choices[seat] = rng.choice(legal)
+            env.step(choices)
+        elif env.needs_tsumo or env.needs_initialize_next_round:
+            env.step({})
+        else:
+            seat = int(env.current_player)
+            observation = env.get_observations([seat])[seat]
+            legal = list(observation.legal_actions())
+            if not legal:
+                raise RuntimeError("Native active player has no legal action")
+            env.step({seat: rng.choice(legal)})
+        decisions += 1
+    return True, decisions
+
+
+def _branch_one(
+    source_env: RiichiEnv,
+    opportunity: ReplayOpportunity,
+    candidate: MappedAction,
+    *,
+    source_game_id: str,
+    cutoff_event_id: int,
+    master_seed: int,
+    replicate: int,
+    max_decisions: int,
+) -> dict[str, Any]:
+    action_id = candidate.global_id
+    seed = _seed(master_seed, source_game_id, cutoff_event_id, action_id, replicate)
+    row: dict[str, Any] = {
+        "version": BRANCH_DATA_VERSION,
+        "source_game_id": source_game_id,
+        "source_cutoff_event_id": cutoff_event_id,
+        "observer": opportunity.snapshot.observer_player_id,
+        "candidate_action_id": action_id,
+        "replicate": replicate,
+        "seed": seed,
+        "continuation_policy": CONTINUATION_POLICY_VERSION,
+        "ruleset_hash": MJSOUL_RULESET.ruleset_hash,
+        "source_candidates": list(opportunity.candidates),
+        "status": "BLOCKED",
+        "complete": False,
+        "response_target": None,
+        "response_allowed": None,
+        "final_rank": None,
+        "utility": None,
+    }
+    if action_id not in opportunity.candidates or not 0 <= action_id < 148:
+        row["reason"] = "not_a_legal_discard_candidate"
+        return row
+    if candidate.native_execution_ambiguous:
+        row["reason"] = "native_discard_provenance_ambiguous"
+        return row
+    if candidate.spec.action_type != "DISCARD":
+        row["reason"] = "candidate_is_not_discard"
+        return row
+    if candidate.spec.riichi and len(candidate.actions) != 2:
+        row["reason"] = "invalid_riichi_transaction"
+        return row
+
+    env = source_env.clone()
+    before = len(env.rule_log)
+    try:
+        execute_candidate(env, opportunity.snapshot.observer_player_id, candidate)
+        after_action = list(env.rule_log)
+        trigger_ids = [
+            index
+            for index, event in enumerate(after_action[before:], start=before)
+            if event.get("type") == "dahai" and event.get("actor") == opportunity.snapshot.observer_player_id
+        ]
+        if len(trigger_ids) != 1:
+            raise ValueError("Candidate branch did not emit exactly one native discard")
+        trigger_id = trigger_ids[0]
+        allowed = public_rule_response_mask(opportunity.snapshot, action_id)
+        complete, continuation_decisions = _continue_uniform_native(
+            env, random.Random(seed), max_decisions=max_decisions
+        )
+        if not complete:
+            row.update(
+                status="INCOMPLETE",
+                reason="continuation_decision_cap",
+                continuation_decisions=continuation_decisions,
+            )
+            return row
+        events = list(env.rule_log)
+        resolution = resolve_discard_response(events, trigger_id)
+        if not resolution.response_observed or resolution.response_target is None:
+            raise ValueError("Completed branch has no unambiguous native discard response")
+        validate_response_target(tuple(allowed), resolution.response_target)
+        ranks = list(env.ranks())
+        rank = ranks[opportunity.snapshot.observer_player_id]
+        if rank not in (1, 2, 3, 4):
+            raise ValueError("Native final rank is outside 1..4")
+        row.update(
+            status="PASS",
+            complete=True,
+            reason=None,
+            continuation_decisions=continuation_decisions,
+            branch_trigger_event_id=trigger_id,
+            response_target=int(resolution.response_target),
+            response_resolution_event_ids=list(resolution.response_resolution_event_ids),
+            response_allowed=[bool(value) for value in allowed],
+            final_rank=rank - 1,
+            utility=2.5 - rank,
+            final_scores=list(env.scores()),
+            branch_event_count=len(events) - before,
+        )
+        row["branch_sha256"] = content_hash(row)
+        return row
+    except Exception as error:
+        row.update(status="FAIL", reason=f"{type(error).__name__}: {error}")
+        return row
+
+
+def simulate_candidate_branches(
+    source_env: RiichiEnv,
+    opportunity: ReplayOpportunity,
+    *,
+    source_game_id: str,
+    cutoff_event_id: int,
+    master_seed: int,
+    replicates: int = 1,
+    max_decisions: int = 10000,
+) -> list[dict[str, Any]]:
+    """Enumerate legal discard candidates from one immutable native decision state.
+
+    This probe uses a deliberately simple, versioned uniform-legal continuation
+    policy. Its outcomes are conditional on that policy and are not production
+    counterfactual ground truth for arbitrary opponents.
+    """
+    if not source_game_id or type(cutoff_event_id) is not int or cutoff_event_id < 0:
+        raise ValueError("A branch requires a source game and nonnegative decision cutoff")
+    if type(master_seed) is not int or not 0 <= master_seed < 2**64:
+        raise ValueError("Branch master seed must be an unsigned 64-bit integer")
+    if type(replicates) is not int or not 1 <= replicates <= 32:
+        raise ValueError("Probe replicates must be in 1..32")
+    if type(max_decisions) is not int or max_decisions < 1:
+        raise ValueError("Branch continuation cap must be positive")
+    if opportunity.snapshot.decision_phase != "own_act":
+        raise ValueError("Candidate branch generation only supports own-action decisions")
+    if source_env.done() or source_env.phase != Phase.WaitAct:
+        raise ValueError("Native source environment is not at an own-action decision")
+    if int(source_env.current_player) != opportunity.snapshot.observer_player_id:
+        raise ValueError("Native source actor and public observer differ")
+    if tuple(sorted(item.global_id for item in opportunity.mapped)) != opportunity.candidates:
+        raise ValueError("Opportunity mapped actions differ from its frozen candidate set")
+
+    candidates = [item for item in opportunity.mapped if 0 <= item.global_id < 148]
+    source_identity = content_hash(
+        {
+            "game_id": source_game_id,
+            "cutoff_event_id": cutoff_event_id,
+            "observer": opportunity.snapshot.observer_player_id,
+            "candidates": opportunity.candidates,
+            "native_rule_log_sha256": content_hash(list(source_env.rule_log)),
+        }
+    )
+    rows = []
+    for candidate in candidates:
+        for replicate in range(replicates):
+            row = _branch_one(
+                source_env,
+                opportunity,
+                candidate,
+                source_game_id=source_game_id,
+                cutoff_event_id=cutoff_event_id,
+                master_seed=master_seed,
+                replicate=replicate,
+                max_decisions=max_decisions,
+            )
+            row["source_state_identity"] = source_identity
+            rows.append(row)
+    return rows
