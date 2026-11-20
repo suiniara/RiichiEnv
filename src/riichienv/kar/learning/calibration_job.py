@@ -93,10 +93,23 @@ def dataset_event_support(dataset: DecisionDataset) -> EventSupport:
         if not 0 <= event < 21:
             raise ValueError("Invalid event in completed training evidence")
         counts[event] = count
+    branch_counts = dataset.manifest.get("candidate_branch_counts", {})
+    complete_sources = branch_counts.get("complete_source_decisions_by_split", {}).get("train", 0)
+    action_record = branch_counts.get("candidate_action_source_counts_by_split", {}).get("train", {})
+    if type(complete_sources) is not int or complete_sources < 0 or not isinstance(action_record, dict):
+        raise ValueError("Candidate branch support evidence is missing or malformed")
+    action_counts = [0] * 148
+    for key, value in action_record.items():
+        action = int(key)
+        if not 0 <= action < 148 or type(value) is not int or value < 0:
+            raise ValueError("Candidate action support contains invalid identities/counts")
+        action_counts[action] = value
     return EventSupport(
         dataset.manifest["manifest_sha256"],
         tuple(counts),
         f"completed immutable database {dataset.manifest['database_sha256']}; distinct train game_id only",
+        complete_sources,
+        tuple(action_counts),
     )
 
 
