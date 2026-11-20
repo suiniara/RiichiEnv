@@ -230,5 +230,7 @@ def simulate_candidate_branches(
             row["source_state_identity"] = source_identity
             row["expected_branch_action_ids"] = [action for action in opportunity.candidates if 0 <= action < 148]
             row["replicates"] = replicates
+            row.pop("branch_sha256", None)
+            row["branch_sha256"] = content_hash(row)
             rows.append(row)
     return rows
