@@ -101,6 +101,7 @@ def test_scheduler_warmup_is_bounded_by_short_training_horizon(miniature):
     short = create_scheduler(optimizer, total_updates=16)
     # 3% of a short horizon rounds to one update; it must not become 100.
     assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-4)
+    optimizer.step()
     short.step()
     assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-4)
 
@@ -109,6 +110,7 @@ def test_scheduler_warmup_is_bounded_by_short_training_horizon(miniature):
     # The same proportional rule retains a 30-update warmup for long runs.
     assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-4 / 30)
     for _ in range(29):
+        optimizer.step()
         long.step()
     assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-4)
 
