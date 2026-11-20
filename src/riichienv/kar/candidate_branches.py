@@ -4,9 +4,9 @@ import hashlib
 import random
 from typing import Any
 
-from riichienv import Phase, RiichiEnv
+from riichienv import ActionType, Phase, RiichiEnv
 
-from .actions import MappedAction, execute_candidate
+from .actions import MappedAction, execute_candidate, legal_candidates
 from .contracts import MJSOUL_RULESET, content_hash
 from .decision import ReplayOpportunity
 from .response import resolve_discard_response
@@ -45,16 +45,30 @@ def _continue_uniform_native(
                 if not legal:
                     raise RuntimeError("Active native responder has no legal action")
                 choices[seat] = rng.choice(legal)
+            before = len(env.rule_log)
             env.step(choices)
+            if len(env.rule_log) == before and not env.done():
+                raise RuntimeError("Native response step did not advance the branch")
         elif env.needs_tsumo or env.needs_initialize_next_round:
+            before = len(env.rule_log)
             env.step({})
+            if len(env.rule_log) == before and not env.done():
+                raise RuntimeError("Native automatic transition did not advance the branch")
         else:
             seat = int(env.current_player)
             observation = env.get_observations([seat])[seat]
-            legal = list(observation.legal_actions())
-            if not legal:
-                raise RuntimeError("Native active player has no legal action")
-            env.step({seat: rng.choice(legal)})
+            mapped = legal_candidates(observation)
+            usable = [candidate for candidate in mapped if not candidate.native_execution_ambiguous]
+            if usable:
+                execute_candidate(env, seat, rng.choice(usable))
+            else:
+                legal = [action for action in observation.legal_actions() if action.action_type != ActionType.RIICHI]
+                if not legal:
+                    raise RuntimeError("Native active player has no executable legal action")
+                before = len(env.rule_log)
+                env.step({seat: rng.choice(legal)})
+                if len(env.rule_log) == before and not env.done():
+                    raise RuntimeError("Native own-action step did not advance the branch")
         decisions += 1
     return True, decisions
 
