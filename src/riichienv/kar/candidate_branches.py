@@ -17,6 +17,13 @@ BRANCH_DATA_VERSION = "kar_candidate_branch_probe_v1"
 CONTINUATION_POLICY_VERSION = "uniform_native_legal_v1"
 
 
+def _wall_seed(master_seed: int, game_id: str, cutoff_event_id: int, replicate: int) -> int:
+    payload = "\\0".join(
+        (str(master_seed), game_id, str(cutoff_event_id), str(replicate), "shared-wall", CONTINUATION_POLICY_VERSION)
+    ).encode()
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+
+
 def _seed(
     master_seed: int, game_id: str, cutoff_event_id: int, action_id: int, replicate: int
 ) -> int:
@@ -87,6 +94,7 @@ def _branch_one(
 ) -> dict[str, Any]:
     action_id = candidate.global_id
     seed = _seed(master_seed, source_game_id, cutoff_event_id, action_id, replicate)
+    wall_seed = _wall_seed(master_seed, source_game_id, cutoff_event_id, replicate)
     conditional = append_action(prefix, action_id)
     row: dict[str, Any] = {
         "version": BRANCH_DATA_VERSION,
@@ -106,6 +114,8 @@ def _branch_one(
         "candidate_action_id": action_id,
         "replicate": replicate,
         "seed": seed,
+        "wall_seed": wall_seed,
+        "wall_conditioning": "native_unknown_tiles_sampled_once_per_source_replicate_shared_across_candidates",
         "continuation_policy": CONTINUATION_POLICY_VERSION,
         "ruleset_hash": MJSOUL_RULESET.ruleset_hash,
         "source_candidates": list(opportunity.candidates),
@@ -132,6 +142,7 @@ def _branch_one(
     env = source_env.clone()
     before = len(env.rule_log)
     try:
+        env.prepare_replay_continuation_wall(wall_seed)
         execute_candidate(env, opportunity.snapshot.observer_player_id, candidate)
         after_action = list(env.rule_log)
         trigger_ids = [
