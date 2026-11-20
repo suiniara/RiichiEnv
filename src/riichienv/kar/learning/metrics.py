@@ -23,6 +23,8 @@ class MetricTotals:
     @torch.no_grad()
     def add(self, outputs: ModelOutputs, batch: TrainingBatch, *, slices: bool = True) -> None:
         labels = batch.labels
+        if labels.response_weight is None or labels.value_weight is None:
+            raise ValueError("Auxiliary metric weights must be materialized")
         sums = loss_sums(outputs, labels, batch.inputs.legal_mask)
         self.examples += int(batch.source_count or 0)
         for key, value, count in (
