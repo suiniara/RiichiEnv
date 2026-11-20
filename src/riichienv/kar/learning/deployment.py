@@ -73,6 +73,8 @@ def validate_frozen_policy(
         raise ValueError("Finite deployment requires passed independent calibration-quality checks")
     if not any(support.value_supported(calibration.value_branch_statuses)):
         raise ValueError("Finite deployment requires at least one train-supported, quality-qualified response branch")
+    if not calibration.diagnostic_fixture and support.candidate_branch_source_decisions <= 0:
+        raise ValueError("Finite deployment requires completed candidate-action branch supervision")
     expected = calibrated_policy_identity(
         binding, support, calibration, mode=options.mode, max_prior_amplification=options.max_prior_amplification
     )
