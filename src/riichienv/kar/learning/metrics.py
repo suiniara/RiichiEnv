@@ -15,7 +15,7 @@ from .model import ModelOutputs
 @dataclass
 class MetricTotals:
     examples: int = 0
-    counts: dict[str, int] = field(default_factory=lambda: {key: 0 for key in ("action", "response", "rank")})
+    counts: dict[str, float] = field(default_factory=lambda: {key: 0.0 for key in ("action", "response", "rank")})
     nll: dict[str, float] = field(default_factory=lambda: {key: 0.0 for key in ("action", "response", "rank")})
     brier: dict[str, float] = field(default_factory=lambda: {key: 0.0 for key in ("action", "response", "rank")})
     threat: dict[str, MetricTotals] = field(default_factory=dict)
@@ -24,7 +24,7 @@ class MetricTotals:
     def add(self, outputs: ModelOutputs, batch: TrainingBatch, *, slices: bool = True) -> None:
         labels = batch.labels
         sums = loss_sums(outputs, labels, batch.inputs.legal_mask)
-        self.examples += sums.examples
+        self.examples += int(batch.source_count or 0)
         for key, value, count in (
             ("action", sums.action, sums.action_count),
             ("response", sums.response, sums.response_count),
@@ -38,14 +38,15 @@ class MetricTotals:
         response = outputs.response_logits.float().masked_fill(~allowed, -torch.inf).softmax(-1)
         event = torch.where(labels.value_valid, labels.response_target, 0)
         rank = outputs.rank_logits.float().gather(1, event[:, None, None].expand(-1, 1, 4)).squeeze(1).softmax(-1)
-        for key, probabilities, target, active in (
-            ("action", action, labels.action_target, labels.action_valid),
-            ("response", response, labels.response_target, valid),
-            ("rank", rank, labels.final_rank_target, labels.value_valid),
+        for key, probabilities, target, active, weight in (
+            ("action", action, labels.action_target, labels.action_valid, None),
+            ("response", response, labels.response_target, valid, labels.response_weight),
+            ("rank", rank, labels.final_rank_target, labels.value_valid, labels.value_weight),
         ):
             safe = torch.where(active, target, 0)
             errors = (probabilities - F.one_hot(safe, probabilities.shape[-1])).square().sum(-1)
-            self.brier[key] += float(torch.where(active, errors, 0.0).sum())
+            weighted = errors if weight is None else errors * weight
+            self.brier[key] += float(torch.where(active, weighted, 0.0).sum())
         if slices:
             fields = batch.inputs.fields
             opponents = (fields["kind"] == 3) & (fields["actor"] > 1)
