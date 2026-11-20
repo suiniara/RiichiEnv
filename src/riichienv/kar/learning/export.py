@@ -306,21 +306,23 @@ class GameWriter:
 def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[int, int]:
     """Count at most one auxiliary-supervision unit per source decision."""
     response_count = value_count = 0
+    branch_groups: dict[str, list[tuple[int, int, str, dict[str, Any]]]] = {}
+    for source_row_id, action, replicate, status, payload in db.execute(
+        "SELECT source_decision_row_id,candidate_action_id,replicate,status,payload "
+        "FROM branch_samples WHERE split=? ORDER BY source_decision_row_id,candidate_action_id,replicate",
+        (split,),
+    ):
+        branch_groups.setdefault(source_row_id, []).append((action, replicate, status, json.loads(payload)))
     rows = db.execute(
         "SELECT s.row_id,s.response_applicable,s.response_observed,s.value_valid "
         "FROM samples s JOIN games g ON s.game_id=g.game_id WHERE g.split=? ORDER BY s.row_id",
         (split,),
     )
     for row_id, applicable, observed, value_valid in rows:
-        branches = db.execute(
-            "SELECT candidate_action_id,replicate,status,payload FROM branch_samples "
-            "WHERE source_decision_row_id=? ORDER BY candidate_action_id,replicate",
-            (row_id,),
-        ).fetchall()
+        branches = branch_groups.get(row_id, [])
         complete = False
         if branches:
-            payloads = [json.loads(item[3]) for item in branches]
-            first = payloads[0]
+            first = branches[0][3]
             actions = tuple(first.get("expected_branch_action_ids", ()))
             replicates = first.get("replicates")
             expected = {
@@ -336,9 +338,9 @@ def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[i
                 and actual == expected
                 and all(item[2] == "PASS" for item in branches)
                 and all(
-                    tuple(payload.get("expected_branch_action_ids", ())) == actions
-                    and payload.get("replicates") == replicates
-                    for payload in payloads
+                    tuple(item[3].get("expected_branch_action_ids", ())) == actions
+                    and item[3].get("replicates") == replicates
+                    for item in branches
                 )
             )
         if complete:
