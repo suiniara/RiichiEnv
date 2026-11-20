@@ -11,6 +11,7 @@ from .contracts import MJSOUL_RULESET, content_hash
 from .decision import ReplayOpportunity
 from .response import resolve_discard_response
 from .response_mask import public_rule_response_mask, validate_response_target
+from .tokenize import append_action, encode_prefix
 
 BRANCH_DATA_VERSION = "kar_candidate_branch_probe_v1"
 CONTINUATION_POLICY_VERSION = "uniform_native_legal_v1"
@@ -68,11 +69,23 @@ def _branch_one(
     master_seed: int,
     replicate: int,
     max_decisions: int,
+    prefix: Any,
 ) -> dict[str, Any]:
     action_id = candidate.global_id
     seed = _seed(master_seed, source_game_id, cutoff_event_id, action_id, replicate)
+    conditional = append_action(prefix, action_id)
     row: dict[str, Any] = {
         "version": BRANCH_DATA_VERSION,
+        "tokens_hex": conditional.to_bytes()[108:].hex(),
+        "history_rows": conditional.history_rows,
+        "decide_index": conditional.decide_index,
+        "action_index": conditional.history_rows + 64,
+        "candidates": list(conditional.candidates),
+        "action_target": -1,
+        "action_valid": False,
+        "response_applicable": True,
+        "response_observed": True,
+        "value_valid": True,
         "source_game_id": source_game_id,
         "source_cutoff_event_id": cutoff_event_id,
         "observer": opportunity.snapshot.observer_player_id,
@@ -190,6 +203,7 @@ def simulate_candidate_branches(
         raise ValueError("Opportunity mapped actions differ from its frozen candidate set")
 
     candidates = [item for item in opportunity.mapped if 0 <= item.global_id < 148]
+    prefix = encode_prefix(opportunity.snapshot, opportunity.candidates)
     source_identity = content_hash(
         {
             "game_id": source_game_id,
@@ -211,6 +225,7 @@ def simulate_candidate_branches(
                 master_seed=master_seed,
                 replicate=replicate,
                 max_decisions=max_decisions,
+                prefix=prefix,
             )
             row["source_state_identity"] = source_identity
             rows.append(row)
