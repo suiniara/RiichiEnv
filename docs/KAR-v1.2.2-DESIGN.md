@@ -539,6 +539,45 @@ mask 的1仅表示未被公开事实证明不可能；未知保守允许。Pytho
 
 若有限候选未通过该下界，必须保留 $\tau=\infty$ 的行为先验；不得通过增加未经登记的候选、场景或事后筛选场景来制造通过结果。若要求逐状态/逐候选的数学保证，必须另提供绑定当前模型、状态和完整候选集合的有效误差界，并满足 certified 的正 $E2$ 条件；当前 500-game 计数、温度校准或整体模拟收益均不能替代该误差界。由于反事实标签缺失，当前阶段不采用伪标签、同状态标签复制或未经验证的合成反事实扩增。
 
+### 12.2 候选 ACTION 的分支监督（下一版数据合同）
+
+当前 v1 数据集每个原始决策只有一个实际执行 ACTION。它足以监督行为先验 $\pi(A\mid X)$，也能监督该事实 ACTION 对应的响应/名次头；它**不足以直接监督同一状态下其余合法候选的反事实响应与名次**。因此，当前 v1 的 Response/Rank 头不得被描述为已对全部推理候选获得直接监督。仅靠把同一事实标签复制到其他 ACTION、随机替换 ACTION Token 或模型自蒸馏，均不能修复该缺口。
+
+下一版候选价值数据必须通过原生引擎分支模拟产生，定义为：
+
+$
+\mathcal D_{branch}=\{(X_i,A_{ij},E_{ijr},U_{ijr},w_{ijr})\}
+$
+
+其中 $A_{ij}$ 是原决策时刻全部合法完整舍牌候选（global ID 0..147 的实际合法子集），$r$ 是分支续局 replicate，$E$ 是该分支首次舍牌响应窗口的最终裁定事件，$U=2.5-\mathrm{rank}$ 是完整终局名次效用。**只对真实执行的专家动作保留行为策略标签**；候选分支标签必须来自该候选自己的模拟结果，不得从事实轨迹复制。
+
+分支生成合同：
+
+1. 在可信牌谱 replay 到每个选定决策 cutoff 时，保存该时刻完整 Rust RiichiEnv 状态的深拷贝。当前 Rust GameState 实现 Clone，Python RiichiEnv 暴露 clone()；此状态包含隐藏手牌与牌山，只能作为标签生成器输入，绝不能序列化进模型特征或交给模型。
+2. 对每个决策的每个合法舍牌候选，从同一冻结状态分别克隆分支，并通过现有原生 execute_candidate/Rust step 路径执行候选；禁止 Python 重新实现规则、修改隐藏状态或手工合成响应事件。
+3. 原始后续牌谱不能用于替代分支的未来。候选一旦改变，之后轨迹通常已经分叉。每个分支必须由预先冻结、版本化的 continuation/opponent policy 继续完整对局，直至产生真实终局；响应事件由分支实际执行产生，名次由 Rust 终局结算产生。
+4. continuation policy 的模型权重/规则版本、策略混合比例、采样温度、随机种子派生规则和版本摘要必须写入数据 manifest。训练目标明确是“在该冻结对手策略分布下的条件响应/名次”，不是不依赖对手的绝对价值。正式发布仍须在独立对手池和 M3 中检验迁移。
+5. 同一源决策下的所有候选使用相同的源状态；replicate 的随机种子按 (source_game_id, cutoff, candidate_id, replicate, continuation_policy_id) 稳定派生。记录完整分支身份、执行动作、响应事件、终局、失败/截断原因。截断或非法分支不得伪装成普通终局标签。
+6. 先按完整源 game_id 划分 train/validation/test，再展开候选和 replicate。一个源局的任何候选分支不得跨 split；禁止按分支行随机切分。
+7. 同一源决策展开成 K×R 行时，行为策略损失 L_A 每个源决策只计算一次；Response/Rank 分支损失按源决策归一化权重，使每个源决策的总辅助头权重固定，不因候选数量或 replicate 数量较多而被过度加权。对同一 (X,A) 的多次 replicate，保留计数并用经验分布/软标签训练 p(E|X,A)，并对每个真实事件估计 m(X,A,E)；不得只保留一次随机结果而丢失方差信息。
+8. 训练时可用重复 Prefix + 单 ACTION 的 dense batch 先验证数学正确性；后续如做共享 Prefix KV 的可微训练优化，必须与 dense reference 的输出和梯度对拍。现有 encode_prefix() 是 eval-only/no-grad，不能直接拿来训练，否则会切断 Prefix 梯度。
+9. 价值监督支持必须按 (源状态/上下文, 候选动作, continuation policy) 报告分布与覆盖，不能只用 21 类事件的 500-game 计数替代。低覆盖候选不得被解释为已可靠估值；没有候选分支支持时维持 prior-only，不做有限-τ 重排。
+10. 生成成本先用小规模固定源局测量。必须报告每个决策候选数、分支完成率、每个候选 replicate 数、每局分支成本、标签方差、事件/名次覆盖和分支策略版本；未完成小规模正确性验收前，不允许对整个 M1/M2 数据集批量展开。
+
+**损失合同**：L_A 仍使用每个原始状态唯一的专家 ACTION；L_E 和 L_V 改为只使用该源状态所有已完成、有效的候选分支行，按源状态归一化。旧 v1 value_valid 事实标签不能与新分支标签混在同一个未经区分的总体中。新数据必须提升 DATASET_VERSION、分支监督版本、训练 recipe 和模型/release binding；旧 checkpoint/calibration/support/tau-selection 不能通过改版本字段迁移。
+
+**推理合同**：仅当模型绑定了对应分支监督版本、continuation policy 目标、候选覆盖证据，且独立校准与策略验证通过时，才允许有限-τ 候选价值重排。否则 Response/Rank 只能作为事实动作的诊断输出，策略保持 τ=∞ 的行为先验。事件级校准通过不自动意味着候选级价值通过。
+
+**验收测试**：
+- 对同一冻结 Rust 状态，所有合法候选分支均从完全相同的源状态开始，原始环境不被任何分支修改。
+- 每个候选实际执行的原生动作与 global ACTION ID 一一对应，非法/重复候选被拒绝。
+- 分支响应事件与终局名次能由 Rust 日志/结算独立复核。
+- 任意一个候选的未来事件变化不会修改其他候选的分支记录。
+- 按 game split 后不存在跨 split 的 sibling branch。
+- 行扩展前后每个源决策的 L_A 权重相同；辅助头按源决策而非按展开行数归一化。
+- Dense 单 ACTION 训练前向与候选分支推理前向在相同权重/输入下输出一致；反向梯度与 dense reference 一致。
+- 分支策略或其权重摘要变化时，旧数据、校准、support 和冻结 release 全部拒绝复用。
+
 ## 13. RiichiEnv/雀魂适配
 
 离线 GameDetailRecords.actions 只读 `.result`，绝不读 `.user_input`。下载 pb2 不 import 执行；协议由可信 proto 静态字段和描述符核对。`protocol_sha256` 保留主 proto 文件字节身份，`protocol_descriptor_sha256` 绑定实际编译的完整 FileDescriptorSet（包括 imports）。解码、逐局审计、完成证书、Golden、审计恢复/合并、接受选择、导出和训练读取均须核对两者及 `protocol_identity_version`。只改被导入的协议也可能改变相同 wire payload 的解释；主文件 SHA 相同不能放行。缺少完整身份的旧派生产物拒绝使用，不能事后补一个 hash 迁移。source_record_index/hash保留来源，不影响模型时间。
