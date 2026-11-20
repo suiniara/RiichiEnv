@@ -89,7 +89,15 @@ def collate_examples(examples: list[dict[str, Any]]) -> TrainingBatch:
     return TrainingBatch(inputs, labels, tuple(example["game_id"] for example in expanded), len(examples))
 
 class DecisionDataset(Dataset[dict[str, Any]]):
-    def __init__(self, directory: Path | str, split: str, *, verify_hash: bool = True, history_cache_items: int = 32):
+    def __init__(
+        self,
+        directory: Path | str,
+        split: str,
+        *,
+        verify_hash: bool = True,
+        history_cache_items: int = 32,
+        include_candidate_branches: bool = False,
+    ):
         if split not in {"train", "validation", "test"}:
             raise ValueError("Unknown dataset split")
         self.directory, self.split = Path(directory).resolve(), split
@@ -120,7 +128,7 @@ class DecisionDataset(Dataset[dict[str, Any]]):
         self._histories: OrderedDict[tuple[str, int], bytes] = OrderedDict()
         self.history_cache_items = history_cache_items
         branch_config = self.manifest["scope"].get("candidate_branch_generation", {})
-        self.has_candidate_branches = bool(branch_config.get("enabled"))
+        self.has_candidate_branches = bool(branch_config.get("enabled")) and include_candidate_branches
         db = self._db()
         if db.execute("SELECT value FROM metadata WHERE key='complete'").fetchone() != ("true",):
             raise ValueError("Dataset transaction is not marked complete")
