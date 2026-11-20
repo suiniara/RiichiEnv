@@ -191,7 +191,8 @@ def train_cpu(  # noqa: PLR0915
     random.seed(config.seed)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
-    train, validation = DecisionDataset(dataset_dir, "train", include_candidate_branches=True), DecisionDataset(dataset_dir, "validation", include_candidate_branches=True)
+    train = DecisionDataset(dataset_dir, "train", include_candidate_branches=True)
+    validation = DecisionDataset(dataset_dir, "validation", include_candidate_branches=True)
     if not len(train) or not len(validation):
         raise ValueError("CPU probe needs separate nonempty train and validation games")
     require_parameter_updates(authorization, operation="train_cpu", dataset_hash=train.manifest["manifest_sha256"])
