@@ -284,7 +284,7 @@ def replay_game(\n    game: Any,\n    *,\n    on_decision: Callable[[ReplayDecis
                 if kakan_opening is not None:
                     raise ValueError("Draw/call before the frozen robbing window could open")
                 observation = env.get_observations([actor])[actor]
-                own = ReplayOpportunity.observe(ledgers[actor], observation)\n                if on_opportunity is not None and own.snapshot.decision_phase == "own_act":\n                    # Capture a deep native clone at the decision cutoff, before\n                    # the factual replay applies the expert action. The callback\n                    # may branch this clone but must never mutate the replay env.\n                    on_opportunity(env.clone(), own, game.game_id, index)
+                own = ReplayOpportunity.observe(ledgers[actor], observation)\n                if on_opportunity is not None and own.snapshot.decision_phase == "own_act":\n                    # Capture a deep native clone at the decision cutoff, before\n                    # the factual replay applies the expert action. The callback\n                    # may branch this clone but must never mutate the replay env.\n                    on_opportunity(env, own, game.game_id, index)
             elif typ == "dahai":
                 seats = sorted(env.active_players) if env.phase == Phase.WaitResponse else []
                 observations = env.get_observations(seats) if seats else {}
