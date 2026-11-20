@@ -1,12 +1,7 @@
-"""Train Online RL with Ray distributed workers.
-
-Supports two algorithms:
-  - dqn: DQN + CQL (value-based, on-policy buffer)
-  - ppo: PPO (actor-critic, on-policy)
+"""Train PPO with Ray distributed workers.
 
 Usage:
     uv run python scripts/train_ppo.py -c src/riichienv_ml/configs/4p/ppo.yml
-    uv run python scripts/train_ppo.py -c src/riichienv_ml/configs/4p/ppo.yml --algorithm ppo
 """
 import argparse
 
@@ -18,33 +13,19 @@ from riichienv_ml.utils import setup_logging, init_wandb
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train Online RL model")
+    parser = argparse.ArgumentParser(description="Train PPO model")
     parser.add_argument("-c", "--config", type=str, required=True, help="Path to config YAML")
-    parser.add_argument("--algorithm", type=str, default=None, choices=["dqn", "ppo"])
     parser.add_argument("--num_workers", type=int, default=None)
     parser.add_argument("--num_steps", type=int, default=None)
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--load_model", type=str, default=None)
     parser.add_argument("--lr", type=float, default=None)
-    # DQN-specific
-    parser.add_argument("--alpha_cql_init", type=float, default=None)
-    parser.add_argument("--alpha_cql_final", type=float, default=None)
-    parser.add_argument("--exploration", type=str, default=None, choices=["epsilon_greedy", "boltzmann"])
-    parser.add_argument("--epsilon_start", type=float, default=None)
-    parser.add_argument("--epsilon_final", type=float, default=None)
-    parser.add_argument("--boltzmann_epsilon", type=float, default=None)
-    parser.add_argument("--boltzmann_temp_start", type=float, default=None)
-    parser.add_argument("--boltzmann_temp_final", type=float, default=None)
-    parser.add_argument("--top_p", type=float, default=None)
-    parser.add_argument("--capacity", type=int, default=None)
-    # PPO-specific
     parser.add_argument("--ppo_clip", type=float, default=None)
     parser.add_argument("--ppo_epochs", type=int, default=None)
     parser.add_argument("--gae_lambda", type=float, default=None)
     parser.add_argument("--entropy_coef", type=float, default=None)
     parser.add_argument("--value_coef", type=float, default=None)
-    # Common
     parser.add_argument("--eval_interval", type=int, default=None)
     parser.add_argument("--weight_sync_freq", type=int, default=None)
     parser.add_argument("--worker_device", type=str, default=None, choices=["cpu", "cuda"])
@@ -65,11 +46,7 @@ def main():
 
     # Override config with CLI args
     overrides = {}
-    for field in ["algorithm", "num_workers", "num_steps", "batch_size", "device", "load_model",
-                  "lr", "alpha_cql_init", "alpha_cql_final",
-                  "exploration", "epsilon_start", "epsilon_final",
-                  "boltzmann_epsilon", "boltzmann_temp_start", "boltzmann_temp_final", "top_p",
-                  "capacity",
+    for field in ["num_workers", "num_steps", "batch_size", "device", "load_model", "lr",
                   "ppo_clip", "ppo_epochs", "gae_lambda", "entropy_coef", "value_coef",
                   "eval_interval", "weight_sync_freq", "worker_device", "gpu_per_worker",
                   "num_envs_per_worker",
@@ -91,12 +68,8 @@ def main():
     setup_logging(cfg.checkpoint_dir, "train_ppo")
     init_wandb(cfg, config_path=args.config)
 
-    if cfg.algorithm == "ppo":
-        from riichienv_ml.trainers.ppo import run_ppo_training
-        run_ppo_training(cfg)
-    else:
-        from riichienv_ml.trainers._dqn_online import run_training
-        run_training(cfg)
+    from riichienv_ml.trainers.ppo import run_ppo_training
+    run_ppo_training(cfg)
 
 
 if __name__ == "__main__":

@@ -52,13 +52,8 @@ jobs:
       - name: Run KAR functional tests
         run: uv run --locked --python 3.14 --all-extras --dev --group kar-ml pytest tests/kar
 
-      - name: Run legacy ML data and evaluation regressions
+      - name: Run shared ML configuration and GRP data regressions
         run: uv run --locked --python 3.14 --all-extras --dev --group kar-ml pytest tests/ml
-
-      - name: Run bounded legacy BC CPU mode regressions
-        run: >-
-          uv run --locked --python 3.14 --all-extras --dev --group kar-ml
-          pytest --allow-parameter-updates -m parameter_updates tests/ml/test_bc_evaluation_mode.py
 
       - name: Run bounded KAR CPU gradient and resume tests
         run: >-

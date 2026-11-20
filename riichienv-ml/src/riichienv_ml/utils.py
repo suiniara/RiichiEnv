@@ -73,7 +73,7 @@ def init_wandb(
     - Uploads ``git diff HEAD`` as artifact (``code-diff``) if dirty
 
     Args:
-        cfg: A pydantic config object (GrpConfig / BcConfig / PpoConfig)
+        cfg: A pydantic config object (GrpConfig / PpoConfig / HandPredConfig)
              that has ``wandb_entity``, ``wandb_project``, ``wandb_tags``,
              ``wandb_group`` fields (inherited from WandbConfig).
         config_path: Path to the YAML config file (uploaded as artifact).

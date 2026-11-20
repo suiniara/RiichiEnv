@@ -20,7 +20,7 @@ M1 学习代码位于 `src/riichienv/kar/learning/`。它是独立可选依赖�
 uv sync --group kar-ml --inexact
 ```
 
-旧 `riichienv-ml` 的 Ray/PPO/CQL/wandb 依赖不是 KAR M1 的必要依赖，不自动安装或上传实验日志。
+`riichienv-ml` 的 Ray/PPO/wandb 依赖不是 KAR M1 的必要依赖，不自动安装或上传实验日志。
 
 ## 数据导出
 

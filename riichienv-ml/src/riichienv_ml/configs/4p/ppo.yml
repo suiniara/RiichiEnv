@@ -2,7 +2,7 @@ ppo:
   game:
     n_players: 4
   algorithm: ppo
-  load_model: /data/workspace/riichienv-ml/4p/cql_model.pth
+  load_model: null
   device: cuda
   model_class: riichienv_ml.models.actor_critic.ActorCriticNetwork
   encoder_class: riichienv_ml.features.feat_v1.ObservationEncoder
@@ -19,8 +19,8 @@ ppo:
   grp_model: /data/workspace/riichienv-ml/4p/grp_model.pth
   pts_weight: [6.0, 4.0, 2.0, 0.0]
   weight_decay: 0.1
-  alpha_kl: 0.1
-  alpha_kl_warmup_steps: 50
+  alpha_kl: 0.0
+  alpha_kl_warmup_steps: 0
   aux_weight: 0.0
   eval_interval: 50
   eval_episodes: 192

@@ -116,58 +116,11 @@ class GrpConfig(WandbConfig):
     samples_per_file: int = 32
 
 
-class OfflineTrainConfig(WandbConfig):
-    """Shared config for offline BC and CQL training."""
-    game: GameConfig = GameConfig()
-    data_glob: str = "/data/mjsoul/mjsoul-4p/2024/**/*.jsonl.gz"
-    grp_model: str = "./grp_model.pth"
-    output: str = "bc_model.pth"
-    device: str = "cuda"
-    batch_size: int = 32
-    lr: float = 1e-4
-    alpha: float = 1.0
-    gamma: float = 0.99
-    num_epochs: int = 10
-    num_workers: int = 12
-    limit: int = 3000000
-    pts_weight: list[float] = [10.0, 4.0, -4.0, -10.0]
-    weight_decay: float = 0.0
-    aux_weight: float = 0.0
-    value_coef: float = 0.0
-    model: ModelConfig = ModelConfig()
-    model_class: str = "riichienv_ml.models.q_network.QNetwork"
-    dataset_class: str = "riichienv_ml.datasets.mjai_logs.MCDataset"
-    encoder_class: str = "riichienv_ml.features.feat_v1.ObservationEncoder"
-    # Third-party evaluator
-    evaluator: EvaluatorConfig = EvaluatorConfig()
-
-
-class BcConfig(OfflineTrainConfig):
-    # Online teacher BC (vs offline logs BC)
-    online: bool = False
-    # LR scheduler
-    lr_min: float = 1e-5
-    warmup_steps: int = 0               # linear warmup (in collection rounds, same unit as num_steps)
-    max_grad_norm: float = 10.0         # gradient clipping max norm
-    # Online teacher settings (used when online=True)
-    teacher_model_name: Literal["kanachan", "mortal"] = "kanachan"     # model type ("kanachan", "mortal"...)
-    teacher_model_path: str | None = None
-    num_ray_workers: int = 4
-    num_envs_per_worker: int = 16
-    num_steps: int = 500
-    train_epochs: int = 3                   # epochs per collection round
-    worker_device: Literal["cpu", "cuda"] = "cpu"
-    gpu_per_worker: float = 0.0
-
-
-class CqlConfig(OfflineTrainConfig):
-    pass
-
-
 class PpoConfig(WandbConfig):
+    model_config = ConfigDict(extra="forbid")
+
     game: GameConfig = GameConfig()
-    # Algorithm: "dqn" (DQN + CQL) or "ppo" (Actor-Critic + PPO)
-    algorithm: Literal["dqn", "ppo"] = "ppo"
+    algorithm: Literal["ppo"] = "ppo"
     load_model: str | None = None
     device: str = "cuda"
     num_workers: int = 12
@@ -176,31 +129,14 @@ class PpoConfig(WandbConfig):
     lr: float = 1e-4
     lr_min: float = 1e-6
     max_grad_norm: float = 1.0
-    # DQN-specific params
-    alpha_cql_init: float = 1.0
-    alpha_cql_final: float = 0.1
+    # Optional KL regularization against the initial policy.
     alpha_kl: float = 0.0
     alpha_kl_warmup_steps: int = 0
-    # Exploration strategy (DQN only): "epsilon_greedy" or "boltzmann"
-    exploration: Literal["epsilon_greedy", "boltzmann"] = "boltzmann"
-    # epsilon-greedy params
-    epsilon_start: float = 0.1
-    epsilon_final: float = 0.01
-    # Boltzmann (softmax) exploration params
-    boltzmann_epsilon: float = 0.02
-    boltzmann_temp_start: float = 0.1
-    boltzmann_temp_final: float = 0.05
-    top_p: float = 1.0
-    capacity: int = 1000000
-    # PPO-specific params
     ppo_clip: float = 0.2
     ppo_epochs: int = 4
     gae_lambda: float = 0.95
     entropy_coef: float = 0.01
     value_coef: float = 0.5
-    # Target network (for TD target computation)
-    target_update_freq: int = 2000
-    # Common params
     eval_interval: int = 2000
     eval_episodes: int = 100
     weight_sync_freq: int = 10
@@ -210,7 +146,6 @@ class PpoConfig(WandbConfig):
     gamma: float = 0.99
     weight_decay: float = 0.0
     aux_weight: float = 0.0
-    entropy_coef_online: float = 0.0
     checkpoint_dir: str = "checkpoints"
     model: ModelConfig = ModelConfig()
     model_class: str = "riichienv_ml.models.actor_critic.ActorCriticNetwork"
@@ -255,9 +190,9 @@ class HandPredConfig(WandbConfig):
 
 
 class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     grp: GrpConfig = GrpConfig()
-    bc: BcConfig = BcConfig()
-    cql: CqlConfig = CqlConfig()
     ppo: PpoConfig = PpoConfig()
     hand_pred: HandPredConfig = HandPredConfig()
 

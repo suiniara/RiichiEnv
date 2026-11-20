@@ -114,12 +114,11 @@ class SequenceFeatureEncoder:
 
 
 class SequenceFeaturePackedEncoder:
-    """Packed single-tensor encoder for Ray worker compatibility.
+    """Packed single-tensor encoder for agents and rollout workers.
 
-    Packs all sequence features into a flat float32 tensor so the teacher
-    worker (which expects ``encoder.encode(obs) -> Tensor``) can handle it
-    transparently.  The ``TransformerActorCritic`` model unpacks this
-    internally.
+    Packs all sequence features into a flat float32 tensor for the shared
+    ``encoder.encode(obs) -> Tensor`` interface. The ``TransformerActorCritic``
+    model unpacks this tensor internally.
 
     Layout (all float32, P=max_prog_len, C=max_cand_len):
         sparse      (25)       int indices stored as float

@@ -5,7 +5,7 @@ from riichienv_ml.models.backbone import ResNetBackbone
 
 
 class QNetwork(nn.Module):
-    """Dueling Q-Network for both offline CQL and online DQN training.
+    """Dueling Q-network with a shared ResNet backbone.
 
     Uses separate value and advantage heads: q = v + (a - a.mean()).
     Optionally includes an auxiliary head for rank prediction.
@@ -18,7 +18,7 @@ class QNetwork(nn.Module):
                  tile_dim: int = 34, aux_dims: int | None = None, **kwargs):
         super().__init__()
         self.backbone = ResNetBackbone(in_channels, conv_channels, num_blocks, fc_dim, tile_dim)
-        # Dueling DQN: separate value and advantage streams
+        # Separate value and advantage streams
         self.v_head = nn.Linear(fc_dim, 1)
         self.a_head = nn.Linear(fc_dim, num_actions)
         # Auxiliary head (rank prediction)
@@ -26,11 +26,11 @@ class QNetwork(nn.Module):
 
     def _compute_q(self, v: torch.Tensor, a: torch.Tensor,
                    mask: torch.Tensor | None = None) -> torch.Tensor:
-        """Dueling DQN: q = v + a - mean(a).
+        """Combine value and advantage: q = v + a - mean(a).
 
-        When mask is provided (online DQN), mean is computed only over legal
-        actions (Mortal-style). Without mask (offline CQL), uses the full mean
-        for backward compatibility.
+        With a mask, compute the mean over legal actions and set illegal
+        action values to negative infinity. Without a mask, compute the mean
+        over all actions.
         """
         if mask is not None:
             mask_bool = mask.bool() if mask.dtype != torch.bool else mask

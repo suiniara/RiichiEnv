@@ -1,4 +1,4 @@
-"""Agents for RiichiEnv loaded from YAML training configs.
+"""Agents for RiichiEnv loaded from PPO YAML configs.
 
 Usage::
 
@@ -6,8 +6,12 @@ Usage::
     from riichienv_ml.agents import Agent
 
     agents = {
-        0: Agent("configs/4p/ppo.yml"),
-        1: Agent("configs/4p/bc_model.yml", device="cuda"),
+        pid: Agent(
+            "src/riichienv_ml/configs/4p/ppo.yml",
+            model_path="checkpoints/model.pth",
+            device="cuda",
+        )
+        for pid in range(4)
     }
 
     env = RiichiEnv(game_mode="4p-red-half")
@@ -29,19 +33,17 @@ from riichienv_ml.config import load_config, import_class
 
 
 class Agent:
-    """Agent that plays in RiichiEnv using a model from a training config.
+    """Agent that plays in RiichiEnv using a model from a PPO config.
 
     Loads model architecture, encoder, and weights from a YAML config file.
-    Auto-detects the config section (ppo / bc / cql).
+    The config must contain a ``ppo`` section.
 
     Args:
-        config_path: Path to a training config YAML.
+        config_path: Path to a PPO config YAML.
         model_path: Checkpoint path override.  When ``None``, inferred from
-            config (``load_model`` for ppo, ``output`` for bc/cql).
+            ``ppo.load_model`` in the config.
         device: Torch device for model inference.
     """
-
-    _SECTIONS = ("ppo", "bc", "cql")
 
     def __init__(
         self,
@@ -51,13 +53,12 @@ class Agent:
     ):
         self.device = torch.device(device)
 
-        # Detect config section and load
-        section, sub_cfg = self._load_section(config_path)
+        sub_cfg = self._load_ppo_config(config_path)
         game = sub_cfg.game
 
         # Resolve model path
         if model_path is None:
-            model_path = self._find_model_path(sub_cfg, section)
+            model_path = self._find_model_path(sub_cfg)
 
         # Build model from config
         ModelClass = import_class(sub_cfg.model_class)
@@ -79,27 +80,19 @@ class Agent:
     # Config helpers
     # ------------------------------------------------------------------
 
-    @classmethod
-    def _load_section(cls, config_path: str):
+    @staticmethod
+    def _load_ppo_config(config_path: str):
         with open(config_path) as f:
             raw = yaml.safe_load(f)
-        if not isinstance(raw, dict):
+        if not isinstance(raw, dict) or "ppo" not in raw:
             raise ValueError(
-                f"Config must be a YAML mapping with one of "
-                f"{'/'.join(cls._SECTIONS)}, got {type(raw).__name__}")
-        for key in cls._SECTIONS:
-            if key in raw:
-                cfg = load_config(config_path)
-                return key, getattr(cfg, key)
-        raise ValueError(
-            f"No recognized section ({'/'.join(cls._SECTIONS)}) in {config_path}")
+                f"Agent requires a YAML mapping with a 'ppo' section: {config_path}")
+        return load_config(config_path).ppo
 
     @staticmethod
-    def _find_model_path(sub_cfg, section: str) -> str:
-        if section == "ppo" and getattr(sub_cfg, "load_model", None):
+    def _find_model_path(sub_cfg) -> str:
+        if sub_cfg.load_model:
             return sub_cfg.load_model
-        if getattr(sub_cfg, "output", None):
-            return sub_cfg.output
         raise ValueError(
             "Cannot determine model path from config; "
             "pass model_path explicitly")

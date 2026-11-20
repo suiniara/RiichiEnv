@@ -7,7 +7,33 @@ from torch.utils.data import IterableDataset
 
 from riichienv import MjaiReplay
 
-from riichienv_ml.datasets.mjai_logs import GrpFeatureEncoder, _compute_rank
+
+def _compute_rank(end_scores: list, player_id: int, n_players: int) -> int:
+    """Compute rank (0=1st, n-1=last), breaking ties by initial seat order."""
+    scores = np.array(end_scores[:n_players], dtype=np.float64)
+    return int((-scores).argsort(kind='stable').argsort(kind='stable')[player_id])
+
+
+class GrpFeatureEncoder:
+    """Extracts GRP features from a kyoku, parameterized by n_players."""
+
+    def __init__(self, kyoku, n_players: int = 4):
+        self.kyoku = kyoku
+        self.n_players = n_players
+
+    def encode(self) -> dict:
+        feat = self.kyoku.take_grp_features()
+        n = self.n_players
+        row = {}
+        for i in range(n):
+            row[f"p{i}_init_score"] = feat["round_initial_scores"][i]
+            row[f"p{i}_end_score"] = feat["round_end_scores"][i]
+            row[f"p{i}_delta_score"] = feat["round_delta_scores"][i]
+        row["chang"] = feat["chang"]
+        row["ju"] = feat["ju"]
+        row["ben"] = feat["ben"]
+        row["liqibang"] = feat["liqibang"]
+        return row
 
 
 class GrpReplayDataset(IterableDataset):
