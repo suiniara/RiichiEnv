@@ -106,9 +106,9 @@ impl GameState {
         use rand::SeedableRng;
 
         if self.is_done || self.phase != Phase::WaitAct || self.pending_kan.is_some() {
-            return Err(RiichiError::InvalidState(
-                "Continuation wall can only be prepared at a stable own-action cutoff".into(),
-            ));
+            return Err(RiichiError::InvalidState {
+                message: "Continuation wall can only be prepared at a stable own-action cutoff".into(),
+            });
         }
         let mut visible = [false; 136];
         for player in &self.players {
@@ -126,30 +126,32 @@ impl GameState {
         }
         let mut pool: Vec<u8> = (0..136u8).filter(|&tile| !visible[tile as usize]).collect();
         if pool.len() != self.wall.tiles.len() {
-            return Err(RiichiError::InvalidState(format!(
-                "Replay continuation wall has {} unknown tiles but native wall needs {}",
-                pool.len(),
-                self.wall.tiles.len()
-            )));
+            return Err(RiichiError::InvalidState {
+                message: format!(
+                    "Replay continuation wall has {} unknown tiles but native wall needs {}",
+                    pool.len(),
+                    self.wall.tiles.len()
+                ),
+            });
         }
 
         let mut fixed = Vec::with_capacity(self.wall.dora_indicators.len());
         for (index, &indicator) in self.wall.dora_indicators.iter().enumerate() {
             if visible[indicator as usize] {
-                return Err(RiichiError::InvalidState(
-                    "A public dora indicator is also present in a visible player zone".into(),
-                ));
+                return Err(RiichiError::InvalidState {
+                    message: "A public dora indicator is also present in a visible player zone".into(),
+                });
             }
             let position = (4 + 2 * index).saturating_sub(self.wall.rinshan_draw_count as usize);
             if position >= self.wall.tiles.len() {
-                return Err(RiichiError::InvalidState(
-                    "A revealed dora indicator lies outside the remaining wall".into(),
-                ));
+                return Err(RiichiError::InvalidState {
+                    message: "A revealed dora indicator lies outside the remaining wall".into(),
+                });
             }
             let Some(found) = pool.iter().position(|&tile| tile == indicator) else {
-                return Err(RiichiError::InvalidState(
-                    "A revealed dora indicator is missing from the unknown tile pool".into(),
-                ));
+                return Err(RiichiError::InvalidState {
+                    message: "A revealed dora indicator is missing from the unknown tile pool".into(),
+                });
             };
             pool.swap_remove(found);
             fixed.push((position, indicator));
@@ -175,9 +177,9 @@ impl GameState {
             }
         }
         if next.next().is_some() {
-            return Err(RiichiError::InvalidState(
-                "Continuation wall left unused physical tiles".into(),
-            ));
+            return Err(RiichiError::InvalidState {
+                message: "Continuation wall left unused physical tiles".into(),
+            });
         }
         self.wall.tiles = wall;
         self.wall.seed = Some(seed);
