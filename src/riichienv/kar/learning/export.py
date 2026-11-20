@@ -310,7 +310,7 @@ class GameWriter:
 def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[int, int]:
     """Count at most one auxiliary-supervision unit per source decision."""
     response_count = value_count = 0
-    branch_groups: dict[str, list[tuple[int, int, str, dict[str, Any]]]] = {}
+    branch_groups: dict[str, list[tuple[int, int, str, bytes, dict[str, Any]]]] = {}
     for source_row_id, action, replicate, status, tokens, payload in db.execute(
         "SELECT source_decision_row_id,candidate_action_id,replicate,status,tokens,payload "
         "FROM branch_samples WHERE split=? ORDER BY source_decision_row_id,candidate_action_id,replicate",
