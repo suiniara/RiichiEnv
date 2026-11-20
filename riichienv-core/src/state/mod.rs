@@ -99,6 +99,94 @@ pub struct GameState {
 }
 
 impl GameState {
+    /// Replace the replay placeholder wall with a seeded, physically consistent
+    /// continuation wall. All already observed/held physical tiles remain fixed.
+    pub fn prepare_replay_continuation_wall(&mut self, seed: u64) -> RiichiResult<()> {
+        use rand::prelude::SliceRandom;
+        use rand::SeedableRng;
+
+        if self.is_done || self.phase != Phase::WaitAct || self.pending_kan.is_some() {
+            return Err(RiichiError::InvalidState(
+                "Continuation wall can only be prepared at a stable own-action cutoff".into(),
+            ));
+        }
+        let mut visible = [false; 136];
+        for player in &self.players {
+            for &tile in &player.hand {
+                visible[tile as usize] = true;
+            }
+            for &tile in &player.discards {
+                visible[tile as usize] = true;
+            }
+            for meld in &player.melds {
+                for &tile in &meld.tiles {
+                    visible[tile as usize] = true;
+                }
+            }
+        }
+        let mut pool: Vec<u8> = (0..136u8).filter(|&tile| !visible[tile as usize]).collect();
+        if pool.len() != self.wall.tiles.len() {
+            return Err(RiichiError::InvalidState(format!(
+                "Replay continuation wall has {} unknown tiles but native wall needs {}",
+                pool.len(),
+                self.wall.tiles.len()
+            )));
+        }
+
+        let mut fixed = Vec::with_capacity(self.wall.dora_indicators.len());
+        for (index, &indicator) in self.wall.dora_indicators.iter().enumerate() {
+            if visible[indicator as usize] {
+                return Err(RiichiError::InvalidState(
+                    "A public dora indicator is also present in a visible player zone".into(),
+                ));
+            }
+            let position = (4 + 2 * index).saturating_sub(self.wall.rinshan_draw_count as usize);
+            if position >= self.wall.tiles.len() {
+                return Err(RiichiError::InvalidState(
+                    "A revealed dora indicator lies outside the remaining wall".into(),
+                ));
+            }
+            let Some(found) = pool.iter().position(|&tile| tile == indicator) else {
+                return Err(RiichiError::InvalidState(
+                    "A revealed dora indicator is missing from the unknown tile pool".into(),
+                ));
+            };
+            pool.swap_remove(found);
+            fixed.push((position, indicator));
+        }
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        pool.shuffle(&mut rng);
+        let mut wall = vec![0u8; self.wall.tiles.len()];
+        for (position, tile) in fixed {
+            wall[position] = tile;
+        }
+        let mut next = pool.into_iter();
+        let fixed_positions: std::collections::HashSet<usize> = self
+            .wall
+            .dora_indicators
+            .iter()
+            .enumerate()
+            .map(|(index, _)| (4 + 2 * index).saturating_sub(self.wall.rinshan_draw_count as usize))
+            .collect();
+        for (index, tile) in wall.iter_mut().enumerate() {
+            if !fixed_positions.contains(&index) {
+                *tile = next.next().expect("wall pool length was checked");
+            }
+        }
+        if next.next().is_some() {
+            return Err(RiichiError::InvalidState(
+                "Continuation wall left unused physical tiles".into(),
+            ));
+        }
+        self.wall.tiles = wall;
+        self.wall.seed = Some(seed);
+        self.wall.hand_index = 1;
+        self.wall.salt = format!("replay-continuation-{seed:016x}");
+        self.wall.wall_digest.clear();
+        Ok(())
+    }
+
     pub fn np(&self) -> usize {
         NP
     }
