@@ -172,7 +172,7 @@ class DecisionDataset(Dataset[dict[str, Any]]):
         if len(history) < count or len(row["state"]) != 63 * TOKEN_BYTE_SIZE or len(row["action"]) != TOKEN_BYTE_SIZE:
             raise ValueError("Shared history/state/ACTION size mismatch")
         legal = tuple(value for value in struct.unpack("<32H", row["candidates"]) if value != 546)
-        return {
+        result = {
             "decision_row_id": row_id,
             "game_id": row["game_id"],
             "tokens": history[:count] + row["state"] + row["action"],
@@ -188,4 +188,60 @@ class DecisionDataset(Dataset[dict[str, Any]]):
             "value_valid": bool(row["value_valid"]),
             "response_allowed": [bool(value) for value in row["response_allowed"]],
             "action_provenance": row["provenance"],
+            "candidate_branches": [],
         }
+        branch_rows = self._db().execute(
+            "SELECT candidate_action_id,replicate,status,tokens,payload FROM branch_samples "
+            "WHERE source_decision_row_id=? ORDER BY candidate_action_id,replicate",
+            (row_id,),
+        ).fetchall()
+        if branch_rows:
+            decoded = [
+                (action, replicate, status, tokens, json.loads(payload))
+                for action, replicate, status, tokens, payload in branch_rows
+            ]
+            first = decoded[0][4]
+            expected_actions = tuple(first.get("expected_branch_action_ids", ()))
+            replicates = first.get("replicates")
+            expected_pairs = {
+                (action, replicate)
+                for action in expected_actions
+                for replicate in range(replicates if type(replicates) is int else 0)
+            }
+            actual_pairs = {(action, replicate) for action, replicate, _, _, _ in decoded}
+            complete = (
+                bool(expected_actions)
+                and type(replicates) is int
+                and replicates > 0
+                and actual_pairs == expected_pairs
+                and all(status == "PASS" for _, _, status, _, _ in decoded)
+                and all(
+                    tuple(payload.get("expected_branch_action_ids", ())) == expected_actions
+                    and payload.get("replicates") == replicates
+                    for _, _, _, _, payload in decoded
+                )
+            )
+            if complete:
+                for action, replicate, _, tokens, payload in decoded:
+                    result["candidate_branches"].append(
+                        {
+                            "decision_row_id": row_id,
+                            "game_id": row["game_id"],
+                            "tokens": tokens,
+                            "candidates": tuple(payload["candidates"]),
+                            "decide_index": payload["decide_index"],
+                            "action_index": payload["action_index"],
+                            "action_target": -1,
+                            "action_valid": False,
+                            "response_target": payload["response_target"],
+                            "response_applicable": True,
+                            "response_observed": True,
+                            "final_rank": payload["final_rank"],
+                            "value_valid": True,
+                            "response_allowed": payload["response_allowed"],
+                            "action_provenance": "native_candidate_branch",
+                            "candidate_action_id": action,
+                            "replicate": replicate,
+                        }
+                    )
+        return result
