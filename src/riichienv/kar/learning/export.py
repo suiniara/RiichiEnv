@@ -311,12 +311,12 @@ def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[i
     """Count at most one auxiliary-supervision unit per source decision."""
     response_count = value_count = 0
     branch_groups: dict[str, list[tuple[int, int, str, dict[str, Any]]]] = {}
-    for source_row_id, action, replicate, status, payload in db.execute(
-        "SELECT source_decision_row_id,candidate_action_id,replicate,status,payload "
+    for source_row_id, action, replicate, status, tokens, payload in db.execute(
+        "SELECT source_decision_row_id,candidate_action_id,replicate,status,tokens,payload "
         "FROM branch_samples WHERE split=? ORDER BY source_decision_row_id,candidate_action_id,replicate",
         (split,),
     ):
-        branch_groups.setdefault(source_row_id, []).append((action, replicate, status, json.loads(payload)))
+        branch_groups.setdefault(source_row_id, []).append((action, replicate, status, tokens, json.loads(payload)))
     rows = db.execute(
         "SELECT s.row_id,s.candidates,s.response_applicable,s.response_observed,s.value_valid "
         "FROM samples s JOIN games g ON s.game_id=g.game_id WHERE g.split=? ORDER BY s.row_id",
@@ -327,7 +327,7 @@ def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[i
         branches = branch_groups.get(row_id, [])
         complete = False
         if branches:
-            first = branches[0][3]
+            first = branches[0][4]
             actions = tuple(first.get("expected_branch_action_ids", ()))
             replicates = first.get("replicates")
             expected = {
@@ -344,10 +344,20 @@ def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[i
                 and actual == expected
                 and all(item[2] == "PASS" for item in branches)
                 and all(
-                    tuple(item[3].get("expected_branch_action_ids", ())) == actions
-                    and item[3].get("replicates") == replicates
-                    and item[3].get("candidates") == list(legal)
-                    and item[3].get("candidate_action_id") == item[0]
+                    tuple(item[4].get("expected_branch_action_ids", ())) == actions
+                    and item[4].get("replicates") == replicates
+                    and item[4].get("candidates") == list(legal)
+                    and item[4].get("candidate_action_id") == item[0]
+                    and item[4].get("source_decision_row_id") == row_id
+                    and item[4].get("split") == split
+                    and item[4].get("branch_sha256")
+                    == content_hash(
+                        {
+                            key: value
+                            for key, value in {**item[4], "tokens_hex": item[3].hex()}.items()
+                            if key != "branch_sha256"
+                        }
+                    )
                     for item in branches
                 )
             )
