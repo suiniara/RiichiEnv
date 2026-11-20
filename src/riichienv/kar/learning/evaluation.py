@@ -265,6 +265,9 @@ def evaluate_complete(  # noqa: PLR0915
     selection: dict[str, Any] = {
         key: 0 for key in ("examples", "action", "response", "rank", "action_count", "response_count", "rank_count")
     }
+    validation_loss: dict[str, Any] = {
+        key: 0 for key in ("examples", "action", "response", "rank", "action_count", "response_count", "rank_count")
+    }
     selection_games: set[str] = set()
     count = 0
     error = None
@@ -294,7 +297,7 @@ def evaluate_complete(  # noqa: PLR0915
                 torch.zeros(batch.inputs.size, dtype=torch.bool, device=context.device),
                 enabled=use_rule_features,
             )
-            viewed = TrainingBatch(inputs, batch.labels, batch.game_ids)
+            viewed = TrainingBatch(inputs, batch.labels, batch.game_ids, batch.source_count)
             forward_context = (
                 predictor.frozen_forward()
                 if predictor is not None
@@ -305,21 +308,38 @@ def evaluate_complete(  # noqa: PLR0915
             with forward_context:
                 outputs = model(inputs)
             if predictor is not None:
-                outputs = replace(outputs, policy_logits=predictor.policy_logits_from_rows(rows))
+                factual_policy = predictor.policy_logits_from_rows(rows)
+                row_index = {row["decision_row_id"]: index for index, row in enumerate(rows)}
+                policy_rows = []
+                for index, context_id in enumerate(batch.inputs.context_ids):
+                    source_index = row_index.get(context_id)
+                    policy_rows.append(
+                        factual_policy[source_index] if source_index is not None else outputs.policy_logits[index]
+                    )
+                outputs = replace(outputs, policy_logits=torch.stack(policy_rows))
+            factual_batch, factual_outputs = _factual_validation_view(viewed, outputs)
             add_diagnostics(
-                metrics, outputs, viewed, calibration=calibration, support=support, public_fields=batch.inputs.fields
+                metrics,
+                factual_outputs,
+                factual_batch,
+                calibration=calibration,
+                support=support,
+                public_fields=factual_batch.inputs.fields,
             )
             partial = cal_fit_loss_summary(outputs, viewed)
+            full_partial = cal_fit_loss_summary(outputs, viewed, fit_only=False)
             for key in selection:
                 selection[key] += partial[key]
+                validation_loss[key] += full_partial[key]
             selection_games.update(partial["games"])
-            count += batch.inputs.size
+            count += int(batch.source_count or 0)
         forward_seconds = perf_counter() - forward_started
         aggregation_started = perf_counter()
         payload = {
             "examples": count,
             "metrics": metrics.state_dict(),
             "selection": selection,
+            "validation_loss": validation_loss,
             "selection_games": sorted(selection_games),
             "forward_seconds": forward_seconds,
         }
