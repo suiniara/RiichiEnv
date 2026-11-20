@@ -6,6 +6,58 @@ mod unit_tests {
     use crate::types::Hand;
 
     #[test]
+    fn replay_continuation_wall_preserves_visible_tiles_and_revealed_indicators() {
+        use std::collections::HashSet;
+
+        use crate::rule::GameRule;
+        use crate::state::GameState;
+
+        let mut state = GameState::new(0, true, Some(17), 0, GameRule::default());
+        state._deal_next();
+        let hands = state.players.iter().map(|player| player.hand.clone()).collect::<Vec<_>>();
+        let rivers = state.players.iter().map(|player| player.discards.clone()).collect::<Vec<_>>();
+        let melds = state.players.iter().map(|player| player.melds.clone()).collect::<Vec<_>>();
+        let indicators = state.wall.dora_indicators.clone();
+        let wall_len = state.wall.tiles.len();
+        let drawable_count = state.wall.drawable_count;
+        let rinshan_count = state.wall.rinshan_draw_count;
+
+        state.prepare_replay_continuation_wall(0x1234).unwrap();
+        let first_wall = state.wall.tiles.clone();
+        let mut second = state.clone();
+        second.prepare_replay_continuation_wall(0x1234).unwrap();
+        assert_eq!(first_wall, second.wall.tiles);
+        let mut third = state.clone();
+        third.prepare_replay_continuation_wall(0x5678).unwrap();
+        assert_ne!(first_wall, third.wall.tiles);
+
+        assert_eq!(state.wall.tiles.len(), wall_len);
+        assert_eq!(state.wall.drawable_count, drawable_count);
+        assert_eq!(state.wall.rinshan_draw_count, rinshan_count);
+        assert_eq!(state.wall.dora_indicators, indicators);
+        assert_eq!(state.players.iter().map(|player| player.hand.clone()).collect::<Vec<_>>(), hands);
+        assert_eq!(state.players.iter().map(|player| player.discards.clone()).collect::<Vec<_>>(), rivers);
+        assert_eq!(state.players.iter().map(|player| player.melds.clone()).collect::<Vec<_>>(), melds);
+
+        for (index, indicator) in indicators.iter().enumerate() {
+            let position = (4 + 2 * index).saturating_sub(rinshan_count as usize);
+            assert_eq!(state.wall.tiles[position], *indicator);
+        }
+        let mut visible = HashSet::new();
+        for player in &state.players {
+            visible.extend(player.hand.iter().copied());
+            visible.extend(player.discards.iter().copied());
+            for meld in &player.melds {
+                visible.extend(meld.tiles.iter().copied());
+            }
+        }
+        let wall: HashSet<_> = state.wall.tiles.iter().copied().collect();
+        assert_eq!(wall.len(), state.wall.tiles.len());
+        assert!(visible.is_disjoint(&wall));
+        assert_eq!(visible.union(&wall).count(), 136);
+    }
+
+    #[test]
     fn test_agari_standard() {
         // Pinfu Tsumo: 123 456 789 m 234 p 55 s
         let tiles = [
