@@ -277,7 +277,7 @@ def collect_and_calibrate(
     ) as ledger:
         predictor = cast(Callable[[], FrozenModelPredictor], predictor)() if callable(predictor) else predictor
         predictor._unchanged()
-        validation = DecisionDataset(dataset_dir, "validation")
+        validation = DecisionDataset(dataset_dir, "validation", include_candidate_branches=False)
         plan = calibration_job_plan(
             predictor,
             validation.manifest,
