@@ -12,7 +12,9 @@ Python 先验证完整候选为 `0..147` 的整数且不是 bool，并拒绝 pen
 
 ## 硬规则与顺序
 
-mask v4 在既有规则上补齐面子容量：某玩家已有四组公开面子（包括已声明的暗杠）时，禁止其继续吃、碰、大明杠，但保留公开仍可能的单骑荣和。三组面子不能被同样排除。`RESPONSE_MASK_VERSION=public_rule_response_mask_v4_meld_capacity`，21 类顺序不变；旧 v3 mask 必须重新生成。
+mask v5 保留面子容量约束：某玩家已有四组公开面子（包括已声明的暗杠）时，禁止其继续吃、碰、大明杠，但保留公开仍可能的单骑荣和。三组面子不能被同样排除。完整公开历史、明确 remaining_draws=0、候选之后至少一人确定流局满贯合格且无确定途中流局时，排除普通荒牌 EXHAUSTIVE_DRAW；荣和仍优先。候选可能破坏本家资格，必须纳入判断；历史或牌山数未知、nagashi 开关关闭时保持保守。
+
+`RESPONSE_MASK_VERSION=public_rule_response_mask_v5_certain_nagashi`，要求 `riichienv_native_rules_v4_nagashi_mask` 原生扩展。21 类顺序不变；旧扩展拒绝加载，旧 mask 数据及绑定产物须从可信事件重新生成或核验，不能只替换版本或摘要。完整136牌合法轨迹、未知历史及候选破坏资格的回归见 [test_nagashi_consistency.py](../../../tests/kar/test_nagashi_consistency.py)，迁移见[修复记录](../../kar-nagashi-precision-repair.md)。
 
 仍区分公开证明的途中流局与仅可能的终止：四风、多玩家四杠、候选四立直按原生优先级；确定终止排除 NEXT_DRAW 与所有吃碰杠，但不压掉公开仍可能的荣和。一人四杠不误判为多人四杠。remaining_draws=0 禁止吃、碰、大明杠；历史不完整不因未知强制终止，已知正/否定证据仍保留。雀魂流局满贯修正不回退。不能因为“对方大概没有对子”或模型概率低而 mask。
 

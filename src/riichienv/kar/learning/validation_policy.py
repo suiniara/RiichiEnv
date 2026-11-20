@@ -66,6 +66,7 @@ def validation_tau_plan(
         "grid": ["infinity" if math.isinf(value) else value for value in values],
         "master_seed": seed,
         "inference_device_type": next(subject.model.parameters()).device.type,
+        "backend_precision": subject.record["backend_precision"],
         "scenario_definition": "independent simulated walls seeded by cal_fit ID,not replayed source hands",
         "matches": len(split.fit_games) * len(values),
         "partition": "cal_fit",

@@ -43,7 +43,7 @@ class RoundPlan:
     oya: int = 2
 
 
-def _plan(kind, *, middle_winner=False):  # noqa: PLR0915
+def _plan(kind, *, middle_winner=False, oya=2, final_middle=False):  # noqa: PLR0915
     """Allocate every tile once, reserving P1's terminal draws and the dead wall."""
     pool = list(range(136))
     dora = _take(pool, "C")
@@ -72,7 +72,7 @@ def _plan(kind, *, middle_winner=False):  # noqa: PLR0915
     initial_hands = [hand.copy() for hand in hands]
     normal, replacements, actions = [], [], []
     draws = 0
-    actor = 2
+    actor = oya
     call_done = kan_done = middle_done = False
 
     def draw(player, *, replacement=False, upgrade_draw=False):
@@ -101,6 +101,8 @@ def _plan(kind, *, middle_winner=False):  # noqa: PLR0915
             kan_done = True
             tile = draw(actor, replacement=True)
         discard = called if needs_call and not call_done and actor == 0 else tile
+        if final_middle and actor == 1 and draws == 70:
+            discard = next(value for value in initial_hands[1] if not _terminal(value))
         assert discard is not None
         actions.append(("discard", actor, discard, ()))
         if needs_call and not call_done and actor == 0:
@@ -141,18 +143,18 @@ def _plan(kind, *, middle_winner=False):  # noqa: PLR0915
     wall = []
     for packet in range(3):
         for relative in range(4):
-            hand = initial_hands[(2 + relative) % 4]
+            hand = initial_hands[(oya + relative) % 4]
             wall.extend(hand[packet * 4 : packet * 4 + 4])
-    wall.extend(initial_hands[(2 + relative) % 4][12] for relative in range(4))
+    wall.extend(initial_hands[(oya + relative) % 4][12] for relative in range(4))
     wall.extend(normal)
     wall.extend(tail)
     assert sorted(wall) == list(range(136)), "no fifth copy, repeated physical tile or missing tile"
     assert sum(tile in {16, 52, 88} for tile in wall) == 3
-    return RoundPlan(tuple(wall), tuple(actions))
+    return RoundPlan(tuple(wall), tuple(actions), oya)
 
 
-def _run_round(kind, *, middle_winner=False, honba=0, pot=0):  # noqa: PLR0915
-    plan = _plan(kind, middle_winner=middle_winner)
+def _run_round(kind, *, middle_winner=False, honba=0, pot=0, oya=2, final_middle=False):  # noqa: PLR0915
+    plan = _plan(kind, middle_winner=middle_winner, oya=oya, final_middle=final_middle)
     scores = [25000, 25000, 25000 - 1000 * pot, 25000]
     env = MJSOUL_RULESET.create_env(seed=214)
     env.reset(wall=list(plan.wall), oya=plan.oya, round_wind=0, honba=honba, kyotaku=pot, scores=scores)
@@ -253,7 +255,13 @@ def test_native_legal_meld_round_agrees_with_independent_settlement_and_public_m
         response = resolve_discard_response(events, trigger)
         if response.response_target == Response.NAGASHI_MANGAN:
             before = snapshot.to_bytes()
-            assert public_rule_response_mask(snapshot, action_id)[Response.NAGASHI_MANGAN] is True
+            allowed = public_rule_response_mask(snapshot, action_id)
+            assert allowed[Response.NAGASHI_MANGAN] is True
+            # With complete history, no remaining draws and no more open calls,
+            # the public eligibility proof rules out ordinary exhaustive draw.
+            assert not allowed[Response.EXHAUSTIVE_DRAW]
+            assert not any(allowed[:8])
+            assert any(allowed[8:15])  # Ron still has priority over nagashi.
             assert snapshot.to_bytes() == before
             observed += 1
     assert observed == 1
@@ -288,6 +296,39 @@ def test_native_open_meld_does_not_override_a_known_middle_discard():
     assert resolve_discard_response(events, trigger).response_target == Response.EXHAUSTIVE_DRAW
 
 
+@pytest.mark.parametrize("final_middle", [False, True], ids=["keeps-nagashi", "breaks-own-nagashi"])
+def test_last_legal_discard_checks_the_candidates_own_nagashi_eligibility(final_middle):
+    _, _, events, draw, _, contexts, _ = _run_round("none", oya=0, final_middle=final_middle)
+    snapshot, action_id, trigger = contexts[-1]
+    assert snapshot.observer_player_id == 1 and snapshot.remaining_draws == 0
+    assert snapshot.history_complete
+    assert snapshot.discard_history[1] == snapshot.current_rivers[1]
+    assert all(_terminal(tile) for tile in snapshot.discard_history[1])
+    assert all(any(not _terminal(tile) for tile in snapshot.discard_history[seat]) for seat in (0, 2, 3))
+    allowed = public_rule_response_mask(snapshot, action_id)
+    assert allowed[Response.EXHAUSTIVE_DRAW] == final_middle
+    assert allowed[Response.NAGASHI_MANGAN] == (not final_middle)
+    actual = resolve_discard_response(events, trigger).response_target
+    assert actual == (Response.EXHAUSTIVE_DRAW if final_middle else Response.NAGASHI_MANGAN)
+    assert draw["reason"] == ("exhaustive_draw" if final_middle else "nagashi_mangan")
+
+
+@pytest.mark.parametrize("history_complete,remaining", [(False, 0), (True, None), (False, None)])
+def test_nagashi_without_complete_public_proof_keeps_ordinary_draw_possible(history_complete, remaining):
+    _, _, _, _, _, contexts, _ = _run_round("none")
+    snapshot, action_id, _ = contexts[-1]
+    uncertain = replace(snapshot, history_complete=history_complete, remaining_draws=remaining)
+    allowed = public_rule_response_mask(uncertain, action_id)
+    assert allowed[Response.EXHAUSTIVE_DRAW] and allowed[Response.NAGASHI_MANGAN]
+
+
+def test_disabling_nagashi_keeps_ordinary_draw_on_the_same_public_prefix():
+    _, _, _, _, _, contexts, _ = _run_round("none")
+    snapshot, action_id, _ = contexts[-1]
+    allowed = public_rule_response_mask(snapshot, action_id, replace(MJSOUL_RULESET, nagashi_mangan=False))
+    assert allowed[Response.EXHAUSTIVE_DRAW] and not allowed[Response.NAGASHI_MANGAN]
+
+
 def test_native_nagashi_keeps_honba_and_riichi_pot_payment_contract():
     env, projection, _, draw, verifier, _, _ = _run_round("pon", honba=3, pot=2)
     assert draw["deltas"] == [-2000, 8000, -4000, -2000]
@@ -300,7 +341,7 @@ def test_native_nagashi_keeps_honba_and_riichi_pot_payment_contract():
 def test_old_rule_contract_is_rejected_by_runtime_binding():
     old = replace(MJSOUL_RULESET, name="mahjong_soul_4p_red_half_v1")
     assert old.ruleset_hash != MJSOUL_RULESET.ruleset_hash
-    assert RESPONSE_MASK_VERSION == "public_rule_response_mask_v4_meld_capacity"
+    assert RESPONSE_MASK_VERSION == "public_rule_response_mask_v5_certain_nagashi"
     current = runtime_contract()
     with pytest.raises(ValueError, match="contracts differ"):
         RuntimeBinding("a" * 64, "b" * 64, current["schema_hash"], old.ruleset_hash, current["action_manifest_hash"])

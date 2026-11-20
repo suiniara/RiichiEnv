@@ -21,6 +21,7 @@ from ..selection_quality import (
 )
 from ..versioning import validate_artifact_contract
 from .config import ModelConfig, frozen_inference_recipe_sha256
+from .precision import FrozenBackendPrecision
 
 if TYPE_CHECKING:
     from .training_config import ProductionTrainConfig
@@ -119,6 +120,9 @@ def m2_prerequisites(  # noqa: PLR0915
         recipe = frozen_inference_recipe_sha256(
             ModelConfig.from_preset("small"),
             use_rule_features=config.use_rule_features,
+            # Validate the archived inference backend without importing Torch
+            # or pretending the current training host produced the tau evidence.
+            backend_precision=FrozenBackendPrecision.from_record(job.get("plan", {}).get("backend_precision", {})),
         )
         binding = RuntimeBinding.current(arm["final_weights_sha256"], dataset_sha256, inference_recipe_sha256=recipe)
         if choice.get("binding_sha256") != binding.digest:

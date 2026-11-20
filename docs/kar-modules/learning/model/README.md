@@ -16,8 +16,8 @@
 
 五张独立 tile 表、40D 数值投影、RMSNorm/QKV/RoPE/SwiGLU、零 dropout 与三个头均保留。缓存绑定 owner、参数及计算 buffer 版本、完整规范候选集、输入/模型合同、上下文、设备和自身 Tensor 状态。旧输入版本、跨决策、集合改变或缓存/模型被改动均拒绝；CPU TokenHistoryCache 是另一层。
 
-`MODEL_VERSION=kar_transformer_v2_legal_set` 标明 forward 改变，不能因参数形状相同声称旧权重精确兼容。完整 Schema ID/hash 没有因此改名。
+当前 `MODEL_VERSION=kar_transformer_v3_semantic_inputs` 标明模型使用现行语义输入合同，不能因参数形状相同声称旧权重精确兼容。完整 Schema ID/hash 没有因此改名。底层 `PrefixCache` 绑定 dtype/autocast；冻结推理的实际数值后端合同由 [FrozenModelPredictor](../inference/README.md) 在完整前后缀调用外层检查。
 
 ## 验证与边界
 
-对应 [test_legal_set_pool.py](../../../../tests/kar/m1/test_legal_set_pool.py)、[test_model.py](../../../../tests/kar/m1/test_model.py)。本轮未执行 backward、optimizer.step、GPU 或阶段训练；只运行有硬守卫的 CPU forward、精确向量、dense/cache、隔离及参数量回归。构造网络会分配内存，不授予训练许可。
+对应 [test_legal_set_pool.py](../../../../tests/kar/m1/test_legal_set_pool.py)、[test_model.py](../../../../tests/kar/m1/test_model.py)，覆盖 CPU forward、精确向量、dense/cache、隔离及参数量；有界梯度和恢复测试需要 `--allow-parameter-updates` 显式开启。本轮执行范围及结果见[修复记录](../../../kar-nagashi-precision-repair.md)，不等同于真实数据训练或 GPU 验收。

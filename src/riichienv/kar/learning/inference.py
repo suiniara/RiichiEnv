@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import torch
@@ -13,6 +14,7 @@ from ..tokenize import TokenHistoryCache, TokenSequence, append_action, encode_p
 from .batch import collate_inputs, rule_feature_view
 from .config import frozen_inference_recipe_sha256
 from .model import KARTransformer, PrefixCache
+from .precision import capture_frozen_backend_precision, frozen_fp32, require_frozen_backend_precision
 
 
 def model_weights_sha256(model: KARTransformer) -> str:
@@ -30,7 +32,10 @@ def model_weights_sha256(model: KARTransformer) -> str:
 
 class FrozenModelPredictor:
     def __init__(self, model: KARTransformer, train_manifest_sha256: str, *, use_rule_features: bool = True):
-        recipe = frozen_inference_recipe_sha256(model.config, use_rule_features=use_rule_features)
+        self.backend_precision = capture_frozen_backend_precision(next(model.parameters()).device.type)
+        recipe = frozen_inference_recipe_sha256(
+            model.config, use_rule_features=use_rule_features, backend_precision=self.backend_precision
+        )
         if any(
             value.is_floating_point() and value.dtype != torch.float32
             for value in (*model.parameters(), *model.buffers())
@@ -55,12 +60,22 @@ class FrozenModelPredictor:
             tuple((tensor.data_ptr(), tensor._version) for tensor in self.model.buffers()),
             self.model.config.contract_hash,
             self.use_rule_features,
+            self.backend_precision,
         )
 
     def _unchanged(self) -> None:
+        require_frozen_backend_precision(self.backend_precision)
         if self._frozen_identity() != self._identity or self.model.training:
             self._cache = self._prefix = None
             raise ValueError("Frozen inference model was updated, reloaded or switched to training")
+
+    @contextmanager
+    def frozen_forward(self) -> Iterator[None]:
+        """Guard the whole model forward, including batched auxiliary heads."""
+        self._unchanged()
+        with frozen_fp32(self.backend_precision):
+            yield
+        self._unchanged()
 
     def _encode_policy_row(self, row: Mapping[str, Any]) -> PrefixCache:
         """The same unpadded, single-prefix computation for calibration and play."""
@@ -76,7 +91,7 @@ class FrozenModelPredictor:
         batch = rule_feature_view(
             batch, torch.zeros(1, dtype=torch.bool, device=device), enabled=self.use_rule_features
         )
-        with torch.autocast(device_type=device.type, enabled=False):
+        with self.frozen_forward():
             return self.model.encode_prefix(batch)
 
     @torch.no_grad()
@@ -153,7 +168,7 @@ class FrozenModelPredictor:
             )
         device = next(self.model.parameters()).device
         batch = collate_inputs(rows).to(device)
-        with torch.autocast(device_type=device.type, enabled=False):
+        with self.frozen_forward():
             responses, ranks = self.model.score_actions(self._cache, batch)
         self.candidate_calls += 1
         self.candidates_scored += len(rows)

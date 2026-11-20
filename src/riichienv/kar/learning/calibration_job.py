@@ -119,6 +119,7 @@ def calibration_job_plan(
         "temperatures": list(temperatures),
         "use_rule_features": predictor.use_rule_features,
         "inference_device_type": next(predictor.model.parameters()).device.type,
+        "backend_precision": predictor.backend_precision.to_record(),
         "quality_policy": quality_policy.to_record(),
     }
     return {**record, "plan_sha256": content_hash(record)}
@@ -160,7 +161,7 @@ def _archive_and_fit(
                 torch.zeros(batch.inputs.size, dtype=torch.bool, device=device),
                 enabled=predictor.use_rule_features,
             )
-            with torch.autocast(device_type=device.type, enabled=False):
+            with predictor.frozen_forward():
                 outputs = model(inputs)
             # A strict gate must be fitted from the deployed single-prefix
             # arithmetic, not a batch-shaped dense forward with teacher ACTION.

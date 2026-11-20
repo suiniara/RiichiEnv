@@ -19,16 +19,20 @@ LEGACY_FIELDS = {
     "input_pipeline_version": "semantic_public_clock_frozen_decisions_v5_response_pass",
     "feature_contract_version": "visible_rule_features_v1_2_2",
     "native_replay_version": "prefix_flags_bridge_v2",
-    "response_mask_version": "public_rule_response_mask_v3_abort_last_draw",
-    "native_rules_version": "riichienv_native_rules_v2_scoring",
+    "response_mask_version": "public_rule_response_mask_v4_meld_capacity",
+    "native_rules_version": "riichienv_native_rules_v3_meld_rules",
     "public_clock_version": "source_record_clock_v0",
     "terminal_public_version": "terminal_without_abort_reveal_v0",
     "branch_quality_version": "preregistered_response_branch_quality_v1",
 }
 
 
-def test_old_native_extension_is_rejected_before_artifacts_can_be_created(monkeypatch):
-    monkeypatch.setattr("riichienv.kar.versioning.NATIVE_RULES_VERSION", "riichienv_native_rules_v2_scoring")
+@pytest.mark.parametrize(
+    "legacy",
+    ["riichienv_native_rules_v1", "riichienv_native_rules_v2_scoring", "riichienv_native_rules_v3_meld_rules"],
+)
+def test_old_native_extension_is_rejected_before_artifacts_can_be_created(monkeypatch, legacy):
+    monkeypatch.setattr("riichienv.kar.versioning.NATIVE_RULES_VERSION", legacy)
     with pytest.raises(ValueError, match="Rebuild the native extension"):
         artifact_contract()
 

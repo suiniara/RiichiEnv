@@ -168,7 +168,10 @@ def test_public_mask_uses_visible_furiten_and_mjsoul_rule_only():
 
 
 def test_last_tile_masks_normal_draw_but_allows_end():
-    state = replace(ledger(round_events()).snapshot(), remaining_draws=0)
+    # This is ordinary exhaustion: every player has visibly discarded a
+    # middle tile, so complete history rules out nagashi before the last tile.
+    rivers = ((4,), (40,), (76,), (8,))
+    state = replace(ledger(round_events()).snapshot(), remaining_draws=0, discard_history=rivers, current_rivers=rivers)
     allowed = public_rule_response_mask(state, 4)
     assert allowed[Response.NEXT_DRAW] is False
     assert allowed[Response.EXHAUSTIVE_DRAW] is True
@@ -441,7 +444,15 @@ def test_nagashi_evidence_checks_are_read_only_and_preserve_other_response_categ
     actual = public_rule_response_mask(state, candidate)
     assert expected[Response.NAGASHI_MANGAN] is True
     assert actual[Response.NAGASHI_MANGAN] is False
-    assert all(actual[index] == value for index, value in enumerate(expected) if index != Response.NAGASHI_MANGAN)
+    # Complete history proves that the control must end in nagashi absent Ron.
+    # Disqualifying its only eligible player restores ordinary exhaustion.
+    assert expected[Response.EXHAUSTIVE_DRAW] is (not history_complete)
+    assert actual[Response.EXHAUSTIVE_DRAW] is True
+    assert all(
+        actual[index] == value
+        for index, value in enumerate(expected)
+        if index not in {Response.NAGASHI_MANGAN, Response.EXHAUSTIVE_DRAW}
+    )
     assert state.to_bytes() == before and control.to_bytes() == control_before
     assert state.discard_history == tuple(history) and state.current_rivers == tuple(rivers)
     assert state.melds == control.melds

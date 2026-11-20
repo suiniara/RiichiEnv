@@ -4,14 +4,17 @@ from dataclasses import asdict, dataclass
 
 from ..contracts import content_hash
 from ..versioning import FEATURE_CONTRACT_VERSION, LOSS_CONTRACT_VERSION, RULE_FEATURE_MASK_VERSION
+from .precision import FrozenBackendPrecision
 
 MODEL_VERSION = "kar_transformer_v3_semantic_inputs"
 FEATURE_VERSION = FEATURE_CONTRACT_VERSION
 LOSS_VERSION = LOSS_CONTRACT_VERSION
-FROZEN_INFERENCE_PRECISION = "fp32_no_autocast_single_prefix_v2"
+FROZEN_INFERENCE_PRECISION = "fp32_ieee_single_prefix_v3"
 
 
-def frozen_inference_recipe_sha256(model_config: ModelConfig, *, use_rule_features: bool) -> str:
+def frozen_inference_recipe_sha256(
+    model_config: ModelConfig, *, use_rule_features: bool, backend_precision: FrozenBackendPrecision
+) -> str:
     if type(use_rule_features) is not bool:
         raise ValueError("Inference feature mode must be explicit boolean metadata")
     return content_hash(
@@ -22,6 +25,7 @@ def frozen_inference_recipe_sha256(model_config: ModelConfig, *, use_rule_featur
             "use_rule_features": use_rule_features,
             "inference_feature_dropout": 0,
             "inference_precision": FROZEN_INFERENCE_PRECISION,
+            "backend_precision": backend_precision.to_record(),
         }
     )
 

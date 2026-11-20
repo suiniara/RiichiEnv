@@ -14,7 +14,7 @@
 
 完整 validation 包括 cal_fit 与 cal_check，继续报告自然分布诊断；返回的 `model_selection` **只含 cal_fit**，固定角色 salt，明确 `cal_check_used=false`。第三轮不能用外层全 validation 均值替代该子记录。
 
-选择目标使用 train 固定 rho 与训练 T=1 loss 合同，不按 validation 有效比例重算。无有效目标不填零。标定诊断要求匹配的 calibration/support、原始后端及冻结 FP32；不会继承外层 autocast，拒绝显式 BF16。未校准验证仍可用已配置的 BF16。
+选择目标使用 train 固定 rho 与训练 T=1 loss 合同，不按 validation 有效比例重算。无有效目标不填零。标定诊断要求匹配的 calibration/support、原始后端及冻结 IEEE FP32；不会继承外层 autocast，拒绝显式 BF16。所有显式 FP32 验证均检查实际数值后端，包括尚未加载校准的模型选择验证；非 IEEE 或前向期间后端改变时拒绝。未校准验证仍可用已配置的 BF16。
 
 ## 模式与可观测结果
 

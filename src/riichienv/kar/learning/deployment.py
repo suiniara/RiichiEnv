@@ -21,6 +21,7 @@ from ..versioning import artifact_contract, validate_artifact_contract
 from .config import ModelConfig
 from .inference import FrozenModelPredictor, model_weights_sha256
 from .model import KARTransformer
+from .precision import FrozenBackendPrecision
 
 
 def frozen_export_plan(
@@ -136,6 +137,7 @@ def save_frozen_release(
         "binding": predictor.binding.to_record(),
         "model_config_hash": model.config.contract_hash,
         "inference_device_type": next(model.parameters()).device.type,
+        "backend_precision": predictor.backend_precision.to_record(),
         "use_rule_features": use_rule_features,
         "implementation": implementation_release_identity(),
         "weights_file_sha256": hashlib.sha256(weights.read_bytes()).hexdigest(),
@@ -204,8 +206,9 @@ class FrozenRelease:
         if (
             probe.binding.to_record() != record["binding"]
             or self.model.config.contract_hash != record["model_config_hash"]
+            or probe.backend_precision != FrozenBackendPrecision.from_record(record.get("backend_precision", {}))
         ):
-            raise ValueError("Loaded weights/configuration/features do not match the frozen policy")
+            raise ValueError("Loaded weights/configuration/features/backend do not match the frozen policy")
         self.support = (
             EventSupport.from_record(record["support"], probe.binding) if record["support"] is not None else None
         )

@@ -14,7 +14,9 @@
 
 ## 模型与缓存合同
 
-冻结路径 `no_grad`、显式关闭完整模型调用的 autocast、要求 FP32 参数/浮点缓冲；推理 recipe 绑定 `fp32_no_autocast_single_prefix_v2`。旧 dense 校准的 recipe 身份与当前绑定不同，必须重新收集和校准，不能改字段或 hash 冒充兼容。推理随机规则置空为零；特征模式不改变模型尺寸。原生 K/V 另记录 autocast 模式，不能跨精度给后缀使用。温度、公开响应 mask、支持罚项、KL 与采样由 [runtime](../../runtime/README.md) 协调，不用真实 E/R 标签挑分支。
+冻结路径 `no_grad`、显式关闭完整模型调用的 autocast、要求 FP32 参数/浮点缓冲；推理 recipe 绑定 `fp32_ieee_single_prefix_v3` 及实际 `frozen_fp32_backend_v1` 合同。`backend_precision` 保存不可变后端身份；构造和每次调用都检查实际 IEEE 精度与后端配置，`frozen_forward()` 将相同约束用于校准辅助头等完整前向。不改变共享宿主全局设置，拒绝非 IEEE 模式及绑定后的配置变化。旧 dense 或上一版单前缀校准必须重新收集和校准，不能改字段或 hash 冒充兼容。
+
+推理随机规则置空为零；特征模式不改变模型尺寸。底层 K/V 缓存检查 autocast 和 dtype；冻结 predictor 还在每次前后缀调用检查实际数值后端，因此它管理的缓存不能跨后端给后缀使用。温度、公开响应 mask、支持罚项、KL 与采样由 [runtime](../../runtime/README.md) 协调，不用真实 E/R 标签挑分支。实际后端合同及未知/旧字段拒绝规则见 [precision](../precision/README.md)。
 
 相等承诺针对相同权重、输入、设备和实现上的策略前缀计算；不承诺跨硬件或 Torch/kernel 版本逐位相同。response/rank 校准仍可批量读取 teacher ACTION 条件头，与部署候选后缀仅有数值容差内的一致性，不宣称三头都逐位相等。
 

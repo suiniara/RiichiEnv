@@ -8,6 +8,7 @@ from riichienv.kar.budget import BudgetLedger, BudgetPlan, CostForecast
 from riichienv.kar.calibration_roles import CALIBRATION_SPLIT_SALT, calibration_is_fit
 from riichienv.kar.contracts import content_hash, game_split
 from riichienv.kar.learning.config import ModelConfig, frozen_inference_recipe_sha256
+from riichienv.kar.learning.precision import FrozenBackendPrecision
 from riichienv.kar.learning.prerequisites import m2_prerequisites, verify_prerequisites
 from riichienv.kar.learning.training_config import (
     ProductionTrainConfig,
@@ -130,9 +131,13 @@ def m2_config(tier="small", games=900):
 
 def growth_fixture(path, results, config, *, subset=False):
     policy = TauSelectionPolicy(bootstrap_replicates=20)
+    backend_precision = FrozenBackendPrecision(
+        "cpu", "synthetic-metadata-only", "ieee", ("flash", "math"), False, True, None
+    )
     recipe = frozen_inference_recipe_sha256(
         ModelConfig.from_preset("small"),
         use_rule_features=config.use_rule_features,
+        backend_precision=backend_precision,
     )
     arm = results["feature-on" if config.use_rule_features else "feature-off"]
     binding = RuntimeBinding.current(arm["final_weights_sha256"], "c" * 64, inference_recipe_sha256=recipe)
@@ -168,6 +173,7 @@ def growth_fixture(path, results, config, *, subset=False):
             "partition": "cal_fit",
             "selection_policy": policy.to_record(),
             "subject_binding_sha256": binding.digest,
+            "backend_precision": backend_precision.to_record(),
             "validation_manifest_sha256": "d" * 64,
             "calibration_split_salt": CALIBRATION_SPLIT_SALT,
             "scenario_game_ids": games,

@@ -22,6 +22,7 @@ from riichienv.kar.learning import dataset as dataset_module
 from riichienv.kar.learning.dataset import DecisionDataset
 from riichienv.kar.learning.export import SQL_SCHEMA, learning_contract
 from riichienv.kar.learning.model import ModelOutputs
+from riichienv.kar.learning.precision import capture_frozen_backend_precision, frozen_fp32
 from riichienv.kar.runtime_contracts import RuntimeBinding
 from riichienv.kar.versioning import game_count_contract
 
@@ -112,6 +113,7 @@ def calibration_request(tmp_path, monkeypatch):
         ),
         model=SimpleNamespace(parameters=lambda: iter((torch.empty(0),))),
         use_rule_features=True,
+        backend_precision=capture_frozen_backend_precision("cpu"),
     )
     heads = ("action", "response", "rank")
     quality = CalibrationQualityPolicy(
@@ -282,6 +284,7 @@ def test_last_partial_batch_reserves_actual_rows_with_an_exact_budget(monkeypatc
         use_rule_features=True,
         binding=None,
         policy_logits_from_rows=lambda rows: torch.zeros(len(rows), 546),
+        frozen_forward=lambda: frozen_fp32(capture_frozen_backend_precision("cpu")),
     )
     monkeypatch.setattr(calibration_job, "dataset_event_support", lambda _data: "synthetic-support")
     monkeypatch.setattr(

@@ -1,6 +1,6 @@
 # KAR-v1.2.2 / RiichiEnv V4 完整主设计
 
-**版本：** 算法 `KAR-v1.2.2` · 宿主合同 `RiichiEnv V4`（`kar_riichienv_contract_v4`） · 文档修订 `design-sync-5`。最后一项仅标识文档，不是新的算法、输入或产物版本。
+**版本：** 算法 `KAR-v1.2.2` · 宿主合同 `RiichiEnv V4`（`kar_riichienv_contract_v4`） · 文档修订 `design-sync-6`。最后一项仅标识文档，不是新的算法、输入或产物版本。
 
 **唯一正文：** `docs/KAR-v1.2.2-DESIGN.md`。对外分发时应从该正文制作逐字节快照，不另维护规范；相对链接以仓库 `docs/` 为基准。此前 `design-sync-1` 的分发文件只对应当时的 `f70684e`，不自动升级。
 
@@ -24,19 +24,19 @@
 | architecture | `kar_kl_response_value_v1` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | artifact | `kar_riichienv_contract_v4` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | ruleset | `mahjong_soul_4p_red_half_v3_native_rules` | [contracts.py](../src/riichienv/kar/contracts.py) |
-| native rules | `riichienv_native_rules_v3_meld_rules`，产物显式绑定 `native_rules_version` | [core/lib.rs](../riichienv-core/src/lib.rs)、[versioning.py](../src/riichienv/kar/versioning.py) |
+| native rules | `riichienv_native_rules_v4_nagashi_mask`，产物显式绑定 `native_rules_version` | [core/lib.rs](../riichienv-core/src/lib.rs)、[versioning.py](../src/riichienv/kar/versioning.py) |
 | protocol identity | `protobuf_source_and_descriptor_v1`，同时绑定主 proto 源字节与完整描述符 | [mjsoul.py](../src/riichienv/kar/mjsoul.py) |
 | input pipeline | `semantic_public_clock_frozen_decisions_v7_native_rules` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | native replay | `native_replay_context_v4` | [native_replay.py](../src/riichienv/kar/native_replay.py) |
 | settlement | `native_mjsoul_settlement_v2` | [settlement.py](../src/riichienv/kar/settlement.py) |
 | dataset / action labels | `kar_decision_sqlite_v1` / `explicit_and_unique_response_pass_v3` | [learning/export.py](../src/riichienv/kar/learning/export.py) |
 | response opportunity evidence | `frozen_response_opportunities_v1` | [response_supervision.py](../src/riichienv/kar/response_supervision.py) |
-| frozen model precision recipe | `fp32_no_autocast_single_prefix_v2` | [learning/config.py](../src/riichienv/kar/learning/config.py) |
+| frozen model precision recipe | `fp32_ieee_single_prefix_v3`，绑定实际 IEEE FP32 后端合同 `frozen_fp32_backend_v1` | [learning/config.py](../src/riichienv/kar/learning/config.py) |
 | public clock | `public_semantic_clock_v1` | [event_semantics.py](../src/riichienv/kar/event_semantics.py) |
 | terminal public resolution | `verified_abort_public_resolution_v1` | [event_semantics.py](../src/riichienv/kar/event_semantics.py) |
 | model computation identity | `kar_transformer_v3_semantic_inputs`，不改变参数形状 | [learning/config.py](../src/riichienv/kar/learning/config.py) |
 | feature semantics / stochastic mask | `visible_rule_features_v2_ryanmen_pairs` / `sample_mask_v1` | [versioning.py](../src/riichienv/kar/versioning.py) |
-| response mask | `public_rule_response_mask_v4_meld_capacity`，四组面子后禁止继续吃碰大明杠，保留已有途中流局、末巡与流局满贯修正 | [contracts.py](../src/riichienv/kar/contracts.py) |
+| response mask | `public_rule_response_mask_v5_certain_nagashi`，保留四组面子容量约束，并在完整公开证据确定末巡流局满贯时排除普通荒牌 | [contracts.py](../src/riichienv/kar/contracts.py) |
 | calibration quality / branch quality | `preregistered_calibration_quality_v3_event_ovr` / `preregistered_response_branch_quality_v2_ovr` | [calibration_quality.py](../src/riichienv/kar/calibration_quality.py) |
 | event support | `train_independent_games_v2_branch_quality`（train 计数定义不变） | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
 | calibration | `heldout_temperatures_log_gate_v6_event_ovr` | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
@@ -450,9 +450,11 @@ $$E2=M[\widehat\Delta-\sum_a|d_a|b_a-3\sum_a(q_0(a)-q_\tau(a))_+\rho_a]-3\delta_
 
 完整 validation 按固定 game hash 分成 cal_fit/cal_check；test 不调参。冻结网络，仅 cal_fit 的固定温度网格选 TA、TE、TR；分别最小化合法动作、masked response、真实 E 分支 rank NLL。cal_check 只评估预登记判据，不能看完后调阈值。
 
-冻结模型合同要求 FP32 参数及浮点缓冲，在校准收集、冻结 prefix/候选及已校准 validation 的完整前向边界关闭 autocast，不靠输出 `.float()` 补精度。推理 recipe 显式绑定 `fp32_no_autocast_single_prefix_v2`。动作校准 logits 与部署共用单样本、无 padding、截至 DECIDE 的 `encode_prefix` 路径；收集时剔除教师 ACTION，不能用批量 dense policy logits 拟合严格门控。相同 FP32 dtype 不保证不同矩阵形状逐位相同；阈值附近的舍入差异足以改变 `>=` 支持集合，因此不以部署侧 epsilon 掩盖差异。Response/Rank 的 heldout logits 仍可批量收集，其路径不构成动作门控数值一致性证明。
+冻结模型合同要求 FP32 参数及浮点缓冲，在校准收集、冻结 prefix/候选及已校准 validation 的完整前向边界关闭 autocast，不靠输出 `.float()` 补精度。推理 recipe 显式绑定 `fp32_ieee_single_prefix_v3` 及实际后端记录 `frozen_fp32_backend_v1`。检查实际生效的矩阵乘法精度，拒绝 CPU MKLDNN BF16/TF32 或 CUDA TF32 等降精度模式；不修改共享宿主的全局设置。后端、SDPA 选择及确定性设置在绑定后发生变化时，拒绝继续复用冻结预测器、缓存或校准。标定计划和发布记录保存同一后端身份，元数据重验使用已保存且通过验证的合同。
 
-原生模型缓存不允许跨 autocast 开关／dtype 使用。未校准的训练验证可用相同精度的 BF16；已校准验证拒绝请求 BF16。若以后提供冻结 BF16，应单独绑定 recipe／cache／calibration／release 并在同一路径重做校准。
+动作校准 logits 与部署共用单样本、无 padding、截至 DECIDE 的 `encode_prefix` 路径；收集时剔除教师 ACTION，不能用批量 dense policy logits 拟合严格门控。相同 FP32 dtype 不保证不同矩阵形状逐位相同；阈值附近的舍入差异足以改变 `>=` 支持集合，因此不以部署侧 epsilon 掩盖差异。Response/Rank 的 heldout logits 仍可批量收集，但完整前向同样验证冻结后端；其路径不构成动作门控数值一致性证明。
+
+底层模型缓存检查 autocast 开关和 dtype；冻结 predictor 通过每次前后缀的后端检查，进一步禁止它管理的缓存跨实际数值后端使用。显式 FP32 验证要求 IEEE 后端，即使尚未加载校准；未校准的训练验证仍可用已配置的 BF16，已校准验证拒绝请求 BF16。若以后提供冻结 BF16，应单独绑定 recipe／cache／calibration／release 并在同一路径重做校准。
 
 已校准完整验证的动作门控诊断也使用上述单前缀路径。逐元素一致性限定于相同设备、实现及前缀输入，不承诺跨 CPU/GPU、内核或库版本的逐位一致；跨运行环境发布仍须满足冻结运行身份与校准证据合同。
 
@@ -489,7 +491,7 @@ $$e\in E_{sup}\iff e\in E_{\mathrm{train}}\ \land\ \mathrm{quality}_{\mathrm{res
 
 ### 11.4 公开规则 mask
 
-mask 的1仅表示未被公开事实证明不可能；未知保守允许。Python 验证完整候选整数 ID 为 `0..147` 且不是 bool，并拒绝 pending-kan 快照；再将 observer、候选牌种/立直位、公开舍牌历史/当前河、副露种类、公开立直接受状态、remaining_draws、history_complete 和规则开关传入 Rust 纯 `PublicRuleContext`。绑定不接 snapshot 或 `GameState`，不读取他家暗手/私有合法列表/隐藏牌山/未来事件或真实标签。mask v4 补齐四组面子的公开容量约束，21 类次序不变；旧 v3 mask 必须重新生成，不能只修改版本字段。
+mask 的1仅表示未被公开事实证明不可能；未知保守允许。Python 验证完整候选整数 ID 为 `0..147` 且不是 bool，并拒绝 pending-kan 快照；再将 observer、候选牌种/立直位、公开舍牌历史/当前河、副露种类、公开立直接受状态、remaining_draws、history_complete 和规则开关传入 Rust 纯 `PublicRuleContext`。绑定不接 snapshot 或 `GameState`，不读取他家暗手/私有合法列表/隐藏牌山/未来事件或真实标签。mask v5 保留四组面子的公开容量约束，并排除公开已确定流局满贯时的普通荒牌，21 类次序不变；旧 mask 必须从可信事件重新生成，不能只修改版本字段。
 
 1. 字牌不能 CHI，只有相对下家可吃；已立直者或已有四组公开面子者不能吃碰大明杠。已声明的暗杠也计作一组；四组面子仍可单骑荣和，不能因此排除 RON。
 2. 完整公开历史中，目标玩家自己舍过候选同基本牌种，排除包含该玩家的 RON mask；不猜隐藏等待或临时振听。
@@ -497,7 +499,7 @@ mask 的1仅表示未被公开事实证明不可能；未知保守允许。Pytho
 4. 候选之后四风连打、多玩家四杠、四家立直按公开证据分 possible/certain。证明任一途中流局必发生时，NEXT_DRAW/CHI/PON/DAIMINKAN及普通荒牌/流局满贯不再可能；**荣和仍先于途中流局**。终止原因优先级为四风→多人四杠→四立直，只有确定证据才压掉低优先级原因。
 5. 多人四杠需要总杠≥4且有多个所有者；一人四杠不触发。四杠已满禁止再大明杠。第四家候选立直必须考虑该候选的立直位，不能只看动作前accepted状态。
 6. remaining_draws=0 时 NEXT_DRAW 与所有吃、碰、大明杠为 False，保留公开规则尚可能的荣和/终局。remaining未知不因缺失断言耗尽。
-7. 流局满贯按雀魂既定修正：自己的吃碰杠本身不取消；自己的中张舍牌或自己的舍牌被叫走才排除资格。先保留已知否定，再对不完整历史作保守判断。不能把错误的“任意 meld 取消”复制到结算。
+7. 流局满贯按雀魂既定修正：自己的吃碰杠本身不取消；自己的中张舍牌或自己的舍牌被叫走才排除资格。先保留已知否定，再对不完整历史作保守判断。完整公开历史、remaining_draws=0 且候选之后至少一人确定合格时，无人荣和就必为流局满贯，因此关闭 EXHAUSTIVE_DRAW；保留荣和优先及确定途中流局优先级。必须计算候选对本家资格的影响，候选中张可以破坏其资格。历史或剩余牌数未知、nagashi 规则关闭时，不应用这条确定性排除。
 8. 不完整历史不由未见事实强行判定终止；已明确公开的四立直/多人四杠证据仍可使用。不能通过扩大 Unknown 掩盖已知规则错误。
 
 顺序固定：公开规则 mask → masked Softmax/TE → train+branch质量价值支持 → unsupported概率质量/−1.5 → KL。统计质量不足不改 allowed。全空 mask 是合同错误，不退回未掩码 Softmax；有效真实标签被排除时定位规则或数据错误，不临时放行标签。
@@ -656,6 +658,8 @@ $$L_\tau=\max\!\left(-3,\overline D_\tau-\sqrt{\frac{18\log(K/\alpha)}{n}}\right
 在 `4132c6a` 后的修复将 native rules 升到 `riichienv_native_rules_v2_scoring`，强制重新编译扩展；完整协议身份、Golden/完成证据 v2、单前缀冻结 recipe 与校准 job v3 均有显式绑定。旧计分、旧协议解码或旧 dense policy 校准产物不能直接作为当前训练/发布证据，须从可核验来源重新审计、导出或收集。回归仅证明已覆盖案例中的错误得到修复；未扫描真实历史训练产物，不据此断言已有训练权重或整个语料受污染。
 
 后续鸣牌修复将 native rules 升到 `riichienv_native_rules_v3_meld_rules`，Response Mask 升到 `public_rule_response_mask_v4_meld_capacity`。四组面子的公开容量会改变部分响应概率的归一化范围；旧 mask 导出及绑定产物须由可信来源重新生成或核验，不能仅改版本。自定义 `kuikae_forbidden=False` 的三人碰牌及四人吃碰在线行为也已与重放统一；KAR 冻结雀魂配置仍使用 `True`。动作 Schema、参数形状和损失公式不变，具体回归见[原生规则边界第 9 节](kar-native-rule-boundary.md#9-后续鸣牌修复公开容量与食替开关)。
+
+在 `85884ab` 后的本轮修复进一步升级 native rules 为 `riichienv_native_rules_v4_nagashi_mask`、mask 为 `public_rule_response_mask_v5_certain_nagashi`，排除公开已确定流局满贯时的普通荒牌；冻结推理 recipe 升为 `fp32_ieee_single_prefix_v3`，显式绑定实际数值后端。旧原生扩展、旧 mask 数据和上一版单前缀校准均明确拒绝；即使重算摘要也不能替代语义重建。实现和本轮验证范围见[流局满贯与冻结精度修复记录](kar-nagashi-precision-repair.md)。
 
 ## 20. 风险与声明边界
 

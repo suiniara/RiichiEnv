@@ -13,6 +13,7 @@
 |---|---|---|
 | `batch` | [说明](batch/README.md) | 输入组批、padding、规则特征视图 |
 | `config` | [说明](config/README.md) | 模型 preset 与参数合同 |
+| `precision` | [说明](precision/README.md) | 实际 IEEE FP32 后端身份与冻结前向检查 |
 | `model` | [说明](model/README.md) | 三头 Transformer 与 prefix KV |
 | `dataset` | [说明](dataset/README.md) | 只读决策数据集与标签组批 |
 | `export` | [说明](export/README.md) | 从通过 gate 的 raw 重建数据 |
@@ -40,7 +41,7 @@
 | `simulation` | [说明](simulation/README.md) | 成对完整基准与固定 M3 |
 | `jobs_cli` | [说明](jobs_cli/README.md) | 冻结模型作业 CLI 接线 |
 
-加上本页，共覆盖 29 个 Python 模块。
+索引随学习子包的模块维护；`precision` 的元数据合同不在导入时加载 Torch。
 
 ## 正式链与历史诊断的区别
 

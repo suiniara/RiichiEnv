@@ -6,7 +6,7 @@
 
 ## 职责与接口
 
-`artifact_contract()` 返回数据、运行时、检查点和发布共用的显式身份。活动格式为 `kar_riichienv_contract_v4`、输入 `semantic_public_clock_frozen_decisions_v7_native_rules`、特征 `visible_rule_features_v2_ryanmen_pairs`；`native_rules_version=riichienv_native_rules_v3_meld_rules` 要求包含四组面子容量与在线食替开关修复的原生扩展，绑定 `native_replay_version=native_replay_context_v4`、公开时钟、终局公开事实与 one-vs-rest 分支质量。保留完整 host Schema 和 N_train 口径；Response Mask 升为 `public_rule_response_mask_v4_meld_capacity`。旧扩展必须重建，旧 mask 数据及其绑定产物必须重新生成或核验；旧语义或缺字段的产物明确拒绝，不因参数形状相同而兼容。完整表见[主设计](../../KAR-v1.2.2-DESIGN.md)。
+`artifact_contract()` 返回数据、运行时、检查点和发布共用的显式身份。活动格式为 `kar_riichienv_contract_v4`、输入 `semantic_public_clock_frozen_decisions_v7_native_rules`、特征 `visible_rule_features_v2_ryanmen_pairs`；`native_rules_version=riichienv_native_rules_v4_nagashi_mask` 要求包含末巡确定流局满贯排除普通荒牌的原生扩展，保留四组面子容量与在线食替开关修复。仍绑定 `native_replay_version=native_replay_context_v4`、公开时钟、终局公开事实与 one-vs-rest 分支质量。保留完整 host Schema 和 N_train 口径；Response Mask 为 `public_rule_response_mask_v5_certain_nagashi`。旧扩展必须重建，旧 mask 数据及其绑定产物必须重新生成或核验；旧语义或缺字段的产物明确拒绝，不因参数形状相同而兼容。冻结推理另以 `fp32_ieee_single_prefix_v3` 绑定实际后端合同。完整表见[主设计](../../KAR-v1.2.2-DESIGN.md)。
 
 `protocol_identity_version=protobuf_source_and_descriptor_v1` 要求源协议与完整描述符的双重身份。数据相关 scope 另携带 `protocol_sha256`（顶层原始 proto）和 `protocol_descriptor_sha256`（包含 imports 的编译结果）；协议依赖修改不能沿用旧审计、恢复记录或导出。Golden 与 completion 证据格式同步为 v2。没有这组身份的旧产物必须从 raw 重新验证，不能只重新签署旧内容。
 

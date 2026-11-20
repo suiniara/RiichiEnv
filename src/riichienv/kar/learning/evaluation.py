@@ -18,6 +18,7 @@ from .dataset import DecisionDataset, TrainingBatch, collate_examples
 from .distributed import DistributedContext
 from .losses import Labels, loss_sums
 from .model import KARTransformer, ModelOutputs
+from .precision import capture_frozen_backend_precision, frozen_fp32
 
 
 def _add_response_diagnostics(
@@ -226,6 +227,7 @@ def evaluate_complete(  # noqa: PLR0915
     predictor = None
     try:
         model.eval()
+        backend_precision = capture_frozen_backend_precision(context.device.type) if precision == "fp32" else None
         if calibration is not None:
             if support is None:
                 raise ValueError("Calibrated diagnostics require the bound support artifact")
@@ -248,7 +250,14 @@ def evaluate_complete(  # noqa: PLR0915
                 enabled=use_rule_features,
             )
             viewed = TrainingBatch(inputs, batch.labels, batch.game_ids)
-            with torch.autocast(device_type=context.device.type, dtype=torch.bfloat16, enabled=precision == "bf16"):
+            forward_context = (
+                predictor.frozen_forward()
+                if predictor is not None
+                else frozen_fp32(backend_precision)
+                if backend_precision is not None
+                else torch.autocast(device_type=context.device.type, dtype=torch.bfloat16)
+            )
+            with forward_context:
                 outputs = model(inputs)
             if predictor is not None:
                 outputs = replace(outputs, policy_logits=predictor.policy_logits_from_rows(rows))

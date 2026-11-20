@@ -138,7 +138,7 @@ def test_current_sqlite_contract_loads_without_changing_model_inputs(synthetic_d
     changed = collate_examples([poisoned])
     for key in original.inputs.fields:
         torch.testing.assert_close(original.inputs.fields[key], changed.inputs.fields[key], rtol=0, atol=0)
-    assert manifest["scope"]["response_mask_version"] == "public_rule_response_mask_v4_meld_capacity"
+    assert manifest["scope"]["response_mask_version"] == "public_rule_response_mask_v5_certain_nagashi"
 
 
 @pytest.mark.parametrize("field", ["protocol_sha256", "protocol_descriptor_sha256"])
@@ -192,10 +192,12 @@ def test_dataset_rejects_previous_ryanmen_semantics_even_with_consistent_storage
     "field,previous",
     [
         ("native_rules_version", "riichienv_native_rules_v2_scoring"),
+        ("native_rules_version", "riichienv_native_rules_v3_meld_rules"),
         ("response_mask_version", "public_rule_response_mask_v3_abort_last_draw"),
+        ("response_mask_version", "public_rule_response_mask_v4_meld_capacity"),
     ],
 )
-def test_dataset_rejects_previous_meld_rules_even_with_consistent_storage(synthetic_dataset, field, previous):
+def test_dataset_rejects_previous_native_rules_or_mask_even_with_consistent_storage(synthetic_dataset, field, previous):
     directory, manifest, _ = synthetic_dataset
     manifest["scope"][field] = previous
     database = directory / "decisions.sqlite3"

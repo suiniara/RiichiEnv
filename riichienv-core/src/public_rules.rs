@@ -290,6 +290,13 @@ pub fn public_response_mask(
                 context.history_complete,
             )
         });
+    // On the final discard no open call can revoke a player's eligibility.
+    // Complete histories make the possible-winner predicate conclusive: if
+    // nobody wins by Ron, nagashi must replace ordinary draw settlement.
+    // Unknown history/wall state remains conservative, and Ron keeps priority.
+    if allowed[20] && context.history_complete && context.remaining_draws == Some(0) {
+        allowed[15] = false;
+    }
     if !allowed.iter().any(|&value| value) {
         return Err(invalid("Public response mask excludes every category"));
     }
@@ -353,7 +360,7 @@ mod tests {
         value.remaining_draws = Some(0);
         let mask = public_response_mask(&value).unwrap();
         assert!(!mask[..8].iter().any(|&bit| bit));
-        assert!(mask[8] && mask[15] && mask[20]);
+        assert!(mask[8] && !mask[15] && mask[20]);
     }
 
     #[test]
@@ -368,6 +375,80 @@ mod tests {
             nagashi_possibilities(1, 1, history, rivers, true).unwrap(),
             [false, false, true, false]
         );
+    }
+
+    fn final_nagashi_context() -> PublicRuleContext<'static> {
+        let mut value = context();
+        value.remaining_draws = Some(0);
+        // Only seat 1 has an all-terminal river, with no called-away discard.
+        value.discard_history = [&[4], &[108], &[40], &[76]];
+        value.current_rivers = value.discard_history;
+        value
+    }
+
+    #[test]
+    fn certain_nagashi_excludes_ordinary_draw_without_masking_ron() {
+        let value = final_nagashi_context();
+        let mask = public_response_mask(&value).unwrap();
+        assert!(mask[20] && !mask[15]);
+        assert!(!mask[..8].iter().any(|&bit| bit));
+        assert!(mask[8..15].iter().all(|&bit| bit));
+
+        // An independent second eligible player also proves nagashi.
+        let mut multiple = value;
+        multiple.discard_history[2] = &[112];
+        multiple.current_rivers[2] = &[112];
+        let mask = public_response_mask(&multiple).unwrap();
+        assert!(mask[20] && !mask[15]);
+    }
+
+    #[test]
+    fn nagashi_certainty_checks_the_candidate_and_called_away_discards() {
+        let mut value = final_nagashi_context();
+        value.discard_history = [&[108], &[4], &[40], &[76]];
+        value.current_rivers = value.discard_history;
+        let keeps_eligibility = public_response_mask(&value).unwrap();
+        assert!(keeps_eligibility[20] && !keeps_eligibility[15]);
+
+        value.candidate.tile_type = 1; // Own 2m breaks the final qualification.
+        let breaks_eligibility = public_response_mask(&value).unwrap();
+        assert!(breaks_eligibility[15] && !breaks_eligibility[20]);
+
+        value.candidate.tile_type = 0;
+        value.current_rivers[0] = &[]; // Own East was called away earlier.
+        let called_away = public_response_mask(&value).unwrap();
+        assert!(called_away[15] && !called_away[20]);
+    }
+
+    #[test]
+    fn nagashi_requires_complete_final_history_and_an_enabled_rule() {
+        for (complete, remaining) in [(false, Some(0)), (true, None), (false, None)] {
+            let mut value = final_nagashi_context();
+            value.history_complete = complete;
+            value.remaining_draws = remaining;
+            let mask = public_response_mask(&value).unwrap();
+            assert!(mask[15] && mask[20]);
+        }
+
+        let mut value = final_nagashi_context();
+        value.remaining_draws = Some(1);
+        let not_final = public_response_mask(&value).unwrap();
+        assert!(not_final[0] && !not_final[15] && !not_final[20]);
+
+        value.remaining_draws = Some(0);
+        value.rules.nagashi_mangan = false;
+        let disabled = public_response_mask(&value).unwrap();
+        assert!(disabled[15] && !disabled[20]);
+    }
+
+    #[test]
+    fn certain_abort_keeps_priority_over_nagashi_and_ordinary_draw() {
+        let mut value = final_nagashi_context();
+        value.meld_counts = [2, 2, 0, 0];
+        value.kan_counts = value.meld_counts;
+        let mask = public_response_mask(&value).unwrap();
+        assert!(mask[18] && !mask[15] && !mask[20]);
+        assert!(mask[8..15].iter().all(|&bit| bit));
     }
 
     #[test]
