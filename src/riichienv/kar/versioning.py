@@ -26,7 +26,7 @@ ARCHITECTURE_ID = "kar_kl_response_value_v1"
 FEATURE_CONTRACT_VERSION = "visible_rule_features_v2_ryanmen_pairs"
 RULE_FEATURE_MASK_VERSION = "sample_mask_v1"
 TRAINING_PLAN_VERSION = "budget_ladder_v1"
-LOSS_CONTRACT_VERSION = "sentinel_safe_v1_2_1"
+LOSS_CONTRACT_VERSION = "source_normalized_candidate_branch_v2"
 MODEL_TIER_BASIS = "N_train_half_games"
 TRAIN_CONFIG_VERSION = "explicit_train_split_scale_v5_decision_time"
 
