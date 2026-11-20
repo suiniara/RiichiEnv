@@ -144,10 +144,16 @@ pub fn nagashi_player_possible(
     candidate_tile: Option<u8>,
     history_complete: bool,
 ) -> bool {
-    let terminals = history
-        .iter()
-        .chain(river.iter())
-        .all(|&tile| is_terminal_tile(tile))
+    // Iterator::all() is true for an empty iterator. An opponent with no
+    // discards cannot qualify merely because there is no non-terminal tile
+    // contradicting eligibility. The current candidate counts as a discard
+    // for the actor, including when this is their first discard.
+    let has_discard = candidate_tile.is_some() || !history.is_empty() || !river.is_empty();
+    let terminals = has_discard
+        && history
+            .iter()
+            .chain(river.iter())
+            .all(|&tile| is_terminal_tile(tile))
         && candidate_tile.is_none_or(|tile| is_terminal_tile(tile * 4));
     nagashi_eligible(terminals, history_complete && history.len() != river.len())
 }
@@ -361,6 +367,34 @@ mod tests {
         let mask = public_response_mask(&value).unwrap();
         assert!(!mask[..8].iter().any(|&bit| bit));
         assert!(mask[8] && !mask[15] && mask[20]);
+    }
+
+    #[test]
+    fn nagashi_requires_at_least_one_actual_discard() {
+        let empty: [&[u8]; 4] = [&[]; 4];
+        // No player has discarded yet; an empty iterator must not prove
+        // nagashi merely because all of its (zero) tiles are terminal.
+        assert_eq!(
+            nagashi_possibilities(0, 1, empty, empty, true).unwrap(),
+            [false; 4]
+        );
+
+        // The candidate is itself the actor's first discard and therefore
+        // counts; opponents with no discards remain ineligible.
+        assert_eq!(
+            nagashi_possibilities(0, 27, empty, empty, true).unwrap(),
+            [true, false, false, false]
+        );
+    }
+
+    #[test]
+    fn empty_rivers_do_not_exclude_ordinary_exhaustive_draw() {
+        let mut value = context();
+        value.candidate.tile_type = 1; // A middle-tile discard cannot qualify.
+        value.remaining_draws = Some(0);
+        let mask = public_response_mask(&value).unwrap();
+        assert!(mask[15]);
+        assert!(!mask[20]);
     }
 
     #[test]
