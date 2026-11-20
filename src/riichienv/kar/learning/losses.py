@@ -34,7 +34,12 @@ class Labels:
         return self.response_applicable & self.response_observed
 
     def to(self, device: torch.device | str) -> Labels:
-        return Labels(**{key: value.to(device) for key, value in self.__dict__.items()})
+        return Labels(
+            **{
+                key: value.to(device) if isinstance(value, Tensor) else value
+                for key, value in self.__dict__.items()
+            }
+        )
 
     def validate(self, batch: int) -> None:
         for key, value in self.__dict__.items():
@@ -125,6 +130,8 @@ def loss_sums(outputs: ModelOutputs, labels: Labels, legal_mask: Tensor) -> Loss
         raise FloatingPointError("Non-finite raw network logits; do not hide with nan_to_num")
     action = _masked_ce(outputs.policy_logits, labels.action_target, labels.action_valid, legal_mask)
     response_valid = labels.response_valid
+    if labels.response_weight is None or labels.value_weight is None:
+        raise ValueError("Auxiliary loss weights must be materialized")
     response_allowed = torch.where(response_valid[:, None], labels.response_allowed, True)
     response_logits = torch.where(response_valid[:, None], outputs.response_logits.float(), 0.0)
     response_nll = F.cross_entropy(
