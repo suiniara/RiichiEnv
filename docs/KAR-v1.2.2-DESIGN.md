@@ -553,6 +553,8 @@ $
 
 分支生成合同：
 
+回放 `start_kyoku` 使用的墙牌可能是占位数据，不能直接拿来续局。分支执行前，必须调用 Rust `prepare_replay_continuation_wall(seed)`：从当前四家暗手、河牌和副露中扣除已确定的物理牌，保留已公开宝牌指示牌在死墙中的原生位置，按当前岭上牌计数和剩余牌数重采样未知墙牌；牌山长度、可摸牌数和已公开状态不变。同一源决策的同一 replicate 对所有候选使用同一 wall seed（common random numbers），策略动作 RNG 则按候选独立派生。Python 不构造牌池、不实现规则，只调用 Rust 原生状态方法。该重采样墙是一个明确的模拟条件，不声称还原牌谱中未公开的真实未来牌山。
+
 1. 在可信牌谱 replay 到每个选定决策 cutoff 时，保存该时刻完整 Rust RiichiEnv 状态的深拷贝。当前 Rust GameState 实现 Clone，Python RiichiEnv 暴露 clone()；此状态包含隐藏手牌与牌山，只能作为标签生成器输入，绝不能序列化进模型特征或交给模型。
 2. 对每个决策的每个合法舍牌候选，从同一冻结状态分别克隆分支，并通过现有原生 execute_candidate/Rust step 路径执行候选；禁止 Python 重新实现规则、修改隐藏状态或手工合成响应事件。
 3. 原始后续牌谱不能用于替代分支的未来。候选一旦改变，之后轨迹通常已经分叉。每个分支必须由预先冻结、版本化的 continuation/opponent policy 继续完整对局，直至产生真实终局；响应事件由分支实际执行产生，名次由 Rust 终局结算产生。
