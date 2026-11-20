@@ -217,6 +217,7 @@ class DecisionDataset(Dataset[dict[str, Any]]):
             actual_pairs = {(action, replicate) for action, replicate, _, _, _ in decoded}
             complete = (
                 bool(expected_actions)
+                and expected_actions == tuple(action for action in legal if action < 148)
                 and type(replicates) is int
                 and replicates > 0
                 and actual_pairs == expected_pairs
@@ -224,7 +225,9 @@ class DecisionDataset(Dataset[dict[str, Any]]):
                 and all(
                     tuple(payload.get("expected_branch_action_ids", ())) == expected_actions
                     and payload.get("replicates") == replicates
-                    for _, _, _, _, payload in decoded
+                    and payload.get("candidates") == list(legal)
+                    and payload.get("candidate_action_id") == action
+                    for action, _, _, _, payload in decoded
                 )
             )
             if complete:
