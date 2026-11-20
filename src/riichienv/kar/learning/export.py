@@ -98,6 +98,8 @@ class GameWriter:
         """Persist a bounded candidate-branch probe at the pre-action native cutoff."""
         if self.branch_probe_decisions <= 0 or opportunity.snapshot.decision_phase != "own_act":
             return
+        if not any(0 <= action < 148 for action in opportunity.candidates):
+            return
         if self.branch_opportunities >= self.branch_probe_decisions:
             return
         from ..candidate_branches import simulate_candidate_branches  # noqa: PLC0415
