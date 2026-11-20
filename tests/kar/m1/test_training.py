@@ -94,6 +94,25 @@ def _slice_batch(batch, start, end):
     )
 
 
+def test_scheduler_warmup_is_bounded_by_short_training_horizon(miniature):
+    from riichienv.kar.learning.train import create_scheduler
+
+    optimizer = create_optimizer(miniature, learning_rate=3e-4)
+    short = create_scheduler(optimizer, total_updates=16)
+    # 3% of a short horizon rounds to one update; it must not become 100.
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-4)
+    short.step()
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-4)
+
+    optimizer = create_optimizer(miniature, learning_rate=3e-4)
+    long = create_scheduler(optimizer, total_updates=1000)
+    # The same proportional rule retains a 30-update warmup for long runs.
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-4 / 30)
+    for _ in range(29):
+        long.step()
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-4)
+
+
 def test_adamw_groups_are_exact_and_disjoint(miniature):
     groups = parameter_groups(miniature)
     assignment = {id(parameter): group["weight_decay"] for group in groups for parameter in group["params"]}
