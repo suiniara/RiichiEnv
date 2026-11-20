@@ -555,7 +555,7 @@ def export_dataset(  # noqa: PLR0915
         effective_supervision = {
             split: _effective_supervision_counts(db, split) for split in ("train", "validation", "test")
         }
-        for split, (response_count, value_count) in effective_supervision.items():
+        for split, (response_count, value_count, _, _) in effective_supervision.items():
             totals[split]["response_valid"] = response_count
             totals[split]["value_valid"] = value_count
         train = totals["train"]
@@ -575,7 +575,17 @@ def export_dataset(  # noqa: PLR0915
                     status: sum(row.get("candidate_branch_rows", {}).get(status, 0) for row in rows)
                     for status in sorted({status for row in rows for status in row.get("candidate_branch_rows", {})})
                 },
-                "production_training_enabled": False,
+                "complete_source_decisions_by_split": {
+                    split: effective_supervision[split][2] for split in ("train", "validation", "test")
+                },
+                "candidate_action_source_counts_by_split": {
+                    split: {
+                        str(action): count
+                        for action, count in sorted(effective_supervision[split][3].items())
+                    }
+                    for split in ("train", "validation", "test")
+                },
+                "production_training_enabled": bool(effective_supervision["train"][2]),
             },
             "response_opportunities_by_split": {split: value.report() for split, value in supervision.items()},
             "rho_E": train["response_valid"] / train["examples"],
