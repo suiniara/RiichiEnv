@@ -166,7 +166,7 @@ def production_update(  # noqa: PLR0915
                 error = caught
             context.coordinate(error, "microbatch backward")
         if real:
-            examples += batch.inputs.size
+            examples += int(batch.source_count or 0)
             objective += float(loss.detach())
             totals["action"] += float(sums.action.detach())
             totals["response"] += float(sums.response.detach())
