@@ -119,6 +119,8 @@ class DecisionDataset(Dataset[dict[str, Any]]):
         self._pid: int | None = None
         self._histories: OrderedDict[tuple[str, int], bytes] = OrderedDict()
         self.history_cache_items = history_cache_items
+        branch_config = self.manifest["scope"].get("candidate_branch_generation", {})
+        self.has_candidate_branches = bool(branch_config.get("enabled"))
         db = self._db()
         if db.execute("SELECT value FROM metadata WHERE key='complete'").fetchone() != ("true",):
             raise ValueError("Dataset transaction is not marked complete")
@@ -190,11 +192,15 @@ class DecisionDataset(Dataset[dict[str, Any]]):
             "action_provenance": row["provenance"],
             "candidate_branches": [],
         }
-        branch_rows = self._db().execute(
-            "SELECT candidate_action_id,replicate,status,tokens,payload FROM branch_samples "
-            "WHERE source_decision_row_id=? ORDER BY candidate_action_id,replicate",
-            (row_id,),
-        ).fetchall()
+        branch_rows = (
+            self._db().execute(
+                "SELECT candidate_action_id,replicate,status,tokens,payload FROM branch_samples "
+                "WHERE source_decision_row_id=? ORDER BY candidate_action_id,replicate",
+                (row_id,),
+            ).fetchall()
+            if self.has_candidate_branches
+            else []
+        )
         if branch_rows:
             decoded = [
                 (action, replicate, status, tokens, json.loads(payload))
