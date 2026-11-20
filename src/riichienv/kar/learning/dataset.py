@@ -235,7 +235,12 @@ class DecisionDataset(Dataset[dict[str, Any]]):
                     and payload.get("replicates") == replicates
                     and payload.get("candidates") == list(legal)
                     and payload.get("candidate_action_id") == action
-                    for action, _, _, _, payload in decoded
+                    and payload.get("source_decision_row_id") == row_id
+                    and payload.get("split") == self.split
+                    and payload.get("branch_sha256") == content_hash(
+                        {**payload, "tokens_hex": tokens.hex(), "branch_sha256": None}
+                    )
+                    for action, _, _, tokens, payload in decoded
                 )
             )
             if complete:
