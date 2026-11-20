@@ -41,6 +41,8 @@ def validation_tau_plan(
             "Finite tau selection requires at least one train-supported, quality-qualified response branch; "
             "keep the calibrated prior"
         )
+    if any(math.isfinite(tau) for tau in values) and subject.support.candidate_branch_source_decisions <= 0:
+        raise ValueError("Finite tau selection requires completed candidate-action branch supervision; keep the prior")
     split = subject.calibration.split
     identity = calibrated_policy_identity(
         subject.calibration.binding,
