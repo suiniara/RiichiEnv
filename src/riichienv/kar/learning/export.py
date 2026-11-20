@@ -493,6 +493,7 @@ def export_dataset(  # noqa: PLR0915
             "master_seed": branch_seed,
             "max_continuation_decisions": branch_max_decisions,
             "continuation_policy": "uniform_native_legal_v1",
+            "wall_conditioning": "native_unknown_tiles_sampled_once_per_source_replicate_shared_across_candidates",
             "scope": "bounded_probe_only_not_production_training_labels",
         },
     }
