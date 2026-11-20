@@ -26,9 +26,16 @@ class TrainingBatch:
     inputs: ModelBatch
     labels: Labels
     game_ids: tuple[str, ...]
+    source_count: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.source_count is None:
+            object.__setattr__(self, "source_count", len(set(self.inputs.context_ids)))
+        if self.source_count < 1:
+            raise ValueError("A training batch needs at least one source decision")
 
     def to(self, device: torch.device | str) -> TrainingBatch:
-        return TrainingBatch(self.inputs.to(device), self.labels.to(device), self.game_ids)
+        return TrainingBatch(self.inputs.to(device), self.labels.to(device), self.game_ids, self.source_count)
 
 
 def collate_examples(examples: list[dict[str, Any]]) -> TrainingBatch:
