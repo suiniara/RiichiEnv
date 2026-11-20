@@ -228,5 +228,7 @@ def simulate_candidate_branches(
                 prefix=prefix,
             )
             row["source_state_identity"] = source_identity
+            row["expected_branch_action_ids"] = [action for action in opportunity.candidates if 0 <= action < 148]
+            row["replicates"] = replicates
             rows.append(row)
     return rows
