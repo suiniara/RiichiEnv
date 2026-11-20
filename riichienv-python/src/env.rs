@@ -366,6 +366,19 @@ impl RiichiEnv {
         }
     }
 
+    /// Install a deterministic, physically consistent continuation wall for a replay branch.
+    /// The operation preserves all current hands, rivers, melds, revealed indicators and wall counts.
+    pub fn prepare_replay_continuation_wall(&mut self, seed: u64) -> PyResult<()> {
+        match &mut self.variant {
+            GameStateVariant::FourPlayer(state) => state
+                .prepare_replay_continuation_wall(seed)
+                .map_err(pyo3::PyErr::from),
+            GameStateVariant::ThreePlayer(_) => Err(pyo3::exceptions::PyValueError::new_err(
+                "Replay continuation wall preparation currently requires four-player state",
+            )),
+        }
+    }
+
     pub fn __copy__(&self) -> Self {
         self.py_clone()
     }
