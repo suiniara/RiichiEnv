@@ -204,3 +204,23 @@ def test_dense_forward_rejects_mismatched_action_factorization(miniature, make_s
     batch.fields["action_tile37"][0, index] = (int(batch.fields["action_tile37"][0, index]) + 1) % 39
     with pytest.raises(ValueError, match="factor fields"):
         miniature(batch)
+
+
+
+@pytest.mark.parameter_updates
+def test_dense_multiple_candidate_actions_backpropagate_through_shared_prefix(miniature, make_sample):
+    samples = [make_sample(seed=42, action_choice=index) for index in range(3)]
+    assert all(sample["tokens"][:-139] == samples[0]["tokens"][:-139] for sample in samples)
+    miniature.train()
+    outputs = miniature(collate_inputs(samples))
+    objective = (
+        outputs.policy_logits.square().mean()
+        + outputs.response_logits.square().mean()
+        + outputs.rank_logits.square().mean()
+    )
+    objective.backward()
+    assert all(parameter.grad is not None for parameter in miniature.parameters())
+    assert all(torch.isfinite(parameter.grad).all() for parameter in miniature.parameters())
+    assert miniature.embedding.scalar["kind"].weight.grad.abs().sum() > 0
+    assert miniature.response_head.weight.grad.abs().sum() > 0
+    assert miniature.value_head.weight.grad.abs().sum() > 0

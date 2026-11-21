@@ -243,6 +243,8 @@ class KARTransformer(nn.Module):
         if not torch.equal(actual, expected):
             raise ValueError("ACTION factor fields do not encode the declared global action")
         decide = batch.decide_index[rows[present]]
+        if not torch.equal(action_index[present], decide + 1):
+            raise ValueError("ACTION token index must immediately follow DECIDE")
         action_positions = batch.fields["positions"][rows[present], action_index[present]]
         decide_positions = batch.fields["positions"][rows[present], decide]
         if not torch.equal(action_positions, decide_positions + 1):
