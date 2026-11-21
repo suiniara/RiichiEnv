@@ -140,6 +140,7 @@ def _choose_own_candidate(
         raise RuntimeError("Native active player has no unambiguous executable action")
     return rng.choice(usable)
 
+
 def _continue_baseline_native(
     env: RiichiEnv, rng: random.Random, *, max_decisions: int
 ) -> tuple[bool, int]:
