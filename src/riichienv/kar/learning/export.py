@@ -72,7 +72,7 @@ def learning_contract() -> dict[str, Any]:
 class GameWriter:
     def __init__(
         self, connection: sqlite3.Connection, game: Any, *, split: str,
-        branch_probe_decisions: int = 0, branch_replicates: int = 1,
+        branch_probe_decisions: int = 8, branch_replicates: int = 1,
         branch_seed: int = 17, branch_max_decisions: int = 10000,
     ):
         self.db, self.game, self.split = connection, game, split
@@ -440,12 +440,12 @@ def export_dataset(  # noqa: PLR0915
         acceptance_dir, {"train": train_games, "validation": validation_games, "test": test_games}
     )
     if (
-        type(branch_probe_decisions) is not int or branch_probe_decisions < 0
+        type(branch_probe_decisions) is not int or branch_probe_decisions < 1
         or type(branch_replicates) is not int or not 1 <= branch_replicates <= 32
         or type(branch_seed) is not int or not 0 <= branch_seed < 2**64
         or type(branch_max_decisions) is not int or branch_max_decisions < 1
     ):
-        raise ValueError("Invalid bounded candidate-branch probe configuration")
+        raise ValueError("Candidate-action branch generation must be enabled with at least one decision per game")
     if not any(source["split"] == "train" for source in sources):
         raise ValueError("No training games selected")
     output_dir = output_dir.resolve()
@@ -486,15 +486,15 @@ def export_dataset(  # noqa: PLR0915
         "sources": sources,
         "label_scope": ACTION_LABEL_VERSION,
         "candidate_branch_generation": {
-            "version": "kar_candidate_branch_probe_v1",
-            "enabled": branch_probe_decisions > 0,
+            "version": "kar_candidate_action_branch_v2",
+            "enabled": True,
             "max_decisions_per_game": branch_probe_decisions,
             "replicates": branch_replicates,
             "master_seed": branch_seed,
             "max_continuation_decisions": branch_max_decisions,
-            "continuation_policy": "uniform_native_legal_v1",
+            "continuation_policy": "native_riichi_baseline_v2",
             "wall_conditioning": "native_unknown_tiles_sampled_once_per_source_replicate_shared_across_candidates",
-            "scope": "bounded_probe_only_not_production_training_labels",
+            "scope": "candidate_action_branch_supervision",
         },
     }
     if not resume:
@@ -586,7 +586,7 @@ def export_dataset(  # noqa: PLR0915
                     }
                     for split in ("train", "validation", "test")
                 },
-                "production_training_enabled": bool(effective_supervision["train"][2]),
+                "training_supervision_enabled": True,
             },
             "response_opportunities_by_split": {split: value.report() for split, value in supervision.items()},
             "rho_E": train["response_valid"] / train["examples"],
@@ -620,7 +620,7 @@ def main() -> int:
     parser.add_argument("--test-games", type=int, default=0)
     parser.add_argument("--all-games", action="store_true")
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--branch-probe-decisions", type=int, default=0)
+    parser.add_argument("--branch-probe-decisions", type=int, default=8)
     parser.add_argument("--branch-replicates", type=int, default=1)
     parser.add_argument("--branch-seed", type=int, default=17)
     parser.add_argument("--branch-max-decisions", type=int, default=10000)
