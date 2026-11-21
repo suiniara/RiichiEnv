@@ -14,7 +14,7 @@ def test_baseline_discard_score_preserves_connected_tiles_and_dora():
     connected_tile = _discard_efficiency_score(hand, 4, set())
     dora_tile = _discard_efficiency_score(hand, 4, {1})
     assert isolated_honor > connected_tile
-    assert _discard_efficiency_score(hand, 4, {1}) == dora_tile
+    assert dora_tile < connected_tile
 
 
 def _own_action_opportunity(seed=73):
