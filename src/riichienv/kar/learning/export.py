@@ -95,7 +95,7 @@ class GameWriter:
         self.response_labels: Counter[str] = Counter()
 
     def on_opportunity(self, native_env: Any, opportunity: Any, game_id: str, cutoff_event_id: int) -> None:
-        """Persist a bounded candidate-branch probe at the pre-action native cutoff."""
+        """Persist all candidate branches for the configured source decisions."""
         if self.branch_probe_decisions <= 0 or opportunity.snapshot.decision_phase != "own_act":
             return
         if not any(0 <= action < 148 for action in opportunity.candidates):
@@ -625,7 +625,7 @@ def main() -> int:
     parser.add_argument("--test-games", type=int, default=0)
     parser.add_argument("--all-games", action="store_true")
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--branch-probe-decisions", type=int, default=8, help="Maximum own-action decision states branched per source game (default: enabled, 8)")
+    parser.add_argument("--branch-probe-decisions", "--candidate-branch-decisions-per-game", dest="branch_probe_decisions", type=int, default=8, help="Maximum own-action decision states branched per source game (default: enabled, 8)")
     parser.add_argument("--branch-replicates", type=int, default=1)
     parser.add_argument("--branch-seed", type=int, default=17)
     parser.add_argument("--branch-max-decisions", type=int, default=10000)
