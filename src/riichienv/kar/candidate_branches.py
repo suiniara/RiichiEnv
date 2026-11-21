@@ -14,7 +14,7 @@ from .response_mask import public_rule_response_mask, validate_response_target
 from .tokenize import append_action, encode_prefix
 
 BRANCH_DATA_VERSION = "kar_candidate_branch_probe_v1"
-CONTINUATION_POLICY_VERSION = "uniform_native_legal_v1"
+CONTINUATION_POLICY_VERSION = "native_riichi_baseline_v2"
 
 
 def _wall_seed(master_seed: int, game_id: str, cutoff_event_id: int, replicate: int) -> int:
@@ -33,10 +33,50 @@ def _seed(
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
 
 
-def _continue_uniform_native(
+def _choose_response_action(legal: list[Any], rng: random.Random) -> Any:
+    wins = [action for action in legal if action.action_type == ActionType.RON]
+    if wins:
+        return wins[0]
+    passes = [action for action in legal if action.action_type == ActionType.PASS]
+    calls = [action for action in legal if action.action_type not in {ActionType.PASS, ActionType.RON}]
+    if calls and rng.random() < 0.15:
+        return rng.choice(calls)
+    if passes:
+        return passes[0]
+    if legal:
+        return rng.choice(legal)
+    raise RuntimeError("Native responder has no legal action")
+
+
+def _choose_own_candidate(candidates: list[MappedAction], rng: random.Random) -> MappedAction:
+    wins = [candidate for candidate in candidates if candidate.spec.action_type == "TSUMO"]
+    if wins:
+        return wins[0]
+
+    discards = [candidate for candidate in candidates if candidate.spec.action_type == "DISCARD"]
+    if discards:
+        by_tile: dict[int, list[MappedAction]] = {}
+        for candidate in discards:
+            assert candidate.spec.tile37 is not None
+            by_tile.setdefault(candidate.spec.tile37, []).append(candidate)
+        tile = rng.choice(sorted(by_tile))
+        variants = by_tile[tile]
+        riichi = [candidate for candidate in variants if candidate.spec.riichi]
+        ordinary = [candidate for candidate in variants if not candidate.spec.riichi]
+        if riichi and ordinary:
+            return rng.choice(riichi if rng.random() < 0.5 else ordinary)
+        return rng.choice(variants)
+
+    usable = [candidate for candidate in candidates if not candidate.native_execution_ambiguous]
+    if not usable:
+        raise RuntimeError("Native active player has no unambiguous executable action")
+    return rng.choice(usable)
+
+
+def _continue_baseline_native(
     env: RiichiEnv, rng: random.Random, *, max_decisions: int
 ) -> tuple[bool, int]:
-    """Finish one branch using only native legal actions; no Python rule logic."""
+    """Continue with a legal, deliberately simple riichi-aware baseline policy."""
     decisions = 0
     while not env.done():
         if decisions >= max_decisions:
@@ -49,9 +89,7 @@ def _continue_uniform_native(
             choices = {}
             for seat in seats:
                 legal = list(observations[seat].legal_actions())
-                if not legal:
-                    raise RuntimeError("Active native responder has no legal action")
-                choices[seat] = rng.choice(legal)
+                choices[seat] = _choose_response_action(legal, rng)
             before = len(env.rule_log)
             env.step(choices)
             if len(env.rule_log) == before and not env.done():
@@ -66,19 +104,10 @@ def _continue_uniform_native(
             observation = env.get_observations([seat])[seat]
             mapped = legal_candidates(observation)
             usable = [candidate for candidate in mapped if not candidate.native_execution_ambiguous]
-            if usable:
-                execute_candidate(env, seat, rng.choice(usable))
-            else:
-                legal = [action for action in observation.legal_actions() if action.action_type != ActionType.RIICHI]
-                if not legal:
-                    raise RuntimeError("Native active player has no executable legal action")
-                before = len(env.rule_log)
-                env.step({seat: rng.choice(legal)})
-                if len(env.rule_log) == before and not env.done():
-                    raise RuntimeError("Native own-action step did not advance the branch")
+            selected = _choose_own_candidate(usable, rng)
+            execute_candidate(env, seat, selected)
         decisions += 1
     return True, decisions
-
 
 def _branch_one(
     source_env: RiichiEnv,
@@ -154,7 +183,7 @@ def _branch_one(
             raise ValueError("Candidate branch did not emit exactly one native discard")
         trigger_id = trigger_ids[0]
         allowed = public_rule_response_mask(opportunity.snapshot, action_id)
-        complete, continuation_decisions = _continue_uniform_native(
+        complete, continuation_decisions = _continue_baseline_native(
             env, random.Random(seed), max_decisions=max_decisions
         )
         if not complete:
