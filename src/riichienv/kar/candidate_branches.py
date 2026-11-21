@@ -14,7 +14,7 @@ from .response import resolve_discard_response
 from .response_mask import public_rule_response_mask, validate_response_target
 from .tokenize import append_action, encode_prefix
 
-BRANCH_DATA_VERSION = "kar_candidate_branch_probe_v1"
+BRANCH_DATA_VERSION = "kar_candidate_action_branch_v2"
 CONTINUATION_POLICY_VERSION = "native_riichi_baseline_v2"
 
 
@@ -302,9 +302,9 @@ def simulate_candidate_branches(
 ) -> list[dict[str, Any]]:
     """Enumerate legal discard candidates from one immutable native decision state.
 
-    This probe uses a deliberately simple, versioned uniform-legal continuation
-    policy. Its outcomes are conditional on that policy and are not production
-    counterfactual ground truth for arbitrary opponents.
+    This branch generator uses a versioned riichi-aware native-legal baseline continuation
+    policy. Outcomes estimate candidate values conditional on that fixed baseline,
+    not policy-independent counterfactual ground truth.
     """
     if not source_game_id or type(cutoff_event_id) is not int or cutoff_event_id < 0:
         raise ValueError("A branch requires a source game and nonnegative decision cutoff")
