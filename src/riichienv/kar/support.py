@@ -66,7 +66,7 @@ class EventSupport:
             "counting_unit": "distinct_complete_train_game_id",
             "support_threshold": 500,
             "value_gate": "train_count_and_preregistered_branch_quality",
-            "candidate_branch_version": "kar_candidate_branch_probe_v1",
+            "candidate_branch_version": "kar_candidate_action_branch_v2",
             "candidate_branch_counting_unit": "distinct_complete_source_decision",
             "candidate_branch_source_decisions": self.candidate_branch_source_decisions,
             "candidate_action_source_counts": list(self.candidate_action_source_counts),
