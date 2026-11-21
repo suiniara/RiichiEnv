@@ -236,6 +236,10 @@ class DecisionDataset(Dataset[dict[str, Any]]):
                     and payload.get("candidates") == list(legal)
                     and payload.get("candidate_action_id") == action
                     and payload.get("source_decision_row_id") == row_id
+                    and payload.get("source_game_id") == row["game_id"]
+                    and payload.get("source_cutoff_event_id") == row["cutoff_event_id"]
+                    and payload.get("observer") == row["observer"]
+                    and payload.get("source_state_identity") == first.get("source_state_identity")
                     and payload.get("split") == self.split
                     and payload.get("branch_sha256")
                     == content_hash(
