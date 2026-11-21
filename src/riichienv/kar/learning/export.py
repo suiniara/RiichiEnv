@@ -71,7 +71,7 @@ def learning_contract() -> dict[str, Any]:
 
 class GameWriter:
     def __init__(
-        self, connection: sqlite3.Connection, game: Any, *, split: str,
+        self, connection: sqlite3.Connection, game: Any, *, split: str = "train",
         branch_probe_decisions: int = 8, branch_replicates: int = 1,
         branch_seed: int = 17, branch_max_decisions: int = 10000,
     ):
