@@ -64,7 +64,6 @@ jobs:
           tests/kar/m1/test_training.py
           tests/kar/production/test_full_trainer.py
           tests/kar/production/test_training_contracts.py
-          -k 'not real_gloo and not real_production_global_sum'
 
   py-lint:
     name: ruff and ty

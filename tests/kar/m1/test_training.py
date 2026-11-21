@@ -94,6 +94,65 @@ def _slice_batch(batch, start, end):
     )
 
 
+def test_scheduler_warmup_is_bounded_by_short_training_horizon(miniature):
+    from riichienv.kar.learning.train import create_scheduler
+
+    optimizer = create_optimizer(miniature, learning_rate=3e-4)
+    short = create_scheduler(optimizer, total_updates=16)
+    # 3% of a short horizon rounds to one update; it must not become 100.
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-4)
+    optimizer.step()
+    short.step()
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-4)
+
+    optimizer = create_optimizer(miniature, learning_rate=3e-4)
+    long = create_scheduler(optimizer, total_updates=1000)
+    # The same proportional rule retains a 30-update warmup for long runs.
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-4 / 30)
+    for _ in range(29):
+        optimizer.step()
+        long.step()
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-4)
+
+
+def test_candidate_branch_batch_keeps_one_policy_label_and_unit_auxiliary_mass(make_sample):
+    source = make_sample(42)
+    source.update(
+        action_valid=True,
+        response_target=0,
+        response_applicable=True,
+        response_observed=True,
+        final_rank=1,
+        value_valid=True,
+        response_allowed=[True] * 21,
+    )
+    branches = []
+    for action, event, rank in ((4, 2, 1), (8, 3, 2), (12, 4, 3)):
+        branches.append(
+            {
+                **source,
+                "decision_row_id": source["decision_row_id"],
+                "action_target": -1,
+                "action_valid": False,
+                "response_target": event,
+                "response_applicable": True,
+                "response_observed": True,
+                "final_rank": rank,
+                "value_valid": True,
+                "action_provenance": "native_candidate_branch",
+                "candidate_action_id": action,
+            }
+        )
+    source["candidate_branches"] = branches
+    batch = collate_examples([source])
+    assert batch.source_count == 1 and batch.inputs.size == 4
+    assert batch.labels.action_valid.tolist() == [True, False, False, False]
+    assert batch.labels.response_valid.tolist() == [False, True, True, True]
+    assert batch.labels.response_weight.tolist() == pytest.approx([0.0, 1 / 3, 1 / 3, 1 / 3])
+    assert batch.labels.value_weight.tolist() == pytest.approx([0.0, 1 / 3, 1 / 3, 1 / 3])
+    assert len(set(batch.inputs.context_ids)) == 1
+
+
 def test_adamw_groups_are_exact_and_disjoint(miniature):
     groups = parameter_groups(miniature)
     assignment = {id(parameter): group["weight_decay"] for group in groups for parameter in group["params"]}

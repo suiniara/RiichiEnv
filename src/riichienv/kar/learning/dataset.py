@@ -26,16 +26,52 @@ class TrainingBatch:
     inputs: ModelBatch
     labels: Labels
     game_ids: tuple[str, ...]
+    source_count: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.source_count is None:
+            object.__setattr__(self, "source_count", len(set(self.inputs.context_ids)))
+        if self.source_count < 1:
+            raise ValueError("A training batch needs at least one source decision")
 
     def to(self, device: torch.device | str) -> TrainingBatch:
-        return TrainingBatch(self.inputs.to(device), self.labels.to(device), self.game_ids)
+        return TrainingBatch(self.inputs.to(device), self.labels.to(device), self.game_ids, self.source_count)
 
 
 def collate_examples(examples: list[dict[str, Any]]) -> TrainingBatch:
-    inputs = collate_inputs(examples)
+    if not examples:
+        raise ValueError("Cannot collate an empty source-decision batch")
+    expanded: list[dict[str, Any]] = []
+    response_weights: list[float] = []
+    value_weights: list[float] = []
+    for source in examples:
+        branches = list(source.get("candidate_branches", ()))
+        base = {key: value for key, value in source.items() if key != "candidate_branches"}
+        if branches:
+            # A complete branch group replaces factual auxiliary labels for this
+            # source decision. Policy supervision remains on the one factual row.
+            base["response_applicable"] = False
+            base["response_observed"] = False
+            base["value_valid"] = False
+            expanded.append(base)
+            response_weights.append(0.0)
+            value_weights.append(0.0)
+            branch_weight = 1.0 / len(branches)
+            for branch in branches:
+                expanded.append(branch)
+                response_weights.append(branch_weight)
+                value_weights.append(branch_weight)
+        else:
+            expanded.append(base)
+            response_weights.append(
+                1.0 if base["response_applicable"] and base["response_observed"] else 0.0
+            )
+            value_weights.append(1.0 if base["value_valid"] else 0.0)
+
+    inputs = collate_inputs(expanded)
 
     def vector(name: str, *, boolean: bool = False) -> torch.Tensor:
-        return torch.tensor([example[name] for example in examples], dtype=torch.bool if boolean else torch.int64)
+        return torch.tensor([example[name] for example in expanded], dtype=torch.bool if boolean else torch.int64)
 
     labels = Labels(
         vector("action_target"),
@@ -45,14 +81,23 @@ def collate_examples(examples: list[dict[str, Any]]) -> TrainingBatch:
         vector("response_observed", boolean=True),
         vector("final_rank"),
         vector("value_valid", boolean=True),
-        torch.tensor([example["response_allowed"] for example in examples], dtype=torch.bool),
+        torch.tensor([example["response_allowed"] for example in expanded], dtype=torch.bool),
+        torch.tensor(response_weights, dtype=torch.float32),
+        torch.tensor(value_weights, dtype=torch.float32),
     )
     labels.validate(inputs.size)
-    return TrainingBatch(inputs, labels, tuple(example["game_id"] for example in examples))
-
+    return TrainingBatch(inputs, labels, tuple(example["game_id"] for example in expanded), len(examples))
 
 class DecisionDataset(Dataset[dict[str, Any]]):
-    def __init__(self, directory: Path | str, split: str, *, verify_hash: bool = True, history_cache_items: int = 32):
+    def __init__(
+        self,
+        directory: Path | str,
+        split: str,
+        *,
+        verify_hash: bool = True,
+        history_cache_items: int = 32,
+        include_candidate_branches: bool = False,
+    ):
         if split not in {"train", "validation", "test"}:
             raise ValueError("Unknown dataset split")
         self.directory, self.split = Path(directory).resolve(), split
@@ -82,6 +127,8 @@ class DecisionDataset(Dataset[dict[str, Any]]):
         self._pid: int | None = None
         self._histories: OrderedDict[tuple[str, int], bytes] = OrderedDict()
         self.history_cache_items = history_cache_items
+        branch_config = self.manifest["scope"].get("candidate_branch_generation", {})
+        self.has_candidate_branches = bool(branch_config.get("enabled")) and include_candidate_branches
         db = self._db()
         if db.execute("SELECT value FROM metadata WHERE key='complete'").fetchone() != ("true",):
             raise ValueError("Dataset transaction is not marked complete")
@@ -135,7 +182,7 @@ class DecisionDataset(Dataset[dict[str, Any]]):
         if len(history) < count or len(row["state"]) != 63 * TOKEN_BYTE_SIZE or len(row["action"]) != TOKEN_BYTE_SIZE:
             raise ValueError("Shared history/state/ACTION size mismatch")
         legal = tuple(value for value in struct.unpack("<32H", row["candidates"]) if value != 546)
-        return {
+        result = {
             "decision_row_id": row_id,
             "game_id": row["game_id"],
             "tokens": history[:count] + row["state"] + row["action"],
@@ -151,4 +198,81 @@ class DecisionDataset(Dataset[dict[str, Any]]):
             "value_valid": bool(row["value_valid"]),
             "response_allowed": [bool(value) for value in row["response_allowed"]],
             "action_provenance": row["provenance"],
+            "candidate_branches": [],
         }
+        branch_rows = (
+            self._db().execute(
+                "SELECT candidate_action_id,replicate,status,tokens,payload FROM branch_samples "
+                "WHERE source_decision_row_id=? ORDER BY candidate_action_id,replicate",
+                (row_id,),
+            ).fetchall()
+            if self.has_candidate_branches
+            else []
+        )
+        if branch_rows:
+            decoded = [
+                (action, replicate, status, tokens, json.loads(payload))
+                for action, replicate, status, tokens, payload in branch_rows
+            ]
+            first = decoded[0][4]
+            expected_actions = tuple(first.get("expected_branch_action_ids", ()))
+            replicates = first.get("replicates")
+            expected_pairs = {
+                (action, replicate)
+                for action in expected_actions
+                for replicate in range(replicates if type(replicates) is int else 0)
+            }
+            actual_pairs = {(action, replicate) for action, replicate, _, _, _ in decoded}
+            complete = (
+                bool(expected_actions)
+                and expected_actions == tuple(action for action in legal if action < 148)
+                and type(replicates) is int
+                and replicates > 0
+                and actual_pairs == expected_pairs
+                and all(status == "PASS" for _, _, status, _, _ in decoded)
+                and all(
+                    tuple(payload.get("expected_branch_action_ids", ())) == expected_actions
+                    and payload.get("replicates") == replicates
+                    and payload.get("candidates") == list(legal)
+                    and payload.get("candidate_action_id") == action
+                    and payload.get("source_decision_row_id") == row_id
+                    and payload.get("source_game_id") == row["game_id"]
+                    and payload.get("source_cutoff_event_id") == row["cutoff_event_id"]
+                    and payload.get("observer") == row["observer"]
+                    and payload.get("source_state_identity") == first.get("source_state_identity")
+                    and payload.get("split") == self.split
+                    and payload.get("branch_sha256")
+                    == content_hash(
+                        {
+                            key: value
+                            for key, value in {**payload, "tokens_hex": tokens.hex()}.items()
+                            if key != "branch_sha256"
+                        }
+                    )
+                    for action, _, _, tokens, payload in decoded
+                )
+            )
+            if complete:
+                for action, replicate, _, tokens, payload in decoded:
+                    result["candidate_branches"].append(
+                        {
+                            "decision_row_id": row_id,
+                            "game_id": row["game_id"],
+                            "tokens": tokens,
+                            "candidates": tuple(payload["candidates"]),
+                            "decide_index": payload["decide_index"],
+                            "action_index": payload["action_index"],
+                            "action_target": -1,
+                            "action_valid": False,
+                            "response_target": payload["response_target"],
+                            "response_applicable": True,
+                            "response_observed": True,
+                            "final_rank": payload["final_rank"],
+                            "value_valid": True,
+                            "response_allowed": payload["response_allowed"],
+                            "action_provenance": "native_candidate_branch",
+                            "candidate_action_id": action,
+                            "replicate": replicate,
+                        }
+                    )
+        return result

@@ -136,7 +136,12 @@ def _finish_response(
         counts.observe(window.phase, closure, status)
 
 
-def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | None = None) -> dict[str, Any]:  # noqa: PLR0915
+def replay_game(
+    game: Any,
+    *,
+    on_decision: Callable[[ReplayDecision], None] | None = None,
+    on_opportunity: Callable[[Any, ReplayOpportunity, str, int], None] | None = None,
+) -> dict[str, Any]:  # noqa: PLR0915
     env = MJSOUL_RULESET.create_env(seed=0)
     ledgers = [ObserverLedger(seat, (0, 1, 2, 3)) for seat in range(4)]
     own: ReplayOpportunity | None = None
@@ -285,6 +290,11 @@ def replay_game(game: Any, *, on_decision: Callable[[ReplayDecision], None] | No
                     raise ValueError("Draw/call before the frozen robbing window could open")
                 observation = env.get_observations([actor])[actor]
                 own = ReplayOpportunity.observe(ledgers[actor], observation)
+                if on_opportunity is not None and own.snapshot.decision_phase == "own_act":
+                    # Expose the native state at the decision cutoff, before
+                    # the factual replay applies the expert action. Branch code
+                    # must clone before stepping and never mutate the replay env.
+                    on_opportunity(env, own, game.game_id, index)
             elif typ == "dahai":
                 seats = sorted(env.active_players) if env.phase == Phase.WaitResponse else []
                 observations = env.get_observations(seats) if seats else {}

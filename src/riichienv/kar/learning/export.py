@@ -22,7 +22,7 @@ from ..response_supervision import RESPONSE_SUPERVISION_VERSION, OpportunityCoun
 from ..schema import TOKEN_BYTE_SIZE
 from ..versioning import artifact_contract, game_count_contract, validate_artifact_contract
 
-DATASET_VERSION = "kar_decision_sqlite_v1"
+DATASET_VERSION = "kar_decision_sqlite_v2_candidate_branches"
 ACTION_LABEL_VERSION = "explicit_and_unique_response_pass_v3"
 SQL_SCHEMA = """
 CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -38,6 +38,11 @@ CREATE TABLE samples (
  response_observed INTEGER NOT NULL, response_target INTEGER NOT NULL, final_rank INTEGER NOT NULL,
  value_valid INTEGER NOT NULL, response_allowed BLOB NOT NULL, provenance TEXT NOT NULL, diagnostic TEXT NOT NULL);
 CREATE INDEX samples_game ON samples(game_id,observer,ordinal);
+CREATE TABLE branch_samples (
+ branch_id TEXT PRIMARY KEY, source_game_id TEXT NOT NULL, source_decision_row_id TEXT NOT NULL,
+ split TEXT NOT NULL, candidate_action_id INTEGER NOT NULL, replicate INTEGER NOT NULL,
+ status TEXT NOT NULL, tokens BLOB NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX branch_samples_source ON branch_samples(source_game_id,source_decision_row_id);
 """
 
 
@@ -65,8 +70,18 @@ def learning_contract() -> dict[str, Any]:
 
 
 class GameWriter:
-    def __init__(self, connection: sqlite3.Connection, game: Any):
-        self.db, self.game = connection, game
+    def __init__(
+        self, connection: sqlite3.Connection, game: Any, *, split: str = "train",
+        branch_probe_decisions: int = 8, branch_replicates: int = 1,
+        branch_seed: int = 17, branch_max_decisions: int = 10000,
+    ):
+        self.db, self.game, self.split = connection, game, split
+        self.branch_probe_decisions = branch_probe_decisions
+        self.branch_replicates = branch_replicates
+        self.branch_seed = branch_seed
+        self.branch_max_decisions = branch_max_decisions
+        self.branch_opportunities = 0
+        self.branch_counts: Counter[str] = Counter()
         self.histories: dict[int, bytes] = {}
         self.ordinals: Counter[tuple[int, int]] = Counter()
         self.round_at = []
@@ -78,6 +93,62 @@ class GameWriter:
         self.examples = self.response_count = self.value_count = 0
         self.provenance: Counter[str] = Counter()
         self.response_labels: Counter[str] = Counter()
+
+    def on_opportunity(self, native_env: Any, opportunity: Any, game_id: str, cutoff_event_id: int) -> None:
+        """Persist all candidate branches for the configured source decisions."""
+        if self.branch_probe_decisions <= 0 or opportunity.snapshot.decision_phase != "own_act":
+            return
+        if not any(0 <= action < 148 for action in opportunity.candidates):
+            return
+        if self.branch_opportunities >= self.branch_probe_decisions:
+            return
+        from ..candidate_branches import simulate_candidate_branches  # noqa: PLC0415
+
+        actor = opportunity.snapshot.observer_player_id
+        round_instance = self.round_at[cutoff_event_id]
+        ordinal = self.ordinals[round_instance, actor]
+        source_row_id = f"{self.game.game_id}/round{round_instance}/seat{actor}/decision{ordinal}"
+        rows = simulate_candidate_branches(
+            native_env,
+            opportunity,
+            source_game_id=self.game.game_id,
+            cutoff_event_id=cutoff_event_id,
+            master_seed=self.branch_seed,
+            replicates=self.branch_replicates,
+            max_decisions=self.branch_max_decisions,
+        )
+        self.branch_opportunities += 1
+        for row in rows:
+            row["source_decision_row_id"] = source_row_id
+            row["split"] = self.split
+            row.pop("branch_sha256", None)
+            row["branch_sha256"] = content_hash(row)
+            branch_id = content_hash(
+                {
+                    "source_decision_row_id": source_row_id,
+                    "candidate_action_id": row["candidate_action_id"],
+                    "replicate": row["replicate"],
+                    "seed": row["seed"],
+                    "continuation_policy": row["continuation_policy"],
+                }
+            )
+            tokens = bytes.fromhex(row["tokens_hex"])
+            payload = {key: value for key, value in row.items() if key != "tokens_hex"}
+            self.db.execute(
+                "INSERT INTO branch_samples VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    branch_id,
+                    self.game.game_id,
+                    source_row_id,
+                    self.split,
+                    row["candidate_action_id"],
+                    row["replicate"],
+                    row["status"],
+                    tokens,
+                    json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False),
+                ),
+            )
+            self.branch_counts[row["status"]] += 1
 
     def _decision_diagnostics(self, event: ReplayDecision) -> dict[str, int]:
         snapshot, trigger, evidence = event.snapshot, event.trigger_event_id, event.response_evidence
@@ -231,7 +302,80 @@ class GameWriter:
             "response_opportunities": counters,
             "replay_sha256": content_hash(replay),
             "unlabelled_response_intents": "overridden_or_unobserved_private_claims_not_guessed",
+            "candidate_branch_opportunities": self.branch_opportunities,
+            "candidate_branch_rows": dict(self.branch_counts),
         }
+
+
+def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[int, int, int, dict[int, int]]:
+    """Count at most one auxiliary-supervision unit per source decision."""
+    response_count = value_count = complete_source_decisions = 0
+    action_source_counts: Counter[int] = Counter()
+    branch_groups: dict[str, list[tuple[int, int, str, bytes, dict[str, Any]]]] = {}
+    for source_row_id, action, replicate, status, tokens, payload in db.execute(
+        "SELECT source_decision_row_id,candidate_action_id,replicate,status,tokens,payload "
+        "FROM branch_samples WHERE split=? ORDER BY source_decision_row_id,candidate_action_id,replicate",
+        (split,),
+    ):
+        branch_groups.setdefault(source_row_id, []).append((action, replicate, status, tokens, json.loads(payload)))
+    rows = db.execute(
+        "SELECT s.row_id,s.game_id,s.cutoff_event_id,s.observer,s.candidates,"
+        "s.response_applicable,s.response_observed,s.value_valid "
+        "FROM samples s JOIN games g ON s.game_id=g.game_id WHERE g.split=? ORDER BY s.row_id",
+        (split,),
+    )
+    for row_id, game_id, cutoff_event_id, observer, candidate_blob, applicable, observed, value_valid in rows:
+        legal = tuple(value for value in struct.unpack("<32H", candidate_blob) if value != 546)
+        branches = branch_groups.get(row_id, [])
+        complete = False
+        if branches:
+            first = branches[0][4]
+            actions = tuple(first.get("expected_branch_action_ids", ()))
+            replicates = first.get("replicates")
+            expected = {
+                (action, replicate)
+                for action in actions
+                for replicate in range(replicates if type(replicates) is int else 0)
+            }
+            actual = {(item[0], item[1]) for item in branches}
+            complete = (
+                bool(actions)
+                and actions == tuple(action for action in legal if action < 148)
+                and type(replicates) is int
+                and replicates > 0
+                and actual == expected
+                and all(item[2] == "PASS" for item in branches)
+                and all(
+                    tuple(item[4].get("expected_branch_action_ids", ())) == actions
+                    and item[4].get("replicates") == replicates
+                    and item[4].get("candidates") == list(legal)
+                    and item[4].get("candidate_action_id") == item[0]
+                    and item[4].get("source_decision_row_id") == row_id
+                    and item[4].get("source_game_id") == game_id
+                    and item[4].get("source_cutoff_event_id") == cutoff_event_id
+                    and item[4].get("observer") == observer
+                    and item[4].get("source_state_identity") == first.get("source_state_identity")
+                    and item[4].get("split") == split
+                    and item[4].get("branch_sha256")
+                    == content_hash(
+                        {
+                            key: value
+                            for key, value in {**item[4], "tokens_hex": item[3].hex()}.items()
+                            if key != "branch_sha256"
+                        }
+                    )
+                    for item in branches
+                )
+            )
+        if complete:
+            response_count += 1
+            value_count += 1
+            complete_source_decisions += 1
+            action_source_counts.update(actions)
+        else:
+            response_count += int(bool(applicable) and bool(observed))
+            value_count += int(bool(value_valid))
+    return response_count, value_count, complete_source_decisions, dict(action_source_counts)
 
 
 def _selection(acceptance_dir: Path, limits: dict[str, int | None]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -292,10 +436,21 @@ def export_dataset(  # noqa: PLR0915
     validation_games: int | None = 2,
     test_games: int | None = 0,
     resume: bool = False,
+    branch_probe_decisions: int = 8,
+    branch_replicates: int = 1,
+    branch_seed: int = 17,
+    branch_max_decisions: int = 10000,
 ) -> dict[str, Any]:
     selection, sources = _selection(
         acceptance_dir, {"train": train_games, "validation": validation_games, "test": test_games}
     )
+    if (
+        type(branch_probe_decisions) is not int or branch_probe_decisions < 1
+        or type(branch_replicates) is not int or not 1 <= branch_replicates <= 32
+        or type(branch_seed) is not int or not 0 <= branch_seed < 2**64
+        or type(branch_max_decisions) is not int or branch_max_decisions < 1
+    ):
+        raise ValueError("Candidate-action branch generation must be enabled with at least one decision per game")
     if not any(source["split"] == "train" for source in sources):
         raise ValueError("No training games selected")
     output_dir = output_dir.resolve()
@@ -309,6 +464,7 @@ def export_dataset(  # noqa: PLR0915
         name: _file_sha(package / name)
         for name in (
             "learning/export.py",
+            "candidate_branches.py",
             "audit.py",
             "completion.py",
             "mjsoul.py",
@@ -334,6 +490,17 @@ def export_dataset(  # noqa: PLR0915
         **protocol.identity_record(),
         "sources": sources,
         "label_scope": ACTION_LABEL_VERSION,
+        "candidate_branch_generation": {
+            "version": "kar_candidate_action_branch_v2",
+            "enabled": True,
+            "max_decisions_per_game": branch_probe_decisions,
+            "replicates": branch_replicates,
+            "master_seed": branch_seed,
+            "max_continuation_decisions": branch_max_decisions,
+            "continuation_policy": "native_riichi_baseline_v2",
+            "wall_conditioning": "native_unknown_tiles_sampled_once_per_source_replicate_shared_across_candidates",
+            "scope": "candidate_action_branch_supervision",
+        },
     }
     if not resume:
         output_dir.mkdir(parents=True, exist_ok=False)
@@ -363,9 +530,13 @@ def export_dataset(  # noqa: PLR0915
             game = decode_record_bytes(path.read_bytes(), protocol, container="majsoul_download")
             if game.game_id != source["game_id"] or not matches_primary_cohort(game.metadata):
                 raise ValueError("Source identity or primary cohort differs")
-            writer = GameWriter(db, game)
+            writer = GameWriter(
+                db, game, split=source["split"], branch_probe_decisions=branch_probe_decisions,
+                branch_replicates=branch_replicates, branch_seed=branch_seed,
+                branch_max_decisions=branch_max_decisions,
+            )
             try:
-                replay = replay_game(game, on_decision=writer)
+                replay = replay_game(game, on_decision=writer, on_opportunity=writer.on_opportunity)
                 record = writer.finish(replay, source["split"])
                 db.execute(
                     "INSERT INTO metadata VALUES (?,?)", ("game:" + game.game_id, json.dumps(record, sort_keys=True))
@@ -387,6 +558,12 @@ def export_dataset(  # noqa: PLR0915
             supervision[split].merge(row["response_opportunities"])
             for key in ("examples", "response_valid", "value_valid"):
                 total[key] += row[key]
+        effective_supervision = {
+            split: _effective_supervision_counts(db, split) for split in ("train", "validation", "test")
+        }
+        for split, (response_count, value_count, _, _) in effective_supervision.items():
+            totals[split]["response_valid"] = response_count
+            totals[split]["value_valid"] = value_count
         train = totals["train"]
         if not train["response_valid"] or not train["value_valid"]:
             raise ValueError("Three-head recipe requires positive fixed training rho_E/rho_V")
@@ -398,6 +575,24 @@ def export_dataset(  # noqa: PLR0915
             "scope": scope,
             "games": rows,
             "counts": totals,
+            "candidate_branch_counts": {
+                "opportunities": sum(row.get("candidate_branch_opportunities", 0) for row in rows),
+                "rows": {
+                    status: sum(row.get("candidate_branch_rows", {}).get(status, 0) for row in rows)
+                    for status in sorted({status for row in rows for status in row.get("candidate_branch_rows", {})})
+                },
+                "complete_source_decisions_by_split": {
+                    split: effective_supervision[split][2] for split in ("train", "validation", "test")
+                },
+                "candidate_action_source_counts_by_split": {
+                    split: {
+                        str(action): count
+                        for action, count in sorted(effective_supervision[split][3].items())
+                    }
+                    for split in ("train", "validation", "test")
+                },
+                "training_supervision_enabled": True,
+            },
             "response_opportunities_by_split": {split: value.report() for split, value in supervision.items()},
             "rho_E": train["response_valid"] / train["examples"],
             "rho_V": train["value_valid"] / train["examples"],
@@ -430,6 +625,10 @@ def main() -> int:
     parser.add_argument("--test-games", type=int, default=0)
     parser.add_argument("--all-games", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--branch-probe-decisions", "--candidate-branch-decisions-per-game", dest="branch_probe_decisions", type=int, default=8, help="Maximum own-action decision states branched per source game (default: enabled, 8)")
+    parser.add_argument("--branch-replicates", type=int, default=1)
+    parser.add_argument("--branch-seed", type=int, default=17)
+    parser.add_argument("--branch-max-decisions", type=int, default=10000)
     args = parser.parse_args()
     manifest = export_dataset(
         args.acceptance,
@@ -439,6 +638,10 @@ def main() -> int:
         validation_games=None if args.all_games else args.validation_games,
         test_games=None if args.all_games else args.test_games,
         resume=args.resume,
+        branch_probe_decisions=args.branch_probe_decisions,
+        branch_replicates=args.branch_replicates,
+        branch_seed=args.branch_seed,
+        branch_max_decisions=args.branch_max_decisions,
     )
     print(json.dumps({key: value for key, value in manifest.items() if key != "games"}, ensure_ascii=False, indent=2))
     return 0

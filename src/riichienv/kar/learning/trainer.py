@@ -166,7 +166,7 @@ def production_update(  # noqa: PLR0915
                 error = caught
             context.coordinate(error, "microbatch backward")
         if real:
-            examples += batch.inputs.size
+            examples += int(batch.source_count or 0)
             objective += float(loss.detach())
             totals["action"] += float(sums.action.detach())
             totals["response"] += float(sums.response.detach())
@@ -508,13 +508,13 @@ def train_production(  # noqa: PLR0915
                     output_dir=output_dir,
                     ledger_path=ledger_path,
                 )
-            train = DecisionDataset(dataset_dir, "train")
+            train = DecisionDataset(dataset_dir, "train", include_candidate_branches=True)
             require_parameter_updates(
                 authorization, operation="train_production", dataset_hash=train.manifest["manifest_sha256"]
             )
             if train.manifest["manifest_sha256"] != dataset_sha256:
                 raise ValueError("Dataset manifest changed after startup authorization")
-            validation = DecisionDataset(dataset_dir, "validation")
+            validation = DecisionDataset(dataset_dir, "validation", include_candidate_branches=True)
             if validation.manifest != train.manifest:
                 raise ValueError("Dataset manifest changed after startup authorization")
             _dataset_contract(train, validation, config)

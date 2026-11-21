@@ -167,32 +167,77 @@ def add_diagnostics(
 
 
 @torch.no_grad()
-def cal_fit_loss_summary(outputs: ModelOutputs, batch: TrainingBatch) -> dict[str, Any]:
+def cal_fit_loss_summary(
+    outputs: ModelOutputs, batch: TrainingBatch, *, fit_only: bool = True
+) -> dict[str, Any]:
     membership = tuple(calibration_is_fit(game) for game in batch.game_ids)
-    selected = torch.tensor(membership, dtype=torch.bool, device=batch.labels.action_valid.device)
+    selected = (
+        torch.tensor(membership, dtype=torch.bool, device=batch.labels.action_valid.device)
+        if fit_only
+        else torch.ones(batch.inputs.size, dtype=torch.bool, device=batch.labels.action_valid.device)
+    )
     labels = batch.labels
+    response_weight = labels.response_weight
+    value_weight = labels.value_weight
+    if response_weight is None or value_weight is None:
+        raise ValueError("Auxiliary loss weights must be materialized")
     selected_labels = Labels(
         labels.action_target,
         labels.action_valid & selected,
         labels.response_target,
-        labels.response_applicable,
-        labels.response_observed,
+        labels.response_applicable & selected,
+        labels.response_observed & selected,
         labels.final_rank_target,
         labels.value_valid & selected,
         labels.response_allowed,
+        response_weight * selected.float(),
+        value_weight * selected.float(),
     )
     sums = loss_sums(outputs, selected_labels, batch.inputs.legal_mask)
+    context_ids = batch.inputs.context_ids
+    selected_games = {
+        game for game, include in zip(batch.game_ids, membership) if include
+    } if fit_only else set(batch.game_ids)
+    selected_contexts = {
+        context for context, include in zip(context_ids, membership) if include
+    } if fit_only else set(context_ids)
     return {
-        "examples": sum(membership),
+        "examples": len(selected_contexts),
         "action": float(sums.action),
         "response": float(sums.response),
         "rank": float(sums.value),
         "action_count": sums.action_count,
         "response_count": sums.response_count,
         "rank_count": sums.value_count,
-        "games": sorted({game for game, fit in zip(batch.game_ids, membership) if fit}),
+        "games": sorted(selected_games),
     }
 
+
+def _factual_validation_view(
+    batch: TrainingBatch, outputs: ModelOutputs
+) -> tuple[TrainingBatch, ModelOutputs]:
+    mask = batch.labels.action_valid
+    if bool(mask.all()):
+        return batch, outputs
+    indices = mask.nonzero().flatten().tolist()
+    inputs = replace(
+        batch.inputs,
+        fields={key: value[mask] for key, value in batch.inputs.fields.items()},
+        candidates=batch.inputs.candidates[mask],
+        decide_index=batch.inputs.decide_index[mask],
+        action_index=batch.inputs.action_index[mask],
+        context_ids=tuple(batch.inputs.context_ids[index] for index in indices),
+    )
+    labels = Labels(**{key: value[mask] for key, value in batch.labels.__dict__.items()})
+    games = tuple(batch.game_ids[index] for index in indices)
+    factual = TrainingBatch(inputs, labels, games, len(indices))
+    selected = ModelOutputs(
+        outputs.policy_logits[mask],
+        outputs.response_logits[mask],
+        outputs.rank_logits[mask],
+        outputs.action_present[mask],
+    )
+    return factual, selected
 
 @torch.no_grad()
 def evaluate_complete(  # noqa: PLR0915
@@ -218,6 +263,9 @@ def evaluate_complete(  # noqa: PLR0915
     before = model.training
     metrics = FullDiagnostics()
     selection: dict[str, Any] = {
+        key: 0 for key in ("examples", "action", "response", "rank", "action_count", "response_count", "rank_count")
+    }
+    validation_loss: dict[str, Any] = {
         key: 0 for key in ("examples", "action", "response", "rank", "action_count", "response_count", "rank_count")
     }
     selection_games: set[str] = set()
@@ -249,7 +297,7 @@ def evaluate_complete(  # noqa: PLR0915
                 torch.zeros(batch.inputs.size, dtype=torch.bool, device=context.device),
                 enabled=use_rule_features,
             )
-            viewed = TrainingBatch(inputs, batch.labels, batch.game_ids)
+            viewed = TrainingBatch(inputs, batch.labels, batch.game_ids, batch.source_count)
             forward_context = (
                 predictor.frozen_forward()
                 if predictor is not None
@@ -260,21 +308,38 @@ def evaluate_complete(  # noqa: PLR0915
             with forward_context:
                 outputs = model(inputs)
             if predictor is not None:
-                outputs = replace(outputs, policy_logits=predictor.policy_logits_from_rows(rows))
+                factual_policy = predictor.policy_logits_from_rows(rows)
+                row_index = {row["decision_row_id"]: index for index, row in enumerate(rows)}
+                policy_rows = []
+                for index, context_id in enumerate(batch.inputs.context_ids):
+                    source_index = row_index.get(context_id)
+                    policy_rows.append(
+                        factual_policy[source_index] if source_index is not None else outputs.policy_logits[index]
+                    )
+                outputs = replace(outputs, policy_logits=torch.stack(policy_rows))
+            factual_batch, factual_outputs = _factual_validation_view(viewed, outputs)
             add_diagnostics(
-                metrics, outputs, viewed, calibration=calibration, support=support, public_fields=batch.inputs.fields
+                metrics,
+                factual_outputs,
+                factual_batch,
+                calibration=calibration,
+                support=support,
+                public_fields=factual_batch.inputs.fields,
             )
             partial = cal_fit_loss_summary(outputs, viewed)
+            full_partial = cal_fit_loss_summary(outputs, viewed, fit_only=False)
             for key in selection:
                 selection[key] += partial[key]
+                validation_loss[key] += full_partial[key]
             selection_games.update(partial["games"])
-            count += batch.inputs.size
+            count += int(batch.source_count or 0)
         forward_seconds = perf_counter() - forward_started
         aggregation_started = perf_counter()
         payload = {
             "examples": count,
             "metrics": metrics.state_dict(),
             "selection": selection,
+            "validation_loss": validation_loss,
             "selection_games": sorted(selection_games),
             "forward_seconds": forward_seconds,
         }
@@ -311,12 +376,14 @@ def _global_validation_report(
     merged = FullDiagnostics()
     total = 0
     selected_sums = dict.fromkeys(gathered[0]["selection"], 0)
+    validation_sums = dict.fromkeys(gathered[0]["validation_loss"], 0)
     selected_games: set[str] = set()
     for state in gathered:
         merged.merge(state["metrics"])
         total += state["examples"]
         for key in selected_sums:
             selected_sums[key] += state["selection"][key]
+            validation_sums[key] += state["validation_loss"][key]
         selected_games.update(state["selection_games"])
     if total != len(dataset):
         raise ValueError("Distributed validation omitted or duplicated decision rows")
@@ -326,11 +393,10 @@ def _global_validation_report(
         "aggregation": perf_counter() - aggregation_started,
     }
     details = merged.report(bootstrap_replicates=bootstrap_replicates, timings=timings)
-    heads = merged.heads
     objective = (
-        heads["action"].nll
-        + 0.25 * heads["response"].nll / dataset.manifest["rho_E"]
-        + 0.1 * heads["rank"].nll / dataset.manifest["rho_V"]
+        validation_sums["action"]
+        + 0.25 * validation_sums["response"] / dataset.manifest["rho_E"]
+        + 0.1 * validation_sums["rank"] / dataset.manifest["rho_V"]
     ) / total
     return {
         "partition": "validation",
@@ -339,7 +405,15 @@ def _global_validation_report(
         "full_validation_split_evaluated": True,
         "stochastic_feature_mask_probability": 0.0,
         "validation_objective": objective,
-        **{f"{head}_nll": value.nll / value.count if value.count else None for head, value in heads.items()},
+        "action_nll": validation_sums["action"] / validation_sums["action_count"]
+        if validation_sums["action_count"]
+        else None,
+        "response_nll": validation_sums["response"] / validation_sums["response_count"]
+        if validation_sums["response_count"]
+        else None,
+        "rank_nll": validation_sums["rank"] / validation_sums["rank_count"]
+        if validation_sums["rank_count"]
+        else None,
         "model_selection": {
             "partition": "cal_fit",
             "calibration_split_salt": CALIBRATION_SPLIT_SALT,

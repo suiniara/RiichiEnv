@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import struct
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -83,22 +84,89 @@ class CalibrationRows(Sequence[CalibrationRow]):
 
 
 def dataset_event_support(dataset: DecisionDataset) -> EventSupport:
-    counts = [0] * 21
-    rows = dataset._db().execute(
-        "SELECT s.response_target,COUNT(DISTINCT s.game_id) FROM samples s JOIN games g ON s.game_id=g.game_id "
-        "WHERE g.split='train' AND s.action_valid=1 AND s.response_applicable=1 "
-        "AND s.response_observed=1 GROUP BY s.response_target"
+    """Count event support from the exact factual/branch labels used by training."""
+    event_games: list[set[str]] = [set() for _ in range(21)]
+    db = dataset._db()
+    branch_groups: dict[str, list[tuple[int, int, str, bytes, dict[str, Any]]]] = {}
+    for source_row_id, action, replicate, status, tokens, payload in db.execute(
+        "SELECT source_decision_row_id,candidate_action_id,replicate,status,tokens,payload "
+        "FROM branch_samples WHERE split='train' ORDER BY source_decision_row_id,candidate_action_id,replicate"
+    ):
+        branch_groups.setdefault(source_row_id, []).append((action, replicate, status, tokens, json.loads(payload)))
+
+    rows = db.execute(
+        "SELECT s.row_id,s.game_id,s.candidates,s.response_applicable,s.response_observed,s.response_target "
+        "FROM samples s JOIN games g ON s.game_id=g.game_id WHERE g.split='train' ORDER BY s.row_id"
     )
-    for event, count in rows:
-        if not 0 <= event < 21:
-            raise ValueError("Invalid event in completed training evidence")
-        counts[event] = count
+    for row_id, game_id, candidate_blob, applicable, observed, target in rows:
+        legal = tuple(value for value in struct.unpack("<32H", candidate_blob) if value != 546)
+        branches = branch_groups.get(row_id, [])
+        complete = False
+        if branches:
+            first = branches[0][4]
+            actions = tuple(first.get("expected_branch_action_ids", ()))
+            replicates = first.get("replicates")
+            expected_pairs = {
+                (action, replicate)
+                for action in actions
+                for replicate in range(replicates if type(replicates) is int else 0)
+            }
+            actual_pairs = {(item[0], item[1]) for item in branches}
+            complete = (
+                bool(actions)
+                and actions == tuple(action for action in legal if action < 148)
+                and type(replicates) is int
+                and replicates > 0
+                and actual_pairs == expected_pairs
+                and all(item[2] == "PASS" for item in branches)
+                and all(
+                    tuple(item[4].get("expected_branch_action_ids", ())) == actions
+                    and item[4].get("replicates") == replicates
+                    and item[4].get("candidates") == list(legal)
+                    and item[4].get("candidate_action_id") == item[0]
+                    and item[4].get("source_decision_row_id") == row_id
+                    and item[4].get("split") == "train"
+                    and item[4].get("branch_sha256")
+                    == content_hash(
+                        {
+                            key: value
+                            for key, value in {**item[4], "tokens_hex": item[3].hex()}.items()
+                            if key != "branch_sha256"
+                        }
+                    )
+                    for item in branches
+                )
+            )
+        if complete:
+            for _, _, _, _, payload in branches:
+                event = payload.get("response_target")
+                if type(event) is not int or not 0 <= event < 21:
+                    raise ValueError("Completed candidate branch has an invalid response event")
+                event_games[event].add(game_id)
+        elif applicable and observed:
+            if type(target) is not int or not 0 <= target < 21:
+                raise ValueError("Factual response supervision has an invalid response event")
+            event_games[target].add(game_id)
+
+    counts = tuple(len(games) for games in event_games)
+    branch_counts = dataset.manifest.get("candidate_branch_counts", {})
+    complete_sources = branch_counts.get("complete_source_decisions_by_split", {}).get("train", 0)
+    action_record = branch_counts.get("candidate_action_source_counts_by_split", {}).get("train", {})
+    if type(complete_sources) is not int or complete_sources < 0 or not isinstance(action_record, dict):
+        raise ValueError("Candidate branch support evidence is missing or malformed")
+    action_counts = [0] * 148
+    for key, value in action_record.items():
+        action = int(key)
+        if not 0 <= action < 148 or type(value) is not int or value < 0:
+            raise ValueError("Candidate action support contains invalid identities/counts")
+        action_counts[action] = value
     return EventSupport(
         dataset.manifest["manifest_sha256"],
-        tuple(counts),
-        f"completed immutable database {dataset.manifest['database_sha256']}; distinct train game_id only",
+        counts,
+        f"effective factual/complete-branch labels from immutable database {dataset.manifest['database_sha256']}; distinct train game_id only",
+        complete_sources,
+        tuple(action_counts),
     )
-
 
 def calibration_job_plan(
     predictor: FrozenModelPredictor,
@@ -277,7 +345,7 @@ def collect_and_calibrate(
     ) as ledger:
         predictor = cast(Callable[[], FrozenModelPredictor], predictor)() if callable(predictor) else predictor
         predictor._unchanged()
-        validation = DecisionDataset(dataset_dir, "validation")
+        validation = DecisionDataset(dataset_dir, "validation", include_candidate_branches=False)
         plan = calibration_job_plan(
             predictor,
             validation.manifest,

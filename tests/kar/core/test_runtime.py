@@ -73,6 +73,25 @@ def test_explicit_empirical_mode_scores_all_s_and_has_no_certificate(
     assert result.probabilities[min(ids)] > 1 / len(ids)
 
 
+def test_finite_policy_falls_back_when_candidate_actions_have_no_branch_supervision(
+    fixed_predictor, event_support, calibration_fixture, public_view
+):
+    artifact, _, _ = calibration_fixture
+    artifact = replace(artifact, diagnostic_fixture=False)
+    view, ids = public_view
+    policy = RuntimePolicy(
+        fixed_predictor,
+        options=PolicyOptions("empirical_only", 0.5),
+        support=event_support,
+        calibration=artifact,
+        allow_diagnostic_calibration=True,
+    )
+    result = policy.decide(view, ids, "candidate-support-gap")
+    assert result.evidence_status == "certificate_unavailable"
+    assert result.fallback_reason == "candidate_action_branch_supervision_unavailable"
+    assert fixed_predictor.value_calls == 0
+
+
 def test_certification_requires_bound_scope_and_positive_correct_e2(
     fixed_predictor, event_support, calibration_fixture, public_view, binding
 ):

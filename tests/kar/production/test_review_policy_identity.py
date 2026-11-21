@@ -35,7 +35,7 @@ def policy_fixture():
         calibration_split(identities), validation_manifest_sha256="a" * 64, main_split_salt="kar-riichienv-v1-games"
     )
     binding = RuntimeBinding.current("b" * 64, "c" * 64)
-    support = EventSupport("c" * 64, (500,) * 21, "synthetic contract support")
+    support = EventSupport("c" * 64, (500,) * 21, "synthetic contract support", 10, (10,) * 148)
     quality = CalibrationQualityPolicy(
         {key: 5.0 for key in ("action", "response", "rank")},
         {key: 1.0 for key in ("action", "response", "rank")},

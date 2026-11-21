@@ -75,7 +75,9 @@ def create_optimizer(model: nn.Module, learning_rate: float = 3e-4) -> torch.opt
 def create_scheduler(optimizer: torch.optim.Optimizer, total_updates: int) -> torch.optim.lr_scheduler.LambdaLR:
     if total_updates < 1:
         raise ValueError("Positive update count required")
-    warmup = max(100, math.ceil(0.03 * total_updates))
+    # Warm up proportionally to the actual schedule. A fixed 100-update
+    # minimum leaves short M1/CPU diagnostic runs entirely inside warmup.
+    warmup = max(1, math.ceil(0.03 * total_updates))
 
     def multiplier(step: int) -> float:
         if step < warmup:
@@ -189,7 +191,8 @@ def train_cpu(  # noqa: PLR0915
     random.seed(config.seed)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
-    train, validation = DecisionDataset(dataset_dir, "train"), DecisionDataset(dataset_dir, "validation")
+    train = DecisionDataset(dataset_dir, "train", include_candidate_branches=True)
+    validation = DecisionDataset(dataset_dir, "validation", include_candidate_branches=True)
     if not len(train) or not len(validation):
         raise ValueError("CPU probe needs separate nonempty train and validation games")
     require_parameter_updates(authorization, operation="train_cpu", dataset_hash=train.manifest["manifest_sha256"])
