@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import inspect
 import json
 import os
 import sqlite3
@@ -16,10 +17,16 @@ from riichienv.kar.contracts import MJSOUL_RULESET, content_hash
 from riichienv.kar.decision import ReplayDecision
 from riichienv.kar.learning.batch import TOKEN_DTYPE
 from riichienv.kar.learning.dataset import DecisionDataset, collate_examples
-from riichienv.kar.learning.export import SQL_SCHEMA, GameWriter, learning_contract
+from riichienv.kar.learning.export import SQL_SCHEMA, GameWriter, export_dataset, learning_contract
 from riichienv.kar.mjsoul import protocol_identity
 from riichienv.kar.observation import ObserverLedger
 from riichienv.kar.schema import decode_token
+
+
+def test_candidate_branch_generation_is_enabled_by_default():
+    assert inspect.signature(export_dataset).parameters["branch_probe_decisions"].default == 8
+    assert inspect.signature(GameWriter).parameters["branch_probe_decisions"].default == 8
+    assert inspect.signature(GameWriter).parameters["split"].default == "train"
 
 
 def _private_dataset_path(workspace, explicit=None):
