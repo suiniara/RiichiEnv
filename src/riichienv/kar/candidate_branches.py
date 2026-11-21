@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import random
 from typing import Any
 
@@ -48,30 +49,96 @@ def _choose_response_action(legal: list[Any], rng: random.Random) -> Any:
     raise RuntimeError("Native responder has no legal action")
 
 
-def _choose_own_candidate(candidates: list[MappedAction], rng: random.Random) -> MappedAction:
+def _tile_base(tile136: int) -> int:
+    if not 0 <= tile136 < 136:
+        raise ValueError("Native observation contains an invalid physical tile")
+    if tile136 < 108:
+        suit, offset = divmod(tile136, 36)
+        rank = offset // 4 + 1
+        return suit * 9 + rank - 1
+    return 27 + (tile136 - 108) // 4
+
+
+def _dora_base(indicator136: int) -> int:
+    base = _tile_base(indicator136)
+    if base < 27:
+        suit, rank = divmod(base, 9)
+        return suit * 9 + ((rank + 1) % 9)
+    return 27 + ((base - 27 + 1) % 7)
+
+
+def _discard_efficiency_score(hand: list[int], discard_tile: int, dora_bases: set[int]) -> float:
+    """Small transparent hand-efficiency heuristic; native legality remains authoritative."""
+    base = _tile_base(discard_tile)
+    counts = [0] * 34
+    for tile in hand:
+        counts[_tile_base(tile)] += 1
+    if counts[base] <= 0:
+        raise ValueError("Candidate discard is not present in the active player's hand")
+    counts[base] -= 1
+
+    shape = 0.0
+    for tile, count in enumerate(counts):
+        if count >= 2:
+            shape += 2.4 if tile < 27 else 1.8
+        if count >= 3:
+            shape += 1.2
+        if tile >= 27 or count == 0:
+            continue
+        rank = tile % 9
+        if rank < 8 and counts[tile + 1]:
+            shape += 0.85
+        if rank < 7 and counts[tile + 2]:
+            shape += 0.45
+        if rank > 0 and counts[tile - 1]:
+            shape += 0.85
+        if rank > 1 and counts[tile - 2]:
+            shape += 0.45
+
+    isolated = 0
+    if base < 27:
+        rank = base % 9
+        neighbours = sum(
+            counts[index]
+            for index in (base - 2, base - 1, base + 1, base + 2)
+            if 0 <= index < 27 and abs(index // 9 - base // 9) == 0
+        )
+        isolated = int(neighbours == 0)
+    else:
+        isolated = int(counts[base] == 0)
+
+    dora_penalty = 4.0 if base in dora_bases else 0.0
+    red_penalty = 1.25 if discard_tile in {16, 52, 88} else 0.0
+    return shape - dora_penalty - red_penalty - 0.6 * isolated
+
+
+def _choose_own_candidate(
+    candidates: list[MappedAction], observation: Any, rng: random.Random
+) -> MappedAction:
     wins = [candidate for candidate in candidates if candidate.spec.action_type == "TSUMO"]
     if wins:
         return wins[0]
 
     discards = [candidate for candidate in candidates if candidate.spec.action_type == "DISCARD"]
     if discards:
-        by_tile: dict[int, list[MappedAction]] = {}
-        for candidate in discards:
-            assert candidate.spec.tile37 is not None
-            by_tile.setdefault(candidate.spec.tile37, []).append(candidate)
-        tile = rng.choice(sorted(by_tile))
-        variants = by_tile[tile]
-        riichi = [candidate for candidate in variants if candidate.spec.riichi]
-        ordinary = [candidate for candidate in variants if not candidate.spec.riichi]
-        if riichi and ordinary:
-            return rng.choice(riichi if rng.random() < 0.5 else ordinary)
-        return rng.choice(variants)
+        hand = list(observation.hands[observation.player_id])
+        dora_bases = {_dora_base(int(tile)) for tile in observation.dora_indicators}
+        scored = [
+            (
+                _discard_efficiency_score(hand, int(candidate.actions[-1].tile), dora_bases)
+                + (0.35 if candidate.spec.riichi and observation.is_tenpai else 0.0),
+                candidate,
+            )
+            for candidate in discards
+        ]
+        best = max(score for score, _ in scored)
+        tied = [candidate for score, candidate in scored if math.isclose(score, best, abs_tol=1e-9)]
+        return rng.choice(tied)
 
     usable = [candidate for candidate in candidates if not candidate.native_execution_ambiguous]
     if not usable:
         raise RuntimeError("Native active player has no unambiguous executable action")
     return rng.choice(usable)
-
 
 def _continue_baseline_native(
     env: RiichiEnv, rng: random.Random, *, max_decisions: int
@@ -104,7 +171,7 @@ def _continue_baseline_native(
             observation = env.get_observations([seat])[seat]
             mapped = legal_candidates(observation)
             usable = [candidate for candidate in mapped if not candidate.native_execution_ambiguous]
-            selected = _choose_own_candidate(usable, rng)
+            selected = _choose_own_candidate(usable, observation, rng)
             execute_candidate(env, seat, selected)
         decisions += 1
     return True, decisions
