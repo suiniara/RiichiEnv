@@ -5,6 +5,7 @@ pub mod hand_evaluator_3p;
 pub mod score;
 mod tests;
 pub mod types;
+pub mod v2_features;
 pub mod yaku;
 mod yaku_3p;
 
