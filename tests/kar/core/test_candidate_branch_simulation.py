@@ -42,7 +42,7 @@ def test_candidate_probe_branches_every_unambiguous_legal_discard_without_mutati
     assert all(row["source_state_identity"] for row in rows)
     assert len({row["wall_seed"] for row in rows}) == 1
     assert all(row["wall_conditioning"] == "native_unknown_tiles_sampled_once_per_source_replicate_shared_across_candidates" for row in rows)
-    assert all(row["continuation_policy"] == "uniform_native_legal_v1" for row in rows)
+    assert all(row["continuation_policy"] == "native_riichi_baseline_v2" for row in rows)
     assert all(row["status"] in {"INCOMPLETE", "PASS"} for row in rows)
     assert tuple(env.rule_log) == before_log
     assert tuple(tuple(hand) for hand in env.hands) == before_hands
