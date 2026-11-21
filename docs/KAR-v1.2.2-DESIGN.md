@@ -529,6 +529,19 @@ mask 的1仅表示未被公开事实证明不可能；未知保守允许。Pytho
 6. 受限KL；certified另校验当前误差界及E2，其余标empirical_only；从完整最终分布随机采样，映射回完整原生Action。
 7. telemetry记录规则位、train计数支持、每分支质量三态、最终价值支持、masked概率、保守/名义诊断、rho、S/M、q0/qtau、KL、E1/E2、回退、RNG前后摘要。
 
+### 12.0 训练与推理的 ACTION 条件化计算合同
+
+对同一公开前缀 $P=(H,S,LEGAL_SET)$ 和任一合法完整动作 $a$，唯一条件输入定义为 $P'=append_action(encode_prefix(snapshot,LEGAL_SET),a)$。训练 Dense Forward 与推理 Prefix Cache 必须在相同模型权重下，对同一 $P'$ 计算相同的 ACTION hidden state 及 Response/Value logits。
+
+- Dense `KARTransformer.forward()` 是唯一正确性参考，也是唯一训练路径；ACTION 后缀必须参与完整反向传播。
+- 推理 `encode_prefix()/score_actions()` 仅是 eval-only 缓存优化，不得用于训练或替代 Dense 梯度。
+- 候选分支落盘 Token 必须与事实源决策前缀逐字节相同，ACTION 最后一个 Token 必须由 `action_factor_ids(candidate_action_id)` 精确生成；数据读取时强制验证字节前缀、DECIDE/ACTION 位置、完整候选集合和 ACTION 因子。
+- Dense 与 Cached 对同一真实引擎 Token 的 Policy/Response/Value 输出必须通过固定 FP32 容差对拍；候选批次顺序、批大小和单独/批量执行不得改变对应输出。
+- Dense 前向必须拒绝不属于 LEGAL_SET 的 ACTION ID、错误因子或错误位置。Prefix Cache 还必须验证候选属于缓存的完整 LEGAL_SET。
+- 输入合同变更必须提升 `INPUT_PIPELINE_VERSION`；旧数据集、checkpoint、calibration、support 和 release 不得通过修改元数据复用。
+
+这项合同只保证计算图与条件输入一致，不把固定 continuation baseline 的反事实价值解释为对任意真实对手分布都成立。
+
 ### 12.1 候选动作价值的事实监督边界
 
 训练集中的每条决策只包含牌谱中实际执行的一个 ACTION。response 与 rank 两个辅助头只在该 ACTION 对应的真实响应已观察、且监督适用时计算损失；未执行候选动作没有真实反事实标签。不得把专家最终选择的事件/名次复制给同一状态下的其他候选，也不得把模型自身预测回填成监督标签。

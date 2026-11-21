@@ -8,6 +8,7 @@ from riichienv.kar.contracts import MJSOUL_RULESET
 from riichienv.kar.decision import ReplayOpportunity
 from riichienv.kar.observation import ObserverLedger
 from riichienv.kar.learning.export import GameWriter
+from riichienv.kar.tokenize import append_action, encode_prefix
 
 
 def test_baseline_discard_score_preserves_connected_tiles_and_dora():
@@ -50,6 +51,12 @@ def test_candidate_probe_branches_every_unambiguous_legal_discard_without_mutati
         max_decisions=1,
     )
     assert {row["candidate_action_id"] for row in rows} == expected
+    canonical_prefix = encode_prefix(opportunity.snapshot, opportunity.candidates)
+    for row in rows:
+        candidate_id = row["candidate_action_id"]
+        canonical = append_action(canonical_prefix, candidate_id).to_bytes()[108:]
+        assert bytes.fromhex(row["tokens_hex"]) == canonical
+        assert row["action_index"] == row["decide_index"] + 1
     assert all(row["source_state_identity"] for row in rows)
     assert len({row["wall_seed"] for row in rows}) == 1
     assert all(row["wall_conditioning"] == "native_unknown_tiles_sampled_once_per_source_replicate_shared_across_candidates" for row in rows)

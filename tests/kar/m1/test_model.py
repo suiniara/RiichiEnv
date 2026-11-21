@@ -101,6 +101,10 @@ def test_cached_independent_actions_match_dense(miniature, make_sample):
     prefix = collate_inputs([make_sample(prefix_only=True)])
     cache = miniature.encode_prefix(prefix)
     samples = [make_sample(action_choice=index) for index in range(3)]
+    prefix_bytes = make_sample(prefix_only=True)["tokens"]
+    for sample in samples:
+        assert sample["tokens"][:-139] == prefix_bytes
+        assert sample["tokens"][-139:] == sample["sequence"].to_bytes()[-139:]
     branches = [
         {**sample, "tokens": sample["tokens"][-139:], "decide_index": 0, "action_index": 0} for sample in samples
     ]
@@ -181,3 +185,22 @@ def test_changing_one_cached_action_branch_cannot_change_other_candidates(miniat
     for before, after in zip(baseline, changed):
         torch.testing.assert_close(before[[0, 2]], after[[0, 2]], atol=0, rtol=0)
     assert not torch.equal(baseline[0][1], changed[0][1])
+
+
+
+def test_dense_forward_rejects_action_id_not_in_legal_set(miniature, make_sample):
+    batch = collate_inputs([make_sample(action_choice=0)])
+    index = int(batch.action_index[0])
+    legal = set(batch.candidates[0].tolist()) - {546}
+    illegal = next(value for value in range(148) if value not in legal)
+    batch.fields["action_ids"][0, index] = illegal
+    with pytest.raises(ValueError, match="not a member"):
+        miniature(batch)
+
+
+def test_dense_forward_rejects_mismatched_action_factorization(miniature, make_sample):
+    batch = collate_inputs([make_sample(action_choice=0)])
+    index = int(batch.action_index[0])
+    batch.fields["action_tile37"][0, index] = (int(batch.fields["action_tile37"][0, index]) + 1) % 39
+    with pytest.raises(ValueError, match="factor fields"):
+        miniature(batch)

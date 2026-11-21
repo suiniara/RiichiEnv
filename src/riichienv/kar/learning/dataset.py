@@ -14,7 +14,7 @@ from torch.utils.data import Dataset
 
 from ..contracts import content_hash
 from ..mjsoul import validate_protocol_identity
-from ..schema import TOKEN_BYTE_SIZE
+from ..schema import ACTION_FACTOR_FIELDS, TOKEN_BYTE_SIZE, action_factor_ids, decode_token
 from ..versioning import game_count_contract
 from .batch import ModelBatch, collate_inputs
 from .export import _file_sha, learning_contract
@@ -253,7 +253,22 @@ class DecisionDataset(Dataset[dict[str, Any]]):
                 )
             )
             if complete:
+                factual_prefix = history[:count] + row["state"]
                 for action, replicate, _, tokens, payload in decoded:
+                    if len(tokens) != (row["history_rows"] + 65) * TOKEN_BYTE_SIZE:
+                        raise ValueError("Candidate branch token length differs from the source DECIDE/ACTION layout")
+                    if tokens[:-TOKEN_BYTE_SIZE] != factual_prefix:
+                        raise ValueError("Candidate branch prefix differs byte-for-byte from its factual source decision")
+                    if (
+                        payload["decide_index"] != row["history_rows"] + 63
+                        or payload["action_index"] != row["history_rows"] + 64
+                    ):
+                        raise ValueError("Candidate branch DECIDE/ACTION indices differ from the source decision")
+                    action_token = decode_token(tokens[-TOKEN_BYTE_SIZE:])
+                    if action_token["kind"] != 10 or tuple(
+                        action_token[name] for name in ACTION_FACTOR_FIELDS
+                    ) != action_factor_ids(action):
+                        raise ValueError("Candidate branch ACTION token does not encode its candidate_action_id")
                     result["candidate_branches"].append(
                         {
                             "decision_row_id": row_id,

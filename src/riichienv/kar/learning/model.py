@@ -222,6 +222,32 @@ class KARTransformer(nn.Module):
             raise ValueError("Readout position has a different token kind")
         return hidden[rows, index]
 
+    @staticmethod
+    def _validate_action_rows(batch: ModelBatch, rows: Tensor, action_index: Tensor, present: Tensor) -> None:
+        if not torch.any(present):
+            return
+        action_ids = batch.fields["action_ids"][rows[present], action_index[present]]
+        if torch.any((action_ids < 0) | (action_ids >= 546)):
+            raise ValueError("ACTION suffix must identify one complete global action")
+        if not torch.all(batch.legal_mask[rows[present], action_ids]):
+            raise ValueError("ACTION suffix is not a member of its frozen LEGAL_SET")
+        expected = torch.tensor(
+            [action_factor_ids(int(action)) for action in action_ids.detach().cpu().tolist()],
+            dtype=torch.int64,
+            device=action_ids.device,
+        )
+        actual = torch.stack(
+            [batch.fields[name][rows[present], action_index[present]] for name in ACTION_FACTOR_FIELDS],
+            dim=-1,
+        )
+        if not torch.equal(actual, expected):
+            raise ValueError("ACTION factor fields do not encode the declared global action")
+        decide = batch.decide_index[rows[present]]
+        action_positions = batch.fields["positions"][rows[present], action_index[present]]
+        decide_positions = batch.fields["positions"][rows[present], decide]
+        if not torch.equal(action_positions, decide_positions + 1):
+            raise ValueError("ACTION logical position must immediately follow DECIDE")
+
     def _readouts(self, decide: Tensor, action: Tensor, present: Tensor) -> ModelOutputs:
         with torch.autocast(device_type=decide.device.type, enabled=False):
             policy = self.policy_head(decide.float())
@@ -239,6 +265,9 @@ class KARTransformer(nn.Module):
         rows = torch.arange(batch.size, device=hidden.device)
         if torch.any(present & (batch.fields["kind"][rows, safe] != 10)):
             raise ValueError("ACTION readout has no ACTION token")
+        if torch.any(present & (batch.fields["block"][rows, safe] != 3)):
+            raise ValueError("ACTION readout must use the ACTION attention block")
+        self._validate_action_rows(batch, rows, safe, present)
         return self._readouts(decide, hidden[rows, safe], present)
 
     @torch.no_grad()
@@ -320,6 +349,19 @@ class KARTransformer(nn.Module):
             raise ValueError("Candidate set differs from the cached prefix input")
         if not torch.equal(actions.fields["positions"][:, 0], cache.action_position[owners]):
             raise ValueError("Candidate logical position differs from the cached prefix")
+        action_ids = actions.fields["action_ids"][:, 0]
+        if torch.any((action_ids < 0) | (action_ids >= 148)):
+            raise ValueError("Cached candidate scoring only accepts discard ACTION IDs")
+        if not torch.all(cache.candidates[owners].eq(action_ids[:, None]).any(-1)):
+            raise ValueError("Candidate ACTION is not in the cached LEGAL_SET")
+        expected_factors = torch.tensor(
+            [action_factor_ids(int(action)) for action in action_ids.detach().cpu().tolist()],
+            dtype=torch.int64,
+            device=action_ids.device,
+        )
+        actual_factors = torch.stack([actions.fields[name][:, 0] for name in ACTION_FACTOR_FIELDS], dim=-1)
+        if not torch.equal(actual_factors, expected_factors):
+            raise ValueError("Cached ACTION factor fields differ from the global candidate ID")
         value = self.embedding(actions.fields)
         for layer, (prefix_key, prefix_value) in zip(self.layers, cache.key_values):
             query, key, content = layer.projections(value, actions.fields["positions"])
