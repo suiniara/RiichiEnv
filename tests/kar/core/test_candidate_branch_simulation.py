@@ -6,6 +6,17 @@ from riichienv.kar.decision import ReplayOpportunity
 from riichienv.kar.observation import ObserverLedger
 
 
+def test_baseline_discard_score_preserves_connected_tiles_and_dora():
+    from riichienv.kar.candidate_branches import _discard_efficiency_score
+
+    hand = [0, 1, 2, 4, 5, 6, 8, 9, 10, 108, 112, 116, 120, 124]
+    isolated_honor = _discard_efficiency_score(hand, 108, set())
+    connected_tile = _discard_efficiency_score(hand, 4, set())
+    dora_tile = _discard_efficiency_score(hand, 4, {1})
+    assert isolated_honor > connected_tile
+    assert _discard_efficiency_score(hand, 4, {1}) == dora_tile
+
+
 def _own_action_opportunity(seed=73):
     env = MJSOUL_RULESET.create_env(seed=seed)
     env.reset()
