@@ -319,11 +319,12 @@ def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[i
     ):
         branch_groups.setdefault(source_row_id, []).append((action, replicate, status, tokens, json.loads(payload)))
     rows = db.execute(
-        "SELECT s.row_id,s.candidates,s.response_applicable,s.response_observed,s.value_valid "
+        "SELECT s.row_id,s.game_id,s.cutoff_event_id,s.observer,s.candidates,"
+        "s.response_applicable,s.response_observed,s.value_valid "
         "FROM samples s JOIN games g ON s.game_id=g.game_id WHERE g.split=? ORDER BY s.row_id",
         (split,),
     )
-    for row_id, candidate_blob, applicable, observed, value_valid in rows:
+    for row_id, game_id, cutoff_event_id, observer, candidate_blob, applicable, observed, value_valid in rows:
         legal = tuple(value for value in struct.unpack("<32H", candidate_blob) if value != 546)
         branches = branch_groups.get(row_id, [])
         complete = False
@@ -350,6 +351,10 @@ def _effective_supervision_counts(db: sqlite3.Connection, split: str) -> tuple[i
                     and item[4].get("candidates") == list(legal)
                     and item[4].get("candidate_action_id") == item[0]
                     and item[4].get("source_decision_row_id") == row_id
+                    and item[4].get("source_game_id") == game_id
+                    and item[4].get("source_cutoff_event_id") == cutoff_event_id
+                    and item[4].get("observer") == observer
+                    and item[4].get("source_state_identity") == first.get("source_state_identity")
                     and item[4].get("split") == split
                     and item[4].get("branch_sha256")
                     == content_hash(
