@@ -9,7 +9,7 @@ from typing import Any
 from .contracts import content_hash
 
 QUALITY_VERSION = "preregistered_calibration_quality_v3_event_ovr"
-BRANCH_QUALITY_VERSION = "preregistered_response_branch_quality_v2_ovr"
+BRANCH_QUALITY_VERSION = "preregistered_response_branch_quality_v3_candidate_gate"
 HEADS = ("action", "response", "rank")
 BRANCH_HEADS = ("response", "rank")
 BRANCH_FALLBACK = "keep_masked_probability_unsupported_utility_minus_1_5"
@@ -229,6 +229,13 @@ def evaluate_branch_quality(metrics: Mapping[str, Any], policy: BranchQualityPol
         "partition": "cal_check",
         "branches": branches,
         "branch_quality_policy_sha256": None if policy is None else policy.digest,
+        "candidate_action_conditional_validation": {
+            "status": "unavailable",
+            "reasons": ["heldout_candidate_branch_metrics_not_collected"],
+            "partition": "cal_check",
+            "counting_unit": "distinct_source_decision_and_candidate_action",
+            "uniform_error_certificate": False,
+        },
         "fallback": BRANCH_FALLBACK,
         "uniform_error_certificate": False,
     }

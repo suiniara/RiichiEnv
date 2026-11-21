@@ -10,6 +10,8 @@ from .probability import masked_softmax
 from .runtime_contracts import SUPPORT_VERSION, UTILITIES, RuntimeBinding, runtime_contract, sha256_value
 from .versioning import validate_artifact_contract
 
+CANDIDATE_ACTION_SUPPORT_MIN_SOURCES = 50
+
 
 @dataclass(frozen=True)
 class EventSupport:
@@ -47,7 +49,7 @@ class EventSupport:
     def candidate_supported(self, action_ids: Sequence[int]) -> bool:
         ids = tuple(action_ids)
         return bool(ids) and all(
-            type(action) is int and 0 <= action < 148 and self.candidate_action_source_counts[action] > 0
+            type(action) is int and 0 <= action < 148 and self.candidate_action_source_counts[action] >= CANDIDATE_ACTION_SUPPORT_MIN_SOURCES
             for action in ids
         )
 
@@ -68,6 +70,7 @@ class EventSupport:
             "value_gate": "train_count_and_preregistered_branch_quality",
             "candidate_branch_version": "kar_candidate_action_branch_v2",
             "candidate_branch_counting_unit": "distinct_complete_source_decision",
+            "candidate_action_support_min_sources": CANDIDATE_ACTION_SUPPORT_MIN_SOURCES,
             "candidate_branch_source_decisions": self.candidate_branch_source_decisions,
             "candidate_action_source_counts": list(self.candidate_action_source_counts),
             "source_reference": self.source_reference,
@@ -91,6 +94,7 @@ class EventSupport:
         if (
             document.get("support_threshold") != 500
             or document.get("counting_unit") != "distinct_complete_train_game_id"
+            or document.get("candidate_action_support_min_sources") != CANDIDATE_ACTION_SUPPORT_MIN_SOURCES
             or document.get("uniform_error_certificate") is not False
         ):
             raise ValueError("Support counts are a train-only engineering gate, not an error certificate")

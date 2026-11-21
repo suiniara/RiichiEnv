@@ -22,7 +22,7 @@ from ..response_supervision import RESPONSE_SUPERVISION_VERSION, OpportunityCoun
 from ..schema import TOKEN_BYTE_SIZE
 from ..versioning import artifact_contract, game_count_contract, validate_artifact_contract
 
-DATASET_VERSION = "kar_decision_sqlite_v2_candidate_branches"
+DATASET_VERSION = "kar_decision_sqlite_v3_candidate_branches_stratified"
 ACTION_LABEL_VERSION = "explicit_and_unique_response_pass_v3"
 SQL_SCHEMA = """
 CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -81,6 +81,10 @@ class GameWriter:
         self.branch_seed = branch_seed
         self.branch_max_decisions = branch_max_decisions
         self.branch_opportunities = 0
+        self.branch_opportunities_seen = 0
+        self.branch_stratum_seen: Counter[int] = Counter()
+        self.branch_stratum_selected: Counter[int] = Counter()
+        self.branch_candidates: dict[int, list[tuple[str, Any, Any, int, str]]] = {0: [], 1: [], 2: []}
         self.branch_counts: Counter[str] = Counter()
         self.histories: dict[int, bytes] = {}
         self.ordinals: Counter[tuple[int, int]] = Counter()
@@ -95,60 +99,77 @@ class GameWriter:
         self.response_labels: Counter[str] = Counter()
 
     def on_opportunity(self, native_env: Any, opportunity: Any, game_id: str, cutoff_event_id: int) -> None:
-        """Persist all candidate branches for the configured source decisions."""
+        """Reservoir-sample candidate states across the whole game, not the first N."""
         if self.branch_probe_decisions <= 0 or opportunity.snapshot.decision_phase != "own_act":
             return
         if not any(0 <= action < 148 for action in opportunity.candidates):
             return
-        if self.branch_opportunities >= self.branch_probe_decisions:
-            return
-        from ..candidate_branches import simulate_candidate_branches  # noqa: PLC0415
-
+        self.branch_opportunities_seen += 1
+        stratum = min(2, (3 * cutoff_event_id) // max(1, len(self.game.events)))
+        self.branch_stratum_seen[stratum] += 1
         actor = opportunity.snapshot.observer_player_id
         round_instance = self.round_at[cutoff_event_id]
         ordinal = self.ordinals[round_instance, actor]
         source_row_id = f"{self.game.game_id}/round{round_instance}/seat{actor}/decision{ordinal}"
-        rows = simulate_candidate_branches(
-            native_env,
-            opportunity,
-            source_game_id=self.game.game_id,
-            cutoff_event_id=cutoff_event_id,
-            master_seed=self.branch_seed,
-            replicates=self.branch_replicates,
-            max_decisions=self.branch_max_decisions,
-        )
-        self.branch_opportunities += 1
-        for row in rows:
-            row["source_decision_row_id"] = source_row_id
-            row["split"] = self.split
-            row.pop("branch_sha256", None)
-            row["branch_sha256"] = content_hash(row)
-            branch_id = content_hash(
-                {
+        priority = content_hash({
+            "version": "candidate_branch_timeline_reservoir_v1",
+            "game_id": self.game.game_id,
+            "cutoff_event_id": cutoff_event_id,
+            "observer": actor,
+            "branch_seed": self.branch_seed,
+        })
+        bucket = self.branch_candidates[stratum]
+        bucket.append((priority, native_env.clone(), opportunity, cutoff_event_id, source_row_id))
+        bucket.sort(key=lambda item: item[0])
+        del bucket[self.branch_probe_decisions :]
+
+    def _selected_branch_opportunities(self) -> list[tuple[str, Any, Any, int, str]]:
+        limit = self.branch_probe_decisions
+        if limit <= 0:
+            return []
+        quotas = [limit // 3 + int(index < limit % 3) for index in range(3)]
+        selected: list[tuple[str, Any, Any, int, str]] = []
+        leftovers: list[tuple[str, Any, Any, int, str]] = []
+        for stratum, quota in enumerate(quotas):
+            selected.extend(self.branch_candidates[stratum][:quota])
+            leftovers.extend(self.branch_candidates[stratum][quota:])
+        if len(selected) < limit:
+            leftovers.sort(key=lambda item: item[0])
+            selected.extend(leftovers[: limit - len(selected)])
+        return sorted(selected, key=lambda item: item[3])
+
+    def _persist_candidate_branches(self) -> None:
+        from ..candidate_branches import simulate_candidate_branches  # noqa: PLC0415
+        for _, native_env, opportunity, cutoff_event_id, source_row_id in self._selected_branch_opportunities():
+            stratum = min(2, (3 * cutoff_event_id) // max(1, len(self.game.events)))
+            self.branch_stratum_selected[stratum] += 1
+            rows = simulate_candidate_branches(
+                native_env, opportunity, source_game_id=self.game.game_id,
+                cutoff_event_id=cutoff_event_id, master_seed=self.branch_seed,
+                replicates=self.branch_replicates, max_decisions=self.branch_max_decisions,
+            )
+            self.branch_opportunities += 1
+            for row in rows:
+                row["source_decision_row_id"] = source_row_id
+                row["split"] = self.split
+                row.pop("branch_sha256", None)
+                row["branch_sha256"] = content_hash(row)
+                branch_id = content_hash({
                     "source_decision_row_id": source_row_id,
                     "candidate_action_id": row["candidate_action_id"],
                     "replicate": row["replicate"],
                     "seed": row["seed"],
                     "continuation_policy": row["continuation_policy"],
-                }
-            )
-            tokens = bytes.fromhex(row["tokens_hex"])
-            payload = {key: value for key, value in row.items() if key != "tokens_hex"}
-            self.db.execute(
-                "INSERT INTO branch_samples VALUES (?,?,?,?,?,?,?,?,?)",
-                (
-                    branch_id,
-                    self.game.game_id,
-                    source_row_id,
-                    self.split,
-                    row["candidate_action_id"],
-                    row["replicate"],
-                    row["status"],
-                    tokens,
-                    json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False),
-                ),
-            )
-            self.branch_counts[row["status"]] += 1
+                })
+                tokens = bytes.fromhex(row["tokens_hex"])
+                payload = {key: value for key, value in row.items() if key != "tokens_hex"}
+                self.db.execute(
+                    "INSERT INTO branch_samples VALUES (?,?,?,?,?,?,?,?,?)",
+                    (branch_id, self.game.game_id, source_row_id, self.split,
+                     row["candidate_action_id"], row["replicate"], row["status"], tokens,
+                     json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)),
+                )
+                self.branch_counts[row["status"]] += 1
 
     def _decision_diagnostics(self, event: ReplayDecision) -> dict[str, int]:
         snapshot, trigger, evidence = event.snapshot, event.trigger_event_id, event.response_evidence
@@ -245,9 +266,10 @@ class GameWriter:
         self.provenance[event.action_provenance] += 1
 
     def finish(self, replay: dict[str, Any], split: str) -> dict[str, Any]:
-        identity = protocol_identity(self.game.protocol_sha256, self.game.protocol_descriptor_sha256)
         if replay["status"] != "PASS" or not replay.get("final_ranks"):
             raise ValueError(f"Game failed complete export replay: {replay.get('errors')}")
+        self._persist_candidate_branches()
+        identity = protocol_identity(self.game.protocol_sha256, self.game.protocol_descriptor_sha256)
         counters = replay["response_opportunities"]
         if counters["version"] != RESPONSE_SUPERVISION_VERSION or any(
             counters[key] != self.response_labels[key] for key in ("explicit", "uniquely_inferred")
@@ -303,6 +325,10 @@ class GameWriter:
             "replay_sha256": content_hash(replay),
             "unlabelled_response_intents": "overridden_or_unobserved_private_claims_not_guessed",
             "candidate_branch_opportunities": self.branch_opportunities,
+            "candidate_branch_opportunities_seen": self.branch_opportunities_seen,
+            "candidate_branch_sampling": "deterministic_event_timeline_tertile_reservoir_v1",
+            "candidate_branch_stratum_seen": {str(key): value for key, value in sorted(self.branch_stratum_seen.items())},
+            "candidate_branch_stratum_selected": {str(key): value for key, value in sorted(self.branch_stratum_selected.items())},
             "candidate_branch_rows": dict(self.branch_counts),
         }
 
@@ -500,6 +526,9 @@ def export_dataset(  # noqa: PLR0915
             "continuation_policy": "native_riichi_baseline_v2",
             "wall_conditioning": "native_unknown_tiles_sampled_once_per_source_replicate_shared_across_candidates",
             "scope": "candidate_action_branch_supervision",
+            "selection": "deterministic_event_timeline_tertile_reservoir_v1",
+            "selection_strata": ["early", "middle", "late"],
+            "selection_priority": "sha256_game_cutoff_observer_seed",
         },
     }
     if not resume:
@@ -577,6 +606,16 @@ def export_dataset(  # noqa: PLR0915
             "counts": totals,
             "candidate_branch_counts": {
                 "opportunities": sum(row.get("candidate_branch_opportunities", 0) for row in rows),
+                "opportunities_seen": sum(row.get("candidate_branch_opportunities_seen", 0) for row in rows),
+                "selection": "deterministic_event_timeline_tertile_reservoir_v1",
+                "stratum_seen_by_split": {
+                    split: {stratum: sum(row.get("candidate_branch_stratum_seen", {}).get(stratum, 0) for row in rows if row["split"] == split) for stratum in ("0", "1", "2")}
+                    for split in ("train", "validation", "test")
+                },
+                "stratum_selected_by_split": {
+                    split: {stratum: sum(row.get("candidate_branch_stratum_selected", {}).get(stratum, 0) for row in rows if row["split"] == split) for stratum in ("0", "1", "2")}
+                    for split in ("train", "validation", "test")
+                },
                 "rows": {
                     status: sum(row.get("candidate_branch_rows", {}).get(status, 0) for row in rows)
                     for status in sorted({status for row in rows for status in row.get("candidate_branch_rows", {})})

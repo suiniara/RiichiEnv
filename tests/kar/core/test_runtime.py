@@ -139,3 +139,19 @@ def test_foreign_model_visibility_gap_and_production_fixture_are_rejected(
     fixed_predictor.binding = replace(fixed_predictor.binding, model_weights_sha256="1" * 64)
     with pytest.raises(ValueError):
         policy.decide(view, ids, "foreign-model")
+
+
+
+def test_production_event_calibration_alone_cannot_enable_candidate_value_reranking(
+    fixed_predictor, event_support, calibration_fixture, public_view
+):
+    artifact, _, _ = calibration_fixture
+    artifact = replace(artifact, diagnostic_fixture=False)
+    supported = replace(event_support, candidate_branch_source_decisions=100, candidate_action_source_counts=(50,) * 148)
+    view, ids = public_view
+    policy = RuntimePolicy(fixed_predictor, options=PolicyOptions("empirical_only", 0.5),
+        support=supported, calibration=artifact, allow_diagnostic_calibration=True)
+    result = policy.decide(view, ids, "candidate-calibration-gap")
+    assert result.evidence_status == "certificate_unavailable"
+    assert result.fallback_reason == "candidate_action_conditional_calibration_unavailable"
+    assert fixed_predictor.value_calls == 0

@@ -1,9 +1,13 @@
+import sqlite3
+from types import SimpleNamespace
+
 from riichienv import Phase
 
 from riichienv.kar.candidate_branches import simulate_candidate_branches
 from riichienv.kar.contracts import MJSOUL_RULESET
 from riichienv.kar.decision import ReplayOpportunity
 from riichienv.kar.observation import ObserverLedger
+from riichienv.kar.learning.export import GameWriter
 
 
 def test_baseline_discard_score_preserves_connected_tiles_and_dora():
@@ -74,3 +78,21 @@ def test_candidate_probe_seed_and_source_identity_are_reproducible():
         (row["candidate_action_id"], row["seed"], row["source_state_identity"], row["status"])
         for row in second
     ]
+
+
+
+def test_candidate_branch_selection_covers_all_game_timeline_strata():
+    game = SimpleNamespace(game_id="stratified-game", events=[{"type": "noop"} for _ in range(90)])
+    writer = GameWriter(sqlite3.connect(":memory:"), game, branch_probe_decisions=6, branch_seed=23)
+    class Cloneable:
+        def clone(self):
+            return Cloneable()
+    opportunity = SimpleNamespace(snapshot=SimpleNamespace(decision_phase="own_act", observer_player_id=0), candidates=(0, 1))
+    for index in range(30):
+        writer.on_opportunity(Cloneable(), opportunity, game.game_id, index * 3)
+        writer.ordinals[-1, 0] += 1
+    selected = writer._selected_branch_opportunities()
+    strata = [(3 * item[3]) // len(game.events) for item in selected]
+    assert len(selected) == 6
+    assert all(strata.count(index) >= 2 for index in range(3))
+    assert writer.branch_opportunities_seen == 30

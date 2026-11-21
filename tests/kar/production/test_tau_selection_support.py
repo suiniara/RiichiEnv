@@ -192,3 +192,12 @@ def test_explicit_baseline_grid_without_value_support_cannot_claim_finite_gain(p
         selection_policy=policy,
     )
     assert selection["selected_tau"] == "infinity" and not selection["reproducible_gain"]
+
+
+
+def test_candidate_action_support_requires_repeated_distinct_source_decisions():
+    support = EventSupport("b" * 64, (500,) * 21, "synthetic support threshold fixture",
+        100, (49, 50) + (100,) * 146)
+    assert not support.candidate_supported((0, 1))
+    assert support.candidate_supported((1, 2))
+    assert support.to_record()["candidate_action_support_min_sources"] == 50

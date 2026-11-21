@@ -132,6 +132,10 @@ class RuntimePolicy:
             artifact.diagnostic_fixture and self.allow_diagnostic_calibration
         ):
             reason = "candidate_action_branch_supervision_unavailable"
+        elif artifact.branch_quality_report.get("candidate_action_conditional_validation", {}).get("status") != "passed" and not (
+            artifact.diagnostic_fixture and self.allow_diagnostic_calibration
+        ):
+            reason = "candidate_action_conditional_calibration_unavailable"
         elif self.options.mode == "certified" and bounds is None:
             reason = "error_bound_certificate_unavailable"
         else:

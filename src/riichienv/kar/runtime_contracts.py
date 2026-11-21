@@ -11,7 +11,7 @@ from .versioning import ARCHITECTURE_ID, artifact_contract
 
 UTILITY_VERSION = "average_rank_utility_v1"
 POLICY_VERSION = "restricted_kl_runtime_v3_event_ovr"
-SUPPORT_VERSION = "train_event_and_candidate_action_support_v3"
+SUPPORT_VERSION = "train_event_and_candidate_action_support_v4_min_candidate_sources"
 CALIBRATION_VERSION = "heldout_temperatures_log_gate_v6_event_ovr"
 CALIBRATED_POLICY_IDENTITY_VERSION = "calibrated_policy_identity_v3_event_ovr"
 BOUND_VERSION = "one_sided_v1_2_1"
