@@ -431,7 +431,7 @@ def export_dataset(  # noqa: PLR0915
     validation_games: int | None = 2,
     test_games: int | None = 0,
     resume: bool = False,
-    branch_probe_decisions: int = 0,
+    branch_probe_decisions: int = 8,
     branch_replicates: int = 1,
     branch_seed: int = 17,
     branch_max_decisions: int = 10000,
