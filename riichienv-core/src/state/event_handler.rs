@@ -198,8 +198,8 @@ impl GameStateEventHandler for GameState {
             } => {
                 let tile = self.take_replay_hand_tile(actor, &pai, tsumogiri);
                 let is_riichi = self.players[actor].riichi_stage;
-                let is_double_riichi = is_riichi
-                    && self.replay_context.pending_double[actor].unwrap_or(false);
+                let is_double_riichi =
+                    is_riichi && self.replay_context.pending_double[actor].unwrap_or(false);
                 self.current_player = actor as u8;
                 self.players[actor].discards.push(tile);
                 self.players[actor].discard_from_hand.push(!tsumogiri);
@@ -368,15 +368,14 @@ impl GameStateEventHandler for GameState {
                     called_tile: Some(tile),
                 });
                 let meld_idx = (self.players[actor].melds.len().saturating_sub(1)) as u8;
-                self.v2_round_events.push(
-                    crate::v2_features::events::RoundEvent::Daiminkan {
+                self.v2_round_events
+                    .push(crate::v2_features::events::RoundEvent::Daiminkan {
                         actor: actor as u8,
                         source: target as u8,
                         claimed_tile37: crate::v2_features::tile136_to_tile37(tile),
                         turn_idx: self.v2_discard_seq,
                         meld_idx,
-                    },
-                );
+                    });
                 self.record_replay_pao(actor, target, tile);
                 self.sync_replay_pending_kan_dora();
                 self.phase = Phase::WaitAct;
@@ -420,12 +419,11 @@ impl GameStateEventHandler for GameState {
                 self.players[actor].riichi_declared = true;
                 self.riichi_sticks += 1;
                 self.players[actor].score -= 1000;
-                self.v2_round_events.push(
-                    crate::v2_features::events::RoundEvent::ReachAccepted {
+                self.v2_round_events
+                    .push(crate::v2_features::events::RoundEvent::ReachAccepted {
                         actor: actor as u8,
                         turn_idx: self.v2_discard_seq,
-                    },
-                );
+                    });
             }
             MjaiEvent::Dora { dora_marker } => {
                 let tile = self.allocate_replay_tile(&dora_marker);
@@ -616,14 +614,13 @@ impl GameStateEventHandler for GameState {
                     self.wall.tiles.pop();
                     self.wall.drawable_count = self.wall.drawable_count.saturating_sub(1);
                 }
-                self.v2_round_events.push(
-                    crate::v2_features::events::RoundEvent::TsumoPrivate {
+                self.v2_round_events
+                    .push(crate::v2_features::events::RoundEvent::TsumoPrivate {
                         actor: *seat as u8,
                         tile37: crate::v2_features::tile136_to_tile37(*tile),
                         is_rinshan: self.is_rinshan_flag,
                         turn_idx: self.v2_discard_seq,
-                    },
-                );
+                    });
             }
             LogAction::ChiPengGang {
                 seat,

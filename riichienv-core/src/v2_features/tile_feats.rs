@@ -361,7 +361,12 @@ pub fn encode_tile_feats(
     // Yakuhai weights [50..53]
     for b in 27..TILE_MAX {
         let self_wind = (obs.player_id + 4 - obs.oya) % 4;
-        set_ch(&mut out, b, 50, yakuhai_weight(b, obs.round_wind, self_wind));
+        set_ch(
+            &mut out,
+            b,
+            50,
+            yakuhai_weight(b, obs.round_wind, self_wind),
+        );
         for rel in 1..=3usize {
             let opp = ((obs.player_id as usize + rel) % 4) as u8;
             let opp_wind = (opp + 4 - obs.oya) % 4;
@@ -393,15 +398,7 @@ pub fn encode_tile_feats(
             }
             let mut next_counts = visible.self_hand_base34;
             next_counts[b] -= 1;
-            let (s, u, _) = visible.shanten_and_visible_ukeire(&next_counts);
-            post_shanten[b] = s;
-            post_ukeire[b] = u;
-            if s < min_shanten {
-                min_shanten = s;
-            }
-            if u > best_ukeire {
-                best_ukeire = u;
-            }
+            let (mut s, mut u, _) = visible.shanten_and_visible_ukeire(&next_counts);
 
             if s == 0 {
                 // Rule-accurate tenpai & waits (respecting allow_fifth_copy_tenpai)
@@ -414,17 +411,28 @@ pub fn encode_tile_feats(
                 if !waits.is_empty() {
                     post_tenpai[b] = true;
                     // Recompute exact visible ukeire over rule-valid waits
-                    let wait_ukeire: u32 = waits
+                    u = waits
                         .iter()
                         .map(|&w| u32::from(visible.unseen_base34[w as usize]))
                         .sum();
-                    post_ukeire[b] = wait_ukeire;
-                    if wait_ukeire > best_ukeire {
-                        best_ukeire = wait_ukeire;
-                    }
-                    post_furiten[b] =
-                        furiten.is_post_discard_furiten(&waits, &self_discarded_ever, Some(b as u8));
+                    post_furiten[b] = furiten.is_post_discard_furiten(
+                        &waits,
+                        &self_discarded_ever,
+                        Some(b as u8),
+                    );
+                } else {
+                    // Formal-tenpai excluded (e.g. MJS 5th-copy rule): not tenpai, 0 valid waits.
+                    s = 1;
+                    u = 0;
                 }
+            }
+            post_shanten[b] = s;
+            post_ukeire[b] = u;
+            if s < min_shanten {
+                min_shanten = s;
+            }
+            if u > best_ukeire {
+                best_ukeire = u;
             }
         }
 
@@ -440,9 +448,24 @@ pub fn encode_tile_feats(
             } else if gap == 1 {
                 set_ch(&mut out, b, 56, 1.0);
             }
-            set_ch(&mut out, b, 57, (f32::from(post_shanten[b]).max(0.0) / 8.0).min(1.0));
-            set_ch(&mut out, b, 58, ((1.0 + post_ukeire[b] as f32).ln() / LN_61).min(1.0));
-            set_ch(&mut out, b, 59, (post_ukeire[b] as f32 / best_u_denom).min(1.0));
+            set_ch(
+                &mut out,
+                b,
+                57,
+                (f32::from(post_shanten[b]).max(0.0) / 8.0).min(1.0),
+            );
+            set_ch(
+                &mut out,
+                b,
+                58,
+                ((1.0 + post_ukeire[b] as f32).ln() / LN_61).min(1.0),
+            );
+            set_ch(
+                &mut out,
+                b,
+                59,
+                (post_ukeire[b] as f32 / best_u_denom).min(1.0),
+            );
             if post_tenpai[b] {
                 set_ch(&mut out, b, 60, 1.0);
             }

@@ -356,14 +356,16 @@ flowchart TD
 
 2. **全半庄连续 GAE 与分段 Bootstrap 合同（默认固定 $\gamma = 1.0,\; \lambda_{\text{round}} \equiv \lambda$）**：
    - 初版强制固定 $\lambda_{\text{round}} = \lambda$（标准连续 GAE，默认 $\lambda = 0.95$）；任何 $\lambda_{\text{round}} < \lambda$ 属于偏差—方差折衷而非无偏替代，不进入默认合同，仅作为可选消融项。
-   - **四类边界转移精确定义**：
+   - **全半庄六类边界转移精确定义（含显式 `RolloutTruncation` 合同）**：
      | 边界类型 | 立即奖励 $r_t$ | `next_value` | `terminated` |
      | :--- | :--- | :--- | :---: |
      | **局内连续步**（$t \to t+1$ 同属小局 $k$） | $0$ | $V_\phi^{\text{shaped}}(z_{t+1})$ | `False` |
      | **跨局正常转移**（小局 $k$ 末 $\to$ 小局 $k+1$ 首步） | $\Phi_{k+1} - \Phi_k$ | $V_\phi^{\text{shaped}}(z'_{0})$ | `False` |
-     | **零决策跳局**（玩家 $i$ 在小局 $k+1$ 全程未获得决策权，如他家天和/首巡流局） | 合并势差至上一有效步：$r_{\text{eff}} = \Phi_{k+2} - \Phi_k$（若东一局起即零决策则起点势顺移至 $\Phi_{k+2}$，伸缩恒等式严格保持） | 下一有效决策步 $V_\phi^{\text{shaped}}$ | `False` |
-     | **半庄正常/提前终局**（第 $K-1$ 局结束：オーラス完局、飞人、和了止、西入结束，`env.done()==True`） | $R_{\text{terminal}}(i) - \Phi_{K-1}$ | **$0.0$**（唯一清零处） | **`True`** |
-     | **Rollout 步长截断**（异步 worker 达 `T_rollout` 上限但半庄未完，`truncated=True`） | 当前步即时奖励（局内 `0` 或局末势差） | **$V_\phi^{\text{shaped}}(z_{\text{trunc}})$**（严禁置 `0.0`） | `False` |
+     | **零决策跳局（单局/连续多局）**（玩家 $i$ 在小局 $k+1,\dots,k_{\text{next}}-1$ 全程未获得决策权，如他家天和/首巡流局） | 合并全部势差至上一有效步：$r_{\text{eff}} = \Phi_{k_{\text{next}}} - \Phi_k$（不丢失、不重复；若东一局起即零决策则起点势顺移至首个有效局，伸缩恒等式严格保持） | 下一有效决策步 $V_\phi^{\text{shaped}}$ | `False` |
+     | **半庄正常/提前终局**（第 $K-1$ 局结束：オーラス完局、飞人、和了止、西入结束，`env.done()==True`） | $R_{\text{terminal}}(i) - \Phi_{\text{last}}$ | **$0.0$**（唯一清零处） | **`True`** |
+     | **Rollout 局内截断**（达 `T_rollout` 时仍处于小局 $k$ 内，`RolloutTruncation(kind="intra_round", bootstrap_v_shaped=...)`） | $0$ | **$V_\phi^{\text{shaped}}(z_{\text{trunc}})$**（于小局 $k$ 计算，严禁置 `0.0`） | `False` |
+     | **Rollout 跨局/跳局截断**（小局 $k$ 及可选连续零决策跳局已结算，进入小局 $k_{\text{next}} > k$ 但尚未采样下一决策步，`RolloutTruncation(kind="cross_round", bootstrap_v_shaped=..., next_round_index=k_next, next_round_phi=Φ_{k_next})`） | **$\Phi_{k_{\text{next}}} - \Phi_k$**（自动合并跳局势差、禁止重复发放；若缺失跨局势函数或 `round_start_potentials` 已含更新局而未显式传入 `RolloutTruncation` 则强制抛出 `ValueError`，严禁静默填零） | **$V_\phi^{\text{shaped}}(z_{\text{trunc}})$**（于小局 $k_{\text{next}}$ 或下一有效决策步计算，满足 $\delta_t = V^{\text{raw}}(z_{\text{trunc}}) - V^{\text{raw}}(z_t)$ 精确抵消与多分段伸缩守恒） | `False` |
+   - **矛盾边界强校验（Fail-Closed）**：`terminated=True` 与 `truncation`/`truncated_bootstrap_v_shaped` 同时传入、`terminated=False` 与 `terminal_reward` 同时传入、`terminated=False` 缺失 Bootstrap、`cross_round` 缺失显式 `next_round_index` 或 `next_round_phi`、非法或倒退局索引、非有限浮点数（`NaN`/`±Inf`），以及 `bootstrap_round_index` / `bootstrap_v_raw` 与声明边界所属局势函数不一致（例如跨局后误用上一局 $\Phi_k$ 计算 Bootstrap）一律抛出 `ValueError`，严禁静默猜测、填零或自动降级。
    - **GAE 与目标回报**：
      $$\delta_t = r_t + (1 - \text{terminated}_t)\,\gamma\,V_{\text{next},t} - V_\phi^{\text{shaped}}(z_t)$$
      $$\hat{A}_t^{\text{GAE}} = \delta_t + (1 - \text{terminated}_t)\,\gamma\,\lambda\,\hat{A}_{t+1}^{\text{GAE}}, \qquad \hat{G}_t^{\text{GAE,shaped}} = \hat{A}_t^{\text{GAE}} + V_\phi^{\text{shaped}}(z_t)$$
@@ -422,7 +424,7 @@ flowchart TD
    - 历史快照池按 AlphaStar 风格难度权重 $p_j \propto (1 - w_j + \varepsilon)^p$（默认 $p=2.0, \varepsilon=0.05$，$w_j \in [0,1]$ 为 Learner 对阵对手 $j$ 的 EMA 归一化顺位分）自动集中算力攻克当前弱项对手。
 3. **`FrozenGAERolloutBatch`（冻结 GAE Target 单次计算 + SHA-256 不可变守卫）**：
    - 通过 `FrozenGAERolloutBatch.from_hanchan_trajectories(..., version_tag=RolloutVersionTag)` 在采样结束时基于冻结采样期 Critic 预测一次性计算全半庄 `step_rewards`、`advantages` 与 `shaped_returns`；
-   - 所有存储张量强制 `requires_grad == False` 并计算 `SHA-256` 摘要；每轮 PPO mini-batch epoch 前强制调用 `assert_ready_for_ppo_epoch(...)` 同时校验 `policy_version` 滞后上界、`grp_sha256`、`ruleset_sha256` 及 GAE Target 比特级未篡改性。
+   - 所有存储张量（`step_rewards`、`advantages`、`shaped_returns`、`rollout_v_shaped`）强制 `requires_grad == False`，连同版本标签与完整 `trajectory_boundaries`（含 `RolloutTruncation` 元数据）共同计入 `SHA-256` 摘要，并通过 `state_dict()` / `from_state_dict()`（以及 `HanchanTrajectoryInput.to_dict()/from_dict()`）支持无损序列化与断点恢复；每轮 PPO mini-batch epoch 前强制调用 `assert_ready_for_ppo_epoch(...)` 同时校验 `policy_version` 滞后上界、`grp_sha256`、`ruleset_sha256` 及 GAE Target 比特级未篡改性。
 
 ---
 
@@ -454,7 +456,7 @@ Stage 1 交叉校验仅对语义严格等价的通道要求零误差；语义不
 | `v2_features::encode_tile_feats` | `&Observation, &VisibleTileCounts, &FuritenState, &GameRule, enable_early_shape_hint: bool` | `[f32; 34 * 64]` | ① 与 215ch 公共通道零误差对拍；② 验证对手安全通道严格仅依赖对手自身公开牌河（绝不推断对手私人响应）；③ `enable_early_shape_hint=false` 时 `+5` 恒为 `0.0`；④ `discard_post_is_furiten` 完整覆盖 `FuritenState`；⑤ `OWN_ACT` 与 `*_RESP` 分阶段零泄漏测试 |
 | `v2_features::encode_events` + `decode_events` | `&RoundEventLog, observer: u8` | `Vec<[u8; 10]>`（`1 ≤ len ≤ 256`） | ① 全 10 类观察者可见事件 round-trip `decode(encode(e)) == e` 100% 精确还原；② 首条必为初始 `DORA`；③ 10,000 局极端高鸣牌/4杠（含自身杠与对手杠）/全跳过状态机压力测试验证 `L_ev ≤ 214 < 256`；④ `L_ev > 256` 触发 `Err` |
 | `v2_features::encode_global_player` | `&Observation, &FuritenState, &HanchanTracker, &RuleContract` | `([f32; 48], [[f32; 32]; 4])` | ① `GameRule` 11 开关与 `ruleset_sha256` 一一映射；② `[19]` 精确反映 `temporary \| riichi` 振听；③ 东一局跨局摘要全 0；④ 同分起家顺位对齐 `rule_features.current_rank_features` |
-| `v2_features::encode_candidates` | `&Observation, &VisibleTileCounts, &FuritenState, &GameRule` | `(cand_ids: [i16; 32], cand_mask: [bool; 32], cand_mode: [u8; 32], cand_dyn: [[f32; 8]; 32])` | ① 硬断言 `legal_actions.len() <= 32` 并覆盖 4 阶段极值手牌（第一巡国士十三面 `30`、赤5暗杠、满吃碰杠荣 `10`、`KAKAN/ANKAN_RESP` `2`）；② `cand_ids` 严格升序且全 546 动作（含全部 111 个 `DAIMINKAN`、37 个 `KAKAN`、34 个 `ANKAN`、90 `CHI`、120 `PON`）`encode ↔ native_action` 双向无歧义单测；③ `CHI/PON` 包络严格剔除食替禁切并继承临时振听；④ `PENDING_RINSHAN_KAN` 精确标注 `chankan_window_possible` 且不含岭上虚构值；⑤ `WIN_EVAL` 严格按单边荣和+空里宝计算；⑥ `KYUSHU` 独立 `mode=6` |
+| `v2_features::encode_candidates` | `&Observation, &VisibleTileCounts, &FuritenState, &GameRule` | `(cand_ids: [i16; 32], cand_mask: [bool; 32], cand_mode: [u8; 32], cand_dyn: [[f32; 8]; 32])` | ① 硬断言 `legal_actions.len() <= 32` 并覆盖 4 阶段极值手牌（第一巡国士十三面 `30`、赤5暗杠、满吃碰杠荣 `10`、`KAKAN/ANKAN_RESP` `2`）；② `cand_ids` 严格升序且全 546 动作（含全部 111 个 `DAIMINKAN`、37 个 `KAKAN`、34 个 `ANKAN`、90 `CHI`、120 `PON`）`encode ↔ native_action` 双向无歧义单测；③ `CHI/PON` 包络严格剔除食替禁切并按规则在副露后打牌完成时解除临时振听（`PASS` 保留临时振听，立直振听与新听牌河牌振听保持准确）；④ `PENDING_RINSHAN_KAN` 精确标注 `chankan_window_possible` 且不含岭上虚构值；⑤ `WIN_EVAL` 严格按单边荣和+空里宝+役满包牌计算；⑥ `KYUSHU` 独立 `mode=6` |
 | `v2_features::encode_oracle` & `encode_belief_targets` | `&GameState, observer: u8` | Oracle `([f32; 34 * 32], [[f32; 12]; 3])`；Belief `{opp_tenpai, opp_waits, exact_dealin_now, opp_hand_counts}` | ① 活山顺序任意打乱后 `oracle_tile/player` 比特级不变（置换不变性）；② 杠后岭上摸牌索引偏移（`shift = rinshan_draw_count`）精确命中真实里宝、剩余岭上与活山切片；③ `exact_dealin_now` 严格剔除无役与振听假阳性；④ 仅接受 `&GameState`，`&Observation` 上不可调用（编译期隔离） |
 | `state::GameState` 实时/回放内置 V2 状态机 + PyO3 `v2_encode_env_step` | 在线 `step()` / MJAI `apply_mjai_event()` / 日志 `apply_log_action()` | `tile_feats`, `global_feats`, `player_feats`, `cand_*`, 实时无损 `events` / `event_len`, 实时 `HanchanTracker` (`rounds_completed`), 可选 `oracle_*` / `belief_*` | **Zero Train-Serve Skew 逐决策步实证单测**：在线多局对局（含立直、吃碰、响应跳过、跨局结算）与重放其 `mjai_log` 所得全部 5 组 Actor 张量、`events` 及 `v2_hanchan_tracker` 比特级完全一致 |
 | `grp::PureStateGRP` / `FrozenGRP` / `evaluate_grp_calibration`（Python） | `canonical_state(s_k, i, R)` | `P_GRP(r \| s_k, i, R)`, `Φ_k`, `GRPCalibrationReport` | ① 4 席位轮换精确等变性误差 `<1e-6`；② 任意真实半庄 `∑_{k=0}^{K-1} r_k == R_term - Φ_0` 误差 `<1e-6`；③ 冻结权重 `requires_grad=False` 与 `grp_sha256` 校验；④ `train_pure_state_grp_step` + `evaluate_grp_calibration` (NLL / Brier / Top-1 ECE / Classwise ECE) 门控测试 |

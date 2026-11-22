@@ -25,9 +25,7 @@ def _wall_seed(master_seed: int, game_id: str, cutoff_event_id: int, replicate: 
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
 
 
-def _seed(
-    master_seed: int, game_id: str, cutoff_event_id: int, action_id: int, replicate: int
-) -> int:
+def _seed(master_seed: int, game_id: str, cutoff_event_id: int, action_id: int, replicate: int) -> int:
     payload = "\0".join(
         (str(master_seed), game_id, str(cutoff_event_id), str(action_id), str(replicate), CONTINUATION_POLICY_VERSION)
     ).encode()
@@ -113,9 +111,7 @@ def _discard_efficiency_score(hand: list[int], discard_tile: int, dora_bases: se
     return shape - dora_penalty - red_penalty + 0.6 * isolated
 
 
-def _choose_own_candidate(
-    candidates: list[MappedAction], observation: Any, rng: random.Random
-) -> MappedAction:
+def _choose_own_candidate(candidates: list[MappedAction], observation: Any, rng: random.Random) -> MappedAction:
     wins = [candidate for candidate in candidates if candidate.spec.action_type == "TSUMO"]
     if wins:
         return wins[0]
@@ -124,14 +120,18 @@ def _choose_own_candidate(
     if discards:
         hand = list(observation.hands[observation.player_id])
         dora_bases = {_dora_base(int(tile)) for tile in observation.dora_indicators}
-        scored = [
-            (
-                _discard_efficiency_score(hand, int(candidate.actions[-1].tile), dora_bases)
-                + (0.35 if candidate.spec.riichi else 0.0),
-                candidate,
+        scored = []
+        for candidate in discards:
+            tile_id = candidate.actions[-1].tile
+            if tile_id is None:
+                continue
+            scored.append(
+                (
+                    _discard_efficiency_score(hand, int(tile_id), dora_bases)
+                    + (0.35 if candidate.spec.riichi else 0.0),
+                    candidate,
+                )
             )
-            for candidate in discards
-        ]
         best = max(score for score, _ in scored)
         tied = [candidate for score, candidate in scored if math.isclose(score, best, abs_tol=1e-9)]
         return rng.choice(tied)
@@ -142,9 +142,7 @@ def _choose_own_candidate(
     return rng.choice(usable)
 
 
-def _continue_baseline_native(
-    env: RiichiEnv, rng: random.Random, *, max_decisions: int
-) -> tuple[bool, int]:
+def _continue_baseline_native(env: RiichiEnv, rng: random.Random, *, max_decisions: int) -> tuple[bool, int]:
     """Continue with a legal, deliberately simple riichi-aware baseline policy."""
     decisions = 0
     while not env.done():
@@ -178,7 +176,8 @@ def _continue_baseline_native(
         decisions += 1
     return True, decisions
 
-def _branch_one(
+
+def _branch_one(  # noqa: PLR0911
     source_env: RiichiEnv,
     opportunity: ReplayOpportunity,
     candidate: MappedAction,

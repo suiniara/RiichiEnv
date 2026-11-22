@@ -1157,15 +1157,11 @@ impl LogKyoku {
                                 dt = Some(h.hu_tile);
                             }
                         }
-                        Action::DiscardTile { seat, tile, .. } => {
-                            if *seat == oya_idx {
-                                dt = Some(*tile);
-                            }
+                        Action::DiscardTile { seat, tile, .. } if *seat == oya_idx => {
+                            dt = Some(*tile);
                         }
-                        Action::AnGangAddGang { seat, tiles, .. } => {
-                            if *seat == oya_idx {
-                                dt = tiles.first().copied();
-                            }
+                        Action::AnGangAddGang { seat, tiles, .. } if *seat == oya_idx => {
+                            dt = tiles.first().copied();
                         }
                         _ => {}
                     }
@@ -1226,25 +1222,19 @@ impl LogKyoku {
                                 dt = Some(h.hu_tile);
                             }
                         }
-                        Action::DiscardTile { seat, tile, .. } => {
-                            if *seat == oya_idx {
-                                dt = Some(*tile);
-                            }
+                        Action::DiscardTile { seat, tile, .. } if *seat == oya_idx => {
+                            dt = Some(*tile);
                         }
-                        Action::AnGangAddGang { seat, tiles, .. } => {
-                            if *seat == oya_idx {
-                                dt = tiles.first().copied();
-                            }
+                        Action::AnGangAddGang { seat, tiles, .. } if *seat == oya_idx => {
+                            dt = tiles.first().copied();
                         }
                         Action::ChiPengGang {
                             seat,
                             tiles,
                             meld_type,
                             ..
-                        } => {
-                            if *seat == oya_idx && *meld_type == MeldType::Ankan {
-                                dt = tiles.first().copied();
-                            }
+                        } if *seat == oya_idx && *meld_type == MeldType::Ankan => {
+                            dt = tiles.first().copied();
                         }
                         _ => {}
                     }

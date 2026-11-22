@@ -362,9 +362,8 @@ impl RoundEventLog {
                     } else {
                         (consumed1_37, consumed0_37)
                     };
-                    let red = is_red5_tile37(claimed_tile37)
-                        || is_red5_tile37(c0)
-                        || is_red5_tile37(c1);
+                    let red =
+                        is_red5_tile37(claimed_tile37) || is_red5_tile37(c0) || is_red5_tile37(c1);
                     Some(CanonicalVisibleEvent {
                         kind: EventKind::Chi,
                         actor_rel: rel(actor),
@@ -392,9 +391,8 @@ impl RoundEventLog {
                     } else {
                         (consumed1_37, consumed0_37)
                     };
-                    let red = is_red5_tile37(claimed_tile37)
-                        || is_red5_tile37(c0)
-                        || is_red5_tile37(c1);
+                    let red =
+                        is_red5_tile37(claimed_tile37) || is_red5_tile37(c0) || is_red5_tile37(c1);
                     Some(CanonicalVisibleEvent {
                         kind: EventKind::Pon,
                         actor_rel: rel(actor),
@@ -533,7 +531,10 @@ pub fn encode_events(log: &RoundEventLog, observer: u8) -> Result<Vec<[u8; EVENT
             visible.len()
         ));
     }
-    visible.into_iter().map(CanonicalVisibleEvent::to_bytes).collect()
+    visible
+        .into_iter()
+        .map(CanonicalVisibleEvent::to_bytes)
+        .collect()
 }
 
 /// Decode 10-byte event records back into canonical observer-visible events.

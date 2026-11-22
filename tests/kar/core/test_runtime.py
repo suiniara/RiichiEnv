@@ -3,6 +3,13 @@ from dataclasses import replace
 
 import pytest
 
+from riichienv.kar.calibration import (
+    CalibrationRow,
+    CandidateBranchCalibrationRow,
+    calibrate_static_rows,
+    calibration_split,
+)
+from riichienv.kar.contracts import game_split
 from riichienv.kar.policy import BoundEvidence, PolicyOptions
 from riichienv.kar.runtime import RuntimePolicy
 
@@ -74,14 +81,6 @@ def test_explicit_empirical_mode_scores_all_s_and_has_no_certificate(
 
 
 def _production_calibration(calibration_fixture, binding, support, public_view, *, with_candidate_branches=False):
-    from riichienv.kar.calibration import (
-        CalibrationRow,
-        CandidateBranchCalibrationRow,
-        calibrate_static_rows,
-        calibration_split,
-    )
-    from riichienv.kar.contracts import game_split
-
     base, _, _ = calibration_fixture
     _, ids = public_view
     val_games = [
@@ -209,11 +208,12 @@ def test_foreign_model_visibility_gap_and_production_fixture_are_rejected(
         policy.decide(view, ids, "foreign-model")
 
 
-
 def test_production_event_calibration_alone_cannot_enable_candidate_value_reranking(
     fixed_predictor, binding, event_support, calibration_fixture, public_view
 ):
-    supported = replace(event_support, candidate_branch_source_decisions=100, candidate_action_source_counts=(50,) * 148)
+    supported = replace(
+        event_support, candidate_branch_source_decisions=100, candidate_action_source_counts=(50,) * 148
+    )
     artifact = _production_calibration(calibration_fixture, binding, supported, public_view)
     view, ids = public_view
     policy = RuntimePolicy(
@@ -231,7 +231,9 @@ def test_production_event_calibration_alone_cannot_enable_candidate_value_rerank
 def test_production_candidate_branch_validation_enables_finite_tau_reranking(
     fixed_predictor, binding, event_support, calibration_fixture, public_view
 ):
-    supported = replace(event_support, candidate_branch_source_decisions=100, candidate_action_source_counts=(50,) * 148)
+    supported = replace(
+        event_support, candidate_branch_source_decisions=100, candidate_action_source_counts=(50,) * 148
+    )
     artifact = _production_calibration(
         calibration_fixture, binding, supported, public_view, with_candidate_branches=True
     )

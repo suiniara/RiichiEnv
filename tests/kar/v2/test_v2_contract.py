@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import io
+import json
+import math
 import random
 
 import numpy as np
@@ -20,6 +23,7 @@ from riichienv.kar.v2 import (
     OracleCriticV2,
     PFSPOpponentPool,
     PureStateGRP,
+    RolloutTruncation,
     RolloutVersionTag,
     RoundBoundary,
     V2ModelConfig,
@@ -131,12 +135,8 @@ def test_rust_and_python_546_manifest_tables_match_byte_for_byte() -> None:
     r_c0 = torch.from_numpy(np.frombuffer(rust_tbl["consumed0_base34"], dtype=np.uint8).copy()).long()
     r_c1 = torch.from_numpy(np.frombuffer(rust_tbl["consumed1_base34"], dtype=np.uint8).copy()).long()
     r_src = torch.from_numpy(np.frombuffer(rust_tbl["source_rel"], dtype=np.uint8).copy()).long()
-    r_has = torch.from_numpy(
-        np.frombuffer(rust_tbl["has_slot_flags"], dtype=np.float32).copy()
-    ).view(-1, 4)
-    r_flags = torch.from_numpy(
-        np.frombuffer(rust_tbl["static_flags"], dtype=np.float32).copy()
-    ).view(-1, 4)
+    r_has = torch.from_numpy(np.frombuffer(rust_tbl["has_slot_flags"], dtype=np.float32).copy()).view(-1, 4)
+    r_flags = torch.from_numpy(np.frombuffer(rust_tbl["static_flags"], dtype=np.float32).copy()).view(-1, 4)
 
     assert torch.equal(r_type, py_tbl["action_type"])
     assert torch.equal(r_tgt, py_tbl["target_base34"])
@@ -153,12 +153,8 @@ def test_rust_and_python_546_manifest_tables_match_byte_for_byte() -> None:
 def test_pyo3_calc_with_rule_tenhou_vs_mjsoul() -> None:
     kokushi_13 = [0, 32, 36, 68, 72, 104, 108, 112, 116, 120, 124, 128, 132]
     cond = native.Conditions(tsumo=False, player_wind=native.Wind.South, round_wind=native.Wind.East)
-    res_tenhou = native.v2_calc_with_rule(
-        kokushi_13, [], 1, [4], [], cond, riichienv.GameRule.default_tenhou()
-    )
-    res_mjs = native.v2_calc_with_rule(
-        kokushi_13, [], 1, [4], [], cond, riichienv.GameRule.default_mjsoul()
-    )
+    res_tenhou = native.v2_calc_with_rule(kokushi_13, [], 1, [4], [], cond, riichienv.GameRule.default_tenhou())
+    res_mjs = native.v2_calc_with_rule(kokushi_13, [], 1, [4], [], cond, riichienv.GameRule.default_mjsoul())
     assert res_tenhou.han == 13 and res_tenhou.ron_agari == 32_000
     assert res_mjs.han == 26 and res_mjs.ron_agari == 64_000
 
@@ -236,9 +232,9 @@ def test_hanchan_gae_handles_skipped_rounds_and_truncation_bootstrap() -> None:
     with pytest.raises(ValueError, match="truncated_bootstrap_v_shaped"):
         compute_hanchan_gae(steps, phis, terminated=False)
 
-    # Mid-Hanchan truncation bootstraps cleanly with non-zero V_shaped
+    # Mid-Hanchan intra-round truncation (still inside round 3) bootstraps cleanly with non-zero V_shaped
     _, adv_trunc, ret_trunc = compute_hanchan_gae(
-        steps, phis, terminated=False, truncated_bootstrap_v_shaped=0.33, gamma=1.0, gae_lambda=0.95
+        steps, phis[:4], terminated=False, truncated_bootstrap_v_shaped=0.33, gamma=1.0, gae_lambda=0.95
     )
     assert abs(ret_trunc[-1] - 0.33) < 1e-6
     assert abs(adv_trunc[-1] - (0.33 - steps[-1].v_shaped)) < 1e-6
@@ -383,7 +379,56 @@ def test_ppo_masking_k1_forced_steps_and_opponent_seats_zero_actor_grad() -> Non
     grad_norm = sum(float(p.grad.abs().sum()) for p in actor.parameters() if p.grad is not None)
     assert grad_norm == 0.0
 
-    # Case 2: Mismatched chosen_global_id MUST fail fast
+    # Case 2: Non-learner PFSP opponent seats (is_learner_seat=False) with K > 1 -> strictly zero Actor grad!
+    b_multi = _dummy_batch(batch_size=3, seq_len=8, force_k1=False)
+    actor.zero_grad(set_to_none=True)
+    out_m = actor(
+        tile_feats=b_multi["tile_feats"],
+        events=b_multi["events"],
+        event_len=b_multi["event_len"],
+        global_feats=b_multi["global_feats"],
+        player_feats=b_multi["player_feats"],
+        cand_ids=b_multi["cand_ids"],
+        cand_mask=b_multi["cand_mask"],
+        cand_mode=b_multi["cand_mode"],
+        cand_dyn=b_multi["cand_dyn"],
+    )
+    opp_res = ppo_actor_loss(
+        logits=out_m["logits"],
+        cand_ids=b_multi["cand_ids"],
+        cand_mask=b_multi["cand_mask"],
+        chosen_cand_idx=torch.zeros(3, dtype=torch.long),
+        chosen_global_id=b_multi["cand_ids"][:, 0],
+        old_log_prob=torch.full((3,), -2.0),
+        advantages=torch.tensor([1.0, -1.0, 0.5]),
+        is_learner_seat=torch.zeros(3, dtype=torch.bool),
+        ref_bc_logits=out_m["logits"].detach(),
+    )
+    assert opp_res["active_count"].item() == 0.0
+    opp_res["loss"].backward()
+    opp_grad_norm = sum(float(p.grad.abs().sum()) for p in actor.parameters() if p.grad is not None)
+    assert opp_grad_norm == 0.0
+
+    # Case 3: BF16 logits MUST upcast Softmax, Entropy, KL, and PPO loss to fp32 without NaN!
+    bf16_logits = out_m["logits"].detach().to(torch.bfloat16).requires_grad_(True)
+    bf16_ref = out_m["logits"].detach().to(torch.bfloat16)
+    ent_fp32, kl_fp32 = masked_entropy_and_kl_fp32(bf16_logits, b_multi["cand_mask"], bf16_ref)
+    assert ent_fp32.dtype == torch.float32 and torch.isfinite(ent_fp32).all()
+    assert kl_fp32 is not None and kl_fp32.dtype == torch.float32 and torch.isfinite(kl_fp32).all()
+    bf16_ppo = ppo_actor_loss(
+        logits=bf16_logits,
+        cand_ids=b_multi["cand_ids"],
+        cand_mask=b_multi["cand_mask"],
+        chosen_cand_idx=torch.zeros(3, dtype=torch.long),
+        chosen_global_id=b_multi["cand_ids"][:, 0],
+        old_log_prob=torch.full((3,), -2.0),
+        advantages=torch.tensor([1.0, -1.0, 0.5]),
+        is_learner_seat=torch.ones(3, dtype=torch.bool),
+        ref_bc_logits=bf16_ref,
+    )
+    assert bf16_ppo["loss"].dtype == torch.float32 and torch.isfinite(bf16_ppo["loss"]).all()
+
+    # Case 4: Mismatched chosen_global_id MUST fail fast
     with pytest.raises(ValueError, match="chosen_global_id"):
         ppo_actor_loss(
             logits=out["logits"].detach(),
@@ -406,35 +451,29 @@ def test_live_riichienv_to_rust_v2_to_pytorch_actor_and_critic() -> None:
     observer = next(iter(obs_map.keys()))
 
     step_data = native.v2_encode_env_step(env, observer, "tenhou", False)
-    tile_feats = torch.from_numpy(
-        np.frombuffer(step_data["tile_feats"], dtype=np.float32).copy()
-    ).view(1, TILE_DIM, TILE_FEATS_DIM)
-    global_feats = torch.from_numpy(
-        np.frombuffer(step_data["global_feats"], dtype=np.float32).copy()
-    ).view(1, GLOBAL_FEATS_DIM)
-    player_feats = torch.from_numpy(
-        np.frombuffer(step_data["player_feats"], dtype=np.float32).copy()
-    ).view(1, 4, PLAYER_FEATS_DIM)
-    cand_ids = torch.from_numpy(
-        np.frombuffer(step_data["cand_ids"], dtype=np.int16).copy()
-    ).view(1, MAX_CANDIDATES)
-    cand_mask = (
-        torch.from_numpy(np.frombuffer(step_data["cand_mask"], dtype=np.uint8).copy())
-        .view(1, MAX_CANDIDATES)
-        .bool()
+    tile_feats = torch.from_numpy(np.frombuffer(step_data["tile_feats"], dtype=np.float32).copy()).view(
+        1, TILE_DIM, TILE_FEATS_DIM
     )
-    cand_mode = torch.from_numpy(
-        np.frombuffer(step_data["cand_mode"], dtype=np.uint8).copy()
-    ).view(1, MAX_CANDIDATES)
-    cand_dyn = torch.from_numpy(
-        np.frombuffer(step_data["cand_dyn"], dtype=np.float32).copy()
-    ).view(1, MAX_CANDIDATES, CAND_DYN_DIM)
-    oracle_tile = torch.from_numpy(
-        np.frombuffer(step_data["oracle_tile"], dtype=np.float32).copy()
-    ).view(1, TILE_DIM, ORACLE_TILE_DIM)
-    oracle_player = torch.from_numpy(
-        np.frombuffer(step_data["oracle_player"], dtype=np.float32).copy()
-    ).view(1, 3, ORACLE_PLAYER_DIM)
+    global_feats = torch.from_numpy(np.frombuffer(step_data["global_feats"], dtype=np.float32).copy()).view(
+        1, GLOBAL_FEATS_DIM
+    )
+    player_feats = torch.from_numpy(np.frombuffer(step_data["player_feats"], dtype=np.float32).copy()).view(
+        1, 4, PLAYER_FEATS_DIM
+    )
+    cand_ids = torch.from_numpy(np.frombuffer(step_data["cand_ids"], dtype=np.int16).copy()).view(1, MAX_CANDIDATES)
+    cand_mask = (
+        torch.from_numpy(np.frombuffer(step_data["cand_mask"], dtype=np.uint8).copy()).view(1, MAX_CANDIDATES).bool()
+    )
+    cand_mode = torch.from_numpy(np.frombuffer(step_data["cand_mode"], dtype=np.uint8).copy()).view(1, MAX_CANDIDATES)
+    cand_dyn = torch.from_numpy(np.frombuffer(step_data["cand_dyn"], dtype=np.float32).copy()).view(
+        1, MAX_CANDIDATES, CAND_DYN_DIM
+    )
+    oracle_tile = torch.from_numpy(np.frombuffer(step_data["oracle_tile"], dtype=np.float32).copy()).view(
+        1, TILE_DIM, ORACLE_TILE_DIM
+    )
+    oracle_player = torch.from_numpy(np.frombuffer(step_data["oracle_player"], dtype=np.float32).copy()).view(
+        1, 3, ORACLE_PLAYER_DIM
+    )
 
     assert step_data["num_valid"] >= 1
     assert step_data["num_valid"] <= MAX_CANDIDATES
@@ -447,9 +486,7 @@ def test_live_riichienv_to_rust_v2_to_pytorch_actor_and_critic() -> None:
     # Forward through Actor + independent Oracle Critic using REAL Rust-encoded events!
     ev_len = int(step_data["event_len"])
     assert ev_len >= 2  # initial DORA at idx 0 + dealer's opening TSUMO_SELF
-    events = torch.from_numpy(
-        np.frombuffer(step_data["events"], dtype=np.uint8).copy()
-    ).view(1, ev_len, EVENT_BYTES)
+    events = torch.from_numpy(np.frombuffer(step_data["events"], dtype=np.uint8).copy()).view(1, ev_len, EVENT_BYTES)
     assert int(events[0, 0, 0].item()) == 1  # EventKind::Dora at index 0
     event_len = torch.tensor([ev_len], dtype=torch.long)
 
@@ -829,4 +866,629 @@ def test_frozen_gae_rollout_batch_immutability_and_version_binding() -> None:
             expected_ruleset_sha256="rule_sha_v1",
         )
 
+    # Cryptographic guard MUST also cover step_rewards!
+    batch2 = FrozenGAERolloutBatch.from_hanchan_trajectories([traj], version_tag=tag)
+    batch2.step_rewards[-1] -= 0.05
+    with pytest.raises(RuntimeError, match="mutated across PPO epochs"):
+        batch2.assert_ready_for_ppo_epoch(
+            current_policy_version=7,
+            expected_grp_sha256="grp_sha_v1",
+            expected_ruleset_sha256="rule_sha_v1",
+        )
 
+
+def test_ppo_multi_epoch_critic_updates_keep_frozen_gae_targets_bit_identical() -> None:
+    torch.manual_seed(42)
+    critic = OracleCriticV2(CriticModelConfig())
+    optimizer = torch.optim.Adam(critic.parameters(), lr=1e-2)
+    dummy = _dummy_batch(batch_size=3, seq_len=8)
+    grp_probs = torch.full((3, 4), 0.25)
+    payoffs = torch.tensor([0.90, 0.45, 0.0, -1.35])
+    final_ranks = torch.tensor([0, 1, 3], dtype=torch.long)
+
+    # Rollout-time frozen Critic predictions used ONCE to construct FrozenGAERolloutBatch
+    with torch.no_grad():
+        rollout_out = critic(
+            tile_feats=dummy["tile_feats"],
+            oracle_tile=dummy["oracle_tile"],
+            events=dummy["events"],
+            event_len=dummy["event_len"],
+            global_feats=dummy["global_feats"],
+            player_feats=dummy["player_feats"],
+            oracle_player=dummy["oracle_player"],
+            grp_prior_probs=grp_probs,
+            rank_payoffs=payoffs,
+        )
+    v_raw_rollout = rollout_out["v_raw"].tolist()
+    phis = [0.05, 0.20]
+    traj = HanchanTrajectoryInput(
+        steps=[
+            RoundBoundary(round_index=0, phi_k=phis[0], v_raw=v_raw_rollout[0]),
+            RoundBoundary(round_index=0, phi_k=phis[0], v_raw=v_raw_rollout[1]),
+            RoundBoundary(round_index=1, phi_k=phis[1], v_raw=v_raw_rollout[2]),
+        ],
+        round_start_potentials=phis,
+        terminated=True,
+        terminal_reward=0.90,
+    )
+    tag = RolloutVersionTag(
+        policy_version=12,
+        critic_version=4,
+        grp_sha256="grp_v2",
+        ruleset_sha256="rule_v2",
+    )
+    frozen_batch = FrozenGAERolloutBatch.from_hanchan_trajectories([traj], version_tag=tag)
+    orig_sha = frozen_batch.target_sha256
+    orig_adv = frozen_batch.advantages.clone()
+    orig_ret = frozen_batch.shaped_returns.clone()
+    orig_rew = frozen_batch.step_rewards.clone()
+
+    # Run 4 real PPO epochs updating Critic parameters -> frozen targets MUST NEVER move!
+    w_before = next(critic.parameters()).detach().clone()
+    for _epoch in range(4):
+        frozen_batch.assert_ready_for_ppo_epoch(
+            current_policy_version=12,
+            expected_grp_sha256="grp_v2",
+            expected_ruleset_sha256="rule_v2",
+            max_staleness=2,
+        )
+        optimizer.zero_grad(set_to_none=True)
+        out = critic(
+            tile_feats=dummy["tile_feats"],
+            oracle_tile=dummy["oracle_tile"],
+            events=dummy["events"],
+            event_len=dummy["event_len"],
+            global_feats=dummy["global_feats"],
+            player_feats=dummy["player_feats"],
+            oracle_player=dummy["oracle_player"],
+            grp_prior_probs=grp_probs,
+            rank_payoffs=payoffs,
+        )
+        loss_dict = oracle_critic_loss(
+            rank_logits=out["rank_logits"],
+            v_shaped=out["v_shaped"],
+            final_rank_idx=final_ranks,
+            shaped_target=frozen_batch.shaped_returns,
+            td_mode="gae_mse",
+        )
+        loss_dict["loss"].backward()
+        optimizer.step()
+
+        assert frozen_batch.target_sha256 == orig_sha
+        assert torch.equal(frozen_batch.advantages, orig_adv)
+        assert torch.equal(frozen_batch.shaped_returns, orig_ret)
+        assert torch.equal(frozen_batch.step_rewards, orig_rew)
+
+    assert not torch.equal(w_before, next(critic.parameters()).detach())
+
+
+def test_hanchan_gae_cross_round_truncation_skipped_round_truncation_and_chunk_telescoping() -> None:
+    # Potentials across 6 started rounds: Phi_0..Phi_5
+    phis = [0.05, 0.25, -0.10, 0.40, 0.15, 0.60]
+
+    # 1. Intra-round normal truncation: reward == 0.0, exact bootstrap (next_value != 0.0)
+    steps_r0 = [
+        RoundBoundary(round_index=0, phi_k=phis[0], v_raw=0.08),
+        RoundBoundary(round_index=0, phi_k=phis[0], v_raw=0.14),
+    ]
+    rew_intra, adv_intra, ret_intra = compute_hanchan_gae(
+        steps_r0,
+        phis[:1],
+        terminated=False,
+        truncation=RolloutTruncation(kind="intra_round", bootstrap_v_shaped=0.12),
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    assert rew_intra == [0.0, 0.0]
+    assert adv_intra[-1] == pytest.approx(0.12 - steps_r0[-1].v_shaped)
+    assert ret_intra[-1] == pytest.approx(0.12)
+
+    # 2. Exact round-end truncation: round 0 settled, round 1 started (no step in round 1 yet!)
+    v_raw_trunc_r1 = 0.31
+    v_shaped_trunc_r1 = v_raw_trunc_r1 - phis[1]
+    rew_end, adv_end, ret_end = compute_hanchan_gae(
+        steps_r0,
+        phis[:2],
+        terminated=False,
+        truncation=RolloutTruncation(
+            kind="cross_round",
+            bootstrap_v_shaped=v_shaped_trunc_r1,
+            next_round_index=1,
+            next_round_phi=phis[1],
+        ),
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    assert rew_end[0] == pytest.approx(0.0)
+    assert rew_end[-1] == pytest.approx(phis[1] - phis[0])
+    # Exact Bellman cancellation: delta[-1] == v_raw_trunc_r1 - v_raw[-1]
+    assert adv_end[-1] == pytest.approx(v_raw_trunc_r1 - steps_r0[-1].v_raw)
+    assert ret_end[-1] == pytest.approx((phis[1] - phis[0]) + v_shaped_trunc_r1)
+
+    # 3. Cross-round continuation with normal next decision: verify bootstrap to next valid step
+    #    and zero duplicate potential reward across chunks!
+    step_r1_first = RoundBoundary(round_index=1, phi_k=phis[1], v_raw=v_raw_trunc_r1)
+    step_r1_second = RoundBoundary(round_index=1, phi_k=phis[1], v_raw=0.42)
+    r_term_2round = 0.90
+    rew_full, adv_full, _ = compute_hanchan_gae(
+        [*steps_r0, step_r1_first, step_r1_second],
+        phis[:2],
+        terminated=True,
+        terminal_reward=r_term_2round,
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    assert rew_full == pytest.approx([0.0, phis[1] - phis[0], 0.0, r_term_2round - phis[1]])
+    assert sum(rew_full) == pytest.approx(r_term_2round - phis[0])
+    # Split into Chunk 1 (cross-round truncated bootstrapping step_r1_first.v_shaped) + Chunk 2 (from step_r1_first)
+    rew_c1, adv_c1, _ = compute_hanchan_gae(
+        steps_r0,
+        phis[:2],
+        terminated=False,
+        truncation=RolloutTruncation(
+            kind="cross_round",
+            bootstrap_v_shaped=step_r1_first.v_shaped,
+            next_round_index=1,
+            next_round_phi=phis[1],
+        ),
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    rew_c2, _, _ = compute_hanchan_gae(
+        [step_r1_first, step_r1_second],
+        phis[:2],
+        terminated=True,
+        terminal_reward=r_term_2round,
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    # Potential jump Phi_1 - Phi_0 is issued EXACTLY ONCE across Chunk 1 + Chunk 2!
+    assert sum(rew_c1) + sum(rew_c2) == pytest.approx(r_term_2round - phis[0])
+    assert rew_c1[-1] == pytest.approx(phis[1] - phis[0])
+    assert rew_c2[0] == pytest.approx(0.0)
+    assert adv_c1[-1] == pytest.approx(step_r1_first.v_raw - steps_r0[-1].v_raw)
+    assert adv_full[1] == pytest.approx(
+        (phis[1] - phis[0]) + step_r1_first.v_shaped - steps_r0[-1].v_shaped + 0.95 * adv_full[2]
+    )
+
+    # 4. Single skipped-round truncation: round 0 -> skip round 1 -> truncated at round 2 start
+    v_raw_trunc_r2 = -0.05
+    v_shaped_trunc_r2 = v_raw_trunc_r2 - phis[2]
+    rew_skip1, adv_skip1, _ = compute_hanchan_gae(
+        steps_r0,
+        phis[:3],
+        terminated=False,
+        truncation=RolloutTruncation(
+            kind="cross_round",
+            bootstrap_v_shaped=v_shaped_trunc_r2,
+            next_round_index=2,
+            next_round_phi=phis[2],
+        ),
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    assert rew_skip1[-1] == pytest.approx(phis[2] - phis[0])
+    assert adv_skip1[-1] == pytest.approx(v_raw_trunc_r2 - steps_r0[-1].v_raw)
+
+    # 5. Multiple consecutive skipped rounds (skip rounds 1, 2, 3 -> round 4):
+    #    (a) cross-round truncation merges Phi_4 - Phi_0 without loss or duplication
+    v_raw_trunc_r4 = 0.22
+    v_shaped_trunc_r4 = v_raw_trunc_r4 - phis[4]
+    rew_skip_multi_trunc, adv_skip_multi_trunc, _ = compute_hanchan_gae(
+        steps_r0,
+        phis[:5],
+        terminated=False,
+        truncation=RolloutTruncation(
+            kind="cross_round",
+            bootstrap_v_shaped=v_shaped_trunc_r4,
+            next_round_index=4,
+            next_round_phi=phis[4],
+        ),
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    assert rew_skip_multi_trunc == pytest.approx([0.0, phis[4] - phis[0]])
+    assert adv_skip_multi_trunc[-1] == pytest.approx(v_raw_trunc_r4 - steps_r0[-1].v_raw)
+
+    #    (b) full Hanchan skipping rounds 1, 2, 3 inside trajectory + skipping round 5 before termination!
+    steps_multi_skip_full = [
+        *steps_r0,
+        RoundBoundary(round_index=4, phi_k=phis[4], v_raw=0.22),
+    ]
+    r_terminal = 0.90
+    rew_multi_full, adv_multi_full, ret_multi_full = compute_hanchan_gae(
+        steps_multi_skip_full,
+        phis,
+        terminated=True,
+        terminal_reward=r_terminal,
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    # 6. True Hanchan termination: last step uses R_terminal - Phi_last with next_value == 0.0
+    assert rew_multi_full == pytest.approx([0.0, phis[4] - phis[0], r_terminal - phis[4]])
+    assert sum(rew_multi_full) == pytest.approx(r_terminal - phis[0])
+    assert adv_multi_full[-1] == pytest.approx((r_terminal - phis[4]) - steps_multi_skip_full[-1].v_shaped)
+    assert ret_multi_full[-1] == pytest.approx(r_terminal - phis[4])
+
+    #    Exact 2-chunk telescoping equivalence across multi-skip boundary
+    rew_chunk2_r4, _, _ = compute_hanchan_gae(
+        [RoundBoundary(round_index=4, phi_k=phis[4], v_raw=0.22)],
+        phis,
+        terminated=True,
+        terminal_reward=r_terminal,
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    assert sum(rew_skip_multi_trunc) + sum(rew_chunk2_r4) == pytest.approx(r_terminal - phis[0])
+
+
+def test_hanchan_gae_rejects_contradictory_and_missing_cross_round_boundaries() -> None:
+    phis = [0.05, 0.25, -0.10]
+    steps_r0 = [
+        RoundBoundary(round_index=0, phi_k=phis[0], v_raw=0.08),
+        RoundBoundary(round_index=0, phi_k=phis[0], v_raw=0.14),
+    ]
+    v_shaped_trunc_r1 = 0.31 - phis[1]
+
+    # 7. Contradictory terminal + truncation inputs MUST be explicitly rejected!
+    with pytest.raises(ValueError, match="must not be supplied when terminated=True"):
+        compute_hanchan_gae(
+            steps_r0,
+            phis[:2],
+            terminated=True,
+            terminal_reward=0.90,
+            truncation=RolloutTruncation(kind="intra_round", bootstrap_v_shaped=0.1),
+        )
+    with pytest.raises(ValueError, match="must not be supplied when terminated=True"):
+        compute_hanchan_gae(
+            steps_r0,
+            phis[:1],
+            terminated=True,
+            terminal_reward=0.90,
+            truncated_bootstrap_v_shaped=0.1,
+        )
+    with pytest.raises(ValueError, match="terminal_reward must not be supplied when terminated=False"):
+        compute_hanchan_gae(
+            steps_r0,
+            phis[:1],
+            terminated=False,
+            terminal_reward=0.90,
+            truncation=RolloutTruncation(kind="intra_round", bootstrap_v_shaped=0.1),
+        )
+
+    # 8. Missing cross-round potential MUST raise ValueError (even if round_start_potentials has Phi_1)!
+    for pot_slice in (phis[:1], phis[:2]):
+        with pytest.raises(ValueError, match="next_round_phi"):
+            compute_hanchan_gae(
+                steps_r0,
+                pot_slice,
+                terminated=False,
+                truncation=RolloutTruncation(
+                    kind="cross_round",
+                    bootstrap_v_shaped=0.1,
+                    next_round_index=1,
+                    next_round_phi=None,
+                ),
+            )
+    with pytest.raises(ValueError, match="next_round_index > last_k"):
+        compute_hanchan_gae(
+            steps_r0,
+            phis[:2],
+            terminated=False,
+            truncation=RolloutTruncation(
+                kind="cross_round",
+                bootstrap_v_shaped=0.1,
+                next_round_index=None,
+                next_round_phi=phis[1],
+            ),
+        )
+    # Fail-closed guard when round_start_potentials already has next round but caller omits RolloutTruncation
+    with pytest.raises(ValueError, match="RolloutTruncation"):
+        compute_hanchan_gae(
+            steps_r0,
+            phis[:2],
+            terminated=False,
+            truncated_bootstrap_v_shaped=0.1,
+        )
+
+    # 9. FrozenGAERolloutBatch wires cross-round RolloutTruncation seamlessly
+    tag = RolloutVersionTag(
+        policy_version=1,
+        critic_version=1,
+        grp_sha256="grp_sha",
+        ruleset_sha256="rule_sha",
+    )
+    batch = FrozenGAERolloutBatch.from_hanchan_trajectories(
+        [
+            HanchanTrajectoryInput(
+                steps=steps_r0,
+                round_start_potentials=phis[:2],
+                terminated=False,
+                truncation=RolloutTruncation(
+                    kind="cross_round",
+                    bootstrap_v_shaped=v_shaped_trunc_r1,
+                    next_round_index=1,
+                    next_round_phi=phis[1],
+                    bootstrap_round_index=1,
+                    bootstrap_v_raw=0.31,
+                ),
+            )
+        ],
+        version_tag=tag,
+    )
+    assert float(batch.step_rewards[-1].item()) == pytest.approx(phis[1] - phis[0])
+
+
+def test_hanchan_gae_pre_vs_post_cross_round_rollout_and_early_vs_full_hanchan() -> None:
+    # Full 8-round Hanchan potentials (East 1 .. South 4)
+    phis_8 = [0.00, 0.12, -0.08, 0.20, 0.35, 0.18, 0.50, 0.72]
+
+    # Scenario 6: Rollout ends BEFORE round boundary (still inside round 0);
+    # Chunk 2 finishes round 0 and crosses to round 1.
+    step0 = RoundBoundary(round_index=0, phi_k=phis_8[0], v_raw=0.04)
+    step1 = RoundBoundary(round_index=0, phi_k=phis_8[0], v_raw=0.09)
+    step2 = RoundBoundary(round_index=1, phi_k=phis_8[1], v_raw=0.22)
+    r_early_tobi = -1.35  # Scenario 8: Early Hanchan termination (Tobi at East 2, K=2)
+
+    rew_pre_c1, adv_pre_c1, ret_pre_c1 = compute_hanchan_gae(
+        [step0],
+        phis_8[:1],
+        terminated=False,
+        truncation=RolloutTruncation(
+            kind="intra_round",
+            bootstrap_v_shaped=step1.v_shaped,
+            next_round_index=0,
+            next_round_phi=phis_8[0],
+            bootstrap_round_index=0,
+            bootstrap_v_raw=step1.v_raw,
+        ),
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    rew_pre_c2, adv_pre_c2, ret_pre_c2 = compute_hanchan_gae(
+        [step1, step2],
+        phis_8[:2],
+        terminated=True,
+        terminal_reward=r_early_tobi,
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    assert rew_pre_c1 == pytest.approx([0.0])
+    assert adv_pre_c1[0] == pytest.approx(step1.v_shaped - step0.v_shaped)
+    assert ret_pre_c1[0] == pytest.approx(step1.v_shaped)
+    assert rew_pre_c2 == pytest.approx([phis_8[1] - phis_8[0], r_early_tobi - phis_8[1]])
+    assert adv_pre_c2[-1] == pytest.approx((r_early_tobi - phis_8[1]) - step2.v_shaped)
+    assert ret_pre_c2[-1] == pytest.approx(r_early_tobi - phis_8[1])
+    assert sum(rew_pre_c1) + sum(rew_pre_c2) == pytest.approx(r_early_tobi - phis_8[0])
+
+    # Scenario 7: Rollout ends AFTER round boundary (round 0 settled, round 1 started);
+    # potential jump belongs in Chunk 1 ONLY.
+    rew_post_c1, adv_post_c1, ret_post_c1 = compute_hanchan_gae(
+        [step0, step1],
+        phis_8[:2],
+        terminated=False,
+        truncation=RolloutTruncation(
+            kind="cross_round",
+            bootstrap_v_shaped=step2.v_shaped,
+            next_round_index=1,
+            next_round_phi=phis_8[1],
+            bootstrap_round_index=1,
+            bootstrap_v_raw=step2.v_raw,
+        ),
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    rew_post_c2, adv_post_c2, ret_post_c2 = compute_hanchan_gae(
+        [step2],
+        phis_8[:2],
+        terminated=True,
+        terminal_reward=r_early_tobi,
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    assert rew_post_c1 == pytest.approx([0.0, phis_8[1] - phis_8[0]])
+    assert adv_post_c1[-1] == pytest.approx(step2.v_raw - step1.v_raw)
+    assert ret_post_c1[-1] == pytest.approx((phis_8[1] - phis_8[0]) + step2.v_shaped)
+    assert rew_post_c2 == pytest.approx([r_early_tobi - phis_8[1]])
+    assert adv_post_c2[-1] == pytest.approx((r_early_tobi - phis_8[1]) - step2.v_shaped)
+    assert ret_post_c2[-1] == pytest.approx(r_early_tobi - phis_8[1])
+    assert sum(rew_post_c1) + sum(rew_post_c2) == pytest.approx(r_early_tobi - phis_8[0])
+
+    # Scenario 9: Normal full 8-round Hanchan termination (East 1 .. South 4, K=8)
+    steps_8 = [RoundBoundary(round_index=k, phi_k=phis_8[k], v_raw=phis_8[k] + 0.03 * (k - 3)) for k in range(8)]
+    r_full = 0.90
+    rew_8, adv_8, ret_8 = compute_hanchan_gae(
+        steps_8,
+        phis_8,
+        terminated=True,
+        terminal_reward=r_full,
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    assert sum(rew_8) == pytest.approx(r_full - phis_8[0])
+    assert rew_8[-1] == pytest.approx(r_full - phis_8[7])
+    assert adv_8[-1] == pytest.approx((r_full - phis_8[7]) - steps_8[-1].v_shaped)
+    assert ret_8[-1] == pytest.approx(r_full - phis_8[7])
+    # Verify exact backward GAE recursion at every step t
+    for t in range(len(steps_8) - 1):
+        delta_t = rew_8[t] + 1.0 * steps_8[t + 1].v_shaped - steps_8[t].v_shaped
+        assert adv_8[t] == pytest.approx(delta_t + 0.95 * adv_8[t + 1])
+        assert ret_8[t] == pytest.approx(adv_8[t] + steps_8[t].v_shaped)
+
+
+def test_hanchan_gae_rejects_non_finite_regressive_and_mismatched_bootstrap() -> None:
+    phis = [0.05, 0.25]
+    steps = [RoundBoundary(round_index=0, phi_k=0.05, v_raw=0.10)]
+
+    # Non-finite floats in bootstrap, next_round_phi, terminal_reward, step, potentials, gamma, gae_lambda
+    for bad in (math.nan, math.inf, -math.inf):
+        with pytest.raises(ValueError, match="finite"):
+            compute_hanchan_gae(
+                steps,
+                phis[:1],
+                terminated=False,
+                truncation=RolloutTruncation(kind="intra_round", bootstrap_v_shaped=bad),
+            )
+        with pytest.raises(ValueError, match="finite"):
+            compute_hanchan_gae(
+                steps,
+                phis[:2],
+                terminated=False,
+                truncation=RolloutTruncation(
+                    kind="cross_round",
+                    bootstrap_v_shaped=0.1,
+                    next_round_index=1,
+                    next_round_phi=bad,
+                ),
+            )
+        with pytest.raises(ValueError, match="finite"):
+            compute_hanchan_gae(steps, phis[:1], terminated=True, terminal_reward=bad)
+        with pytest.raises(ValueError, match="finite"):
+            compute_hanchan_gae(
+                [RoundBoundary(round_index=0, phi_k=0.05, v_raw=bad)],
+                phis[:1],
+                terminated=True,
+                terminal_reward=0.9,
+            )
+        with pytest.raises(ValueError, match="finite"):
+            compute_hanchan_gae(steps, [bad], terminated=True, terminal_reward=0.9)
+        with pytest.raises(ValueError, match="finite"):
+            compute_hanchan_gae(steps, phis[:1], terminated=True, terminal_reward=0.9, gamma=bad)
+        with pytest.raises(ValueError, match="finite"):
+            compute_hanchan_gae(steps, phis[:1], terminated=True, terminal_reward=0.9, gae_lambda=bad)
+
+    # Illegal / regressive round indices
+    with pytest.raises(ValueError, match="out of bounds"):
+        compute_hanchan_gae(
+            [RoundBoundary(round_index=-1, phi_k=0.05, v_raw=0.10)],
+            phis,
+            terminated=True,
+            terminal_reward=0.9,
+        )
+    with pytest.raises(ValueError, match="Non-monotone"):
+        compute_hanchan_gae(
+            [
+                RoundBoundary(round_index=1, phi_k=0.25, v_raw=0.30),
+                RoundBoundary(round_index=0, phi_k=0.05, v_raw=0.10),
+            ],
+            phis,
+            terminated=True,
+            terminal_reward=0.9,
+        )
+
+    # Bootstrap round mismatch & stale-Phi bootstrap_v_shaped mismatch (Fail-Closed Rule #8)
+    with pytest.raises(ValueError, match="bootstrap_round_index"):
+        compute_hanchan_gae(
+            steps,
+            phis,
+            terminated=False,
+            truncation=RolloutTruncation(
+                kind="cross_round",
+                bootstrap_v_shaped=0.31 - phis[1],
+                next_round_index=1,
+                next_round_phi=phis[1],
+                bootstrap_round_index=0,  # WRONG round!
+            ),
+        )
+    with pytest.raises(ValueError, match="bootstrap_v_shaped"):
+        compute_hanchan_gae(
+            steps,
+            phis,
+            terminated=False,
+            truncation=RolloutTruncation(
+                kind="cross_round",
+                bootstrap_v_shaped=0.31 - phis[0],  # BUG: used stale Phi_0 instead of Phi_1!
+                next_round_index=1,
+                next_round_phi=phis[1],
+                bootstrap_round_index=1,
+                bootstrap_v_raw=0.31,
+            ),
+        )
+
+
+def test_rollout_boundary_serialization_checkpoint_resume_and_ppo_consistency() -> None:
+    phis = [0.05, 0.25, -0.10]
+    traj_intra = HanchanTrajectoryInput(
+        steps=[RoundBoundary(round_index=0, phi_k=phis[0], v_raw=0.08)],
+        round_start_potentials=phis[:1],
+        terminated=False,
+        truncation=RolloutTruncation(
+            kind="intra_round",
+            bootstrap_v_shaped=0.07,
+            next_round_index=0,
+            next_round_phi=phis[0],
+            bootstrap_round_index=0,
+            bootstrap_v_raw=0.12,
+        ),
+    )
+    traj_cross = HanchanTrajectoryInput(
+        steps=[
+            RoundBoundary(round_index=0, phi_k=phis[0], v_raw=0.09),
+            RoundBoundary(round_index=0, phi_k=phis[0], v_raw=0.14),
+        ],
+        round_start_potentials=phis,
+        terminated=False,
+        truncation=RolloutTruncation(
+            kind="cross_round",
+            bootstrap_v_shaped=-0.05 - phis[2],
+            next_round_index=2,
+            next_round_phi=phis[2],
+            bootstrap_round_index=2,
+            bootstrap_v_raw=-0.05,
+        ),
+    )
+    traj_term = HanchanTrajectoryInput(
+        steps=[RoundBoundary(round_index=1, phi_k=phis[1], v_raw=0.40)],
+        round_start_potentials=phis[:2],
+        terminated=True,
+        terminal_reward=0.90,
+    )
+
+    # 1. JSON round-trip of HanchanTrajectoryInput & RolloutTruncation preserves every field verbatim
+    trajs = [traj_intra, traj_cross, traj_term]
+    encoded_json = json.dumps([t.to_dict() for t in trajs])
+    decoded_trajs = [HanchanTrajectoryInput.from_dict(item) for item in json.loads(encoded_json)]
+    assert decoded_trajs == trajs
+
+    tag = RolloutVersionTag(
+        policy_version=9,
+        critic_version=4,
+        grp_sha256="grp_sha_resume",
+        ruleset_sha256="rule_sha_resume",
+    )
+    batch = FrozenGAERolloutBatch.from_hanchan_trajectories(decoded_trajs, version_tag=tag)
+
+    # 2. PyTorch checkpoint save / resume preserves tensors, boundary metadata, version tag, and SHA-256
+    buf = io.BytesIO()
+    torch.save(batch.state_dict(), buf)
+    buf.seek(0)
+    restored = FrozenGAERolloutBatch.from_state_dict(torch.load(buf, weights_only=False))
+
+    assert restored.target_sha256 == batch.target_sha256
+    assert restored.version_tag == batch.version_tag
+    assert restored.trajectory_boundaries == batch.trajectory_boundaries
+    assert [b["boundary_type"] for b in restored.trajectory_boundaries] == ["intra_round", "cross_round", "terminal"]
+    assert restored.trajectory_boundaries[1]["truncation"]["next_round_index"] == 2
+    assert restored.trajectory_boundaries[1]["truncation"]["next_round_phi"] == pytest.approx(phis[2])
+    assert torch.equal(restored.step_rewards, batch.step_rewards)
+    assert torch.equal(restored.advantages, batch.advantages)
+    assert torch.equal(restored.shaped_returns, batch.shaped_returns)
+    assert torch.equal(restored.rollout_v_shaped, batch.rollout_v_shaped)
+
+    # Verify exact rewards across all 3 boundary types after resume
+    assert restored.step_rewards.tolist() == pytest.approx([0.0, 0.0, phis[2] - phis[0], 0.90 - phis[1]])
+
+    # 3. Resumed batch passes multi-epoch PPO readiness guard
+    for _ in range(3):
+        restored.assert_ready_for_ppo_epoch(
+            current_policy_version=10,
+            expected_grp_sha256="grp_sha_resume",
+            expected_ruleset_sha256="rule_sha_resume",
+            max_staleness=2,
+        )
+
+    # 4. Tampering serialized boundary metadata is caught by SHA-256 on restore!
+    tampered_state = batch.state_dict()
+    tampered_state["trajectory_boundaries"][1]["truncation"]["kind"] = "intra_round"
+    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+        FrozenGAERolloutBatch.from_state_dict(tampered_state)

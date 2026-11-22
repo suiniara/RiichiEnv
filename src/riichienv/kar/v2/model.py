@@ -93,9 +93,7 @@ def build_static_manifest_buffers() -> dict[str, torch.Tensor]:
             has_slot_flags[gid, 3] = 1.0
 
         static_flags[gid, 0] = 1.0 if _is_red5_tile37(spec.tile37) else 0.0
-        static_flags[gid, 1] = (
-            1.0 if any(_is_red5_tile37(t) for t in spec.consumed_tile37) else 0.0
-        )
+        static_flags[gid, 1] = 1.0 if any(_is_red5_tile37(t) for t in spec.consumed_tile37) else 0.0
         static_flags[gid, 2] = 1.0 if spec.tsumogiri else 0.0
         static_flags[gid, 3] = 1.0 if spec.riichi else 0.0
 
@@ -315,9 +313,7 @@ class IntraSuitResBlock(nn.Module):
         # Same-rank cross-suit pool (Sanshoku bias) & per-suit pool (Honitsu/Chinitsu bias)
         same_rank = suited.mean(dim=1, keepdim=True).expand(-1, 3, -1, -1)
         per_suit = suited.mean(dim=2, keepdim=True).expand(-1, -1, 9, -1)
-        suited_out = self.suit_mix(torch.cat((c3, c5, same_rank, per_suit), dim=-1)).view(
-            bsz, 27, dim
-        )
+        suited_out = self.suit_mix(torch.cat((c3, c5, same_rank, per_suit), dim=-1)).view(bsz, 27, dim)
 
         # Honor tiles [B, 7, d] (winds[0..4] + dragons[4..7])
         honors = h[:, 27:, :]
@@ -351,9 +347,7 @@ class IntraSuitSpatialEncoder(nn.Module):
         self.register_buffer("tile_suit_ids", torch.tensor(suit_ids, dtype=torch.long))
         self.register_buffer("tile_rank_ids", torch.tensor(rank_ids, dtype=torch.long))
 
-        self.blocks = nn.ModuleList(
-            [IntraSuitResBlock(d_model, n_heads, dropout=dropout) for _ in range(n_layers)]
-        )
+        self.blocks = nn.ModuleList([IntraSuitResBlock(d_model, n_heads, dropout=dropout) for _ in range(n_layers)])
         self.out_norm = RMSNorm(d_model)
 
     def forward(self, tile_feats: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
@@ -412,9 +406,7 @@ class CausalEventTransformer(nn.Module):
         self.register_buffer("rope_cos", freqs.cos()[None, None, :, :], persistent=False)
         self.register_buffer("rope_sin", freqs.sin()[None, None, :, :], persistent=False)
 
-        self.layers = nn.ModuleList(
-            [EventTransformerBlock(d_model, n_heads, dropout=dropout) for _ in range(n_layers)]
-        )
+        self.layers = nn.ModuleList([EventTransformerBlock(d_model, n_heads, dropout=dropout) for _ in range(n_layers)])
         self.out_norm = RMSNorm(d_model)
 
     def forward(self, events: torch.Tensor, event_len: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -423,9 +415,7 @@ class CausalEventTransformer(nn.Module):
         if n_bytes != EVENT_BYTES:
             raise ValueError(f"Expected {EVENT_BYTES} bytes per event, got {n_bytes}")
         if seq_len < 1 or seq_len > MAX_EVENT_LEN:
-            raise ValueError(
-                f"Contract v2.4 violation: event sequence length {seq_len} outside [1, {MAX_EVENT_LEN}]"
-            )
+            raise ValueError(f"Contract v2.4 violation: event sequence length {seq_len} outside [1, {MAX_EVENT_LEN}]")
         if bool((event_len < 1).any()) or bool((event_len > MAX_EVENT_LEN).any()):
             raise ValueError("Contract v2.4 violation: event_len must satisfy 1 <= L_ev <= 256")
 
@@ -557,9 +547,7 @@ class FactorizedCandidateHead(nn.Module):
         safe_ids = torch.where(cand_mask, cand_ids.long().clamp(0, ACTION_COUNT), CAND_PAD_ID)
 
         # Append NULL_TILE (idx 34) & NULL_SOURCE (idx 4) -> zero out-of-bounds access!
-        h_tile_ext = torch.cat(
-            (h_tile, self.null_tile_emb.expand(bsz, 1, -1).to(h_tile.dtype)), dim=1
-        )  # [B, 35, d]
+        h_tile_ext = torch.cat((h_tile, self.null_tile_emb.expand(bsz, 1, -1).to(h_tile.dtype)), dim=1)  # [B, 35, d]
         h_player_ext = torch.cat(
             (h_player, self.null_source_emb.expand(bsz, 1, -1).to(h_player.dtype)), dim=1
         )  # [B, 5, d]
@@ -639,16 +627,12 @@ class OpponentBeliefHeads(nn.Module):
         self.hand_cnt_head = nn.Linear(d_model, 5)
         self.scale = 1.0 / math.sqrt(d_model)
 
-    def forward(
-        self, h_global: torch.Tensor, h_player: torch.Tensor, h_tile: torch.Tensor
-    ) -> dict[str, torch.Tensor]:
+    def forward(self, h_global: torch.Tensor, h_player: torch.Tensor, h_tile: torch.Tensor) -> dict[str, torch.Tensor]:
         opps = h_player[:, 1:4, :]  # [B, 3, d]
         g_exp = h_global[:, None, :].expand(-1, 3, -1)
         tenpai_logits = self.tenpai_head(torch.cat((opps, g_exp), dim=-1)).squeeze(-1)  # [B, 3]
 
-        wait_logits = (
-            torch.einsum("bpd,btd->bpt", self.wait_p(opps), self.wait_t(h_tile)) * self.scale
-        )  # [B, 3, 34]
+        wait_logits = torch.einsum("bpd,btd->bpt", self.wait_p(opps), self.wait_t(h_tile)) * self.scale  # [B, 3, 34]
 
         opp_pool = opps.mean(dim=1, keepdim=True).expand(-1, TILE_DIM, -1)
         dealin_logits = self.dealin_head(torch.cat((h_tile, opp_pool), dim=-1)).squeeze(-1)  # [B, 34]
@@ -696,9 +680,7 @@ class KARV2Actor(nn.Module):
         )
 
         if config.head_type == "factorized":
-            self.candidate_head: nn.Module = FactorizedCandidateHead(
-                d, config.n_heads, dropout=config.dropout
-            )
+            self.candidate_head: nn.Module = FactorizedCandidateHead(d, config.n_heads, dropout=config.dropout)
         else:
             self.candidate_head = Flat546CandidateHead(d)
 
@@ -736,9 +718,7 @@ class KARV2Actor(nn.Module):
         f_player = core[:, 1:5, :]
         f_tile = core[:, 5:, :]
 
-        logits = self.candidate_head(
-            core, f_player, f_tile, cand_ids, cand_mask, cand_mode, cand_dyn
-        )
+        logits = self.candidate_head(core, f_player, f_tile, cand_ids, cand_mask, cand_mode, cand_dyn)
         out: dict[str, torch.Tensor] = {"logits": logits}
         if return_belief and self.belief_heads is not None:
             out.update(self.belief_heads(f_global, f_player, f_tile))
@@ -970,9 +950,7 @@ class RolloutVersionTag:
         if self.grp_sha256 != expected_grp_sha256:
             raise ValueError(f"GRP mismatch: rollout={self.grp_sha256} vs learner={expected_grp_sha256}")
         if self.ruleset_sha256 != expected_ruleset_sha256:
-            raise ValueError(
-                f"Ruleset mismatch: rollout={self.ruleset_sha256} vs learner={expected_ruleset_sha256}"
-            )
+            raise ValueError(f"Ruleset mismatch: rollout={self.ruleset_sha256} vs learner={expected_ruleset_sha256}")
         if expected_critic_version is not None and self.critic_version != expected_critic_version:
             raise ValueError(
                 f"Mixed critic_version within trajectory: got {self.critic_version}, expected {expected_critic_version}"
@@ -1055,9 +1033,9 @@ def belief_auxiliary_loss(
     # 2. Opponent wait distribution [B, 3, 34] (strictly masked to tenpai opponents!)
     wait_tgt = opp_waits.to(device=device, dtype=torch.float32)
     wpw = torch.tensor(float(wait_pos_weight), dtype=torch.float32, device=device)
-    wait_bce = F.binary_cross_entropy_with_logits(
-        wait_logits, wait_tgt, pos_weight=wpw, reduction="none"
-    ).mean(dim=-1)  # [B, 3]
+    wait_bce = F.binary_cross_entropy_with_logits(wait_logits, wait_tgt, pos_weight=wpw, reduction="none").mean(
+        dim=-1
+    )  # [B, 3]
     tenpai_active = (tenpai_tgt > 0.5) & sample_valid[:, None]
     tenpai_active_f = tenpai_active.float()
     tenpai_active_cnt = tenpai_active_f.sum()
@@ -1067,9 +1045,7 @@ def belief_auxiliary_loss(
     # 3. Exact 1-step deal-in risk [B, 34]
     dealin_tgt = exact_dealin_now.to(device=device, dtype=torch.float32)
     dpw = torch.tensor(float(dealin_pos_weight), dtype=torch.float32, device=device)
-    dealin_bce = F.binary_cross_entropy_with_logits(
-        dealin_logits, dealin_tgt, pos_weight=dpw, reduction="none"
-    )
+    dealin_bce = F.binary_cross_entropy_with_logits(dealin_logits, dealin_tgt, pos_weight=dpw, reduction="none")
     dealin_loss = (dealin_bce.mean(dim=-1) * sample_valid_f).sum() / sample_denom
 
     # 4. Opponent closed-hand copy counts [B, 3, 34, 5]
@@ -1081,12 +1057,7 @@ def belief_auxiliary_loss(
     ).view(bsz, 3, TILE_DIM)
     hand_cnt_loss = (cnt_ce.mean(dim=(1, 2)) * sample_valid_f).sum() / sample_denom
 
-    total = (
-        w_tenpai * tenpai_loss
-        + w_waits * wait_loss
-        + w_dealin * dealin_loss
-        + w_hand_cnt * hand_cnt_loss
-    )
+    total = w_tenpai * tenpai_loss + w_waits * wait_loss + w_dealin * dealin_loss + w_hand_cnt * hand_cnt_loss
     return {
         "loss": total,
         "tenpai_loss": tenpai_loss,

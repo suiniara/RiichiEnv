@@ -144,11 +144,12 @@ pub fn nagashi_player_possible(
     candidate_tile: Option<u8>,
     history_complete: bool,
 ) -> bool {
-    // Iterator::all() is true for an empty iterator. An opponent with no
-    // discards cannot qualify merely because there is no non-terminal tile
-    // contradicting eligibility. The current candidate counts as a discard
-    // for the actor, including when this is their first discard.
-    let has_discard = candidate_tile.is_some() || !history.is_empty() || !river.is_empty();
+    // Iterator::all() is true for an empty iterator. When history is complete,
+    // an opponent with no discards cannot qualify merely because there is no
+    // non-terminal tile contradicting eligibility. When history is incomplete,
+    // an empty observed slice cannot prove absence of prior terminal discards.
+    let has_discard =
+        !history_complete || candidate_tile.is_some() || !history.is_empty() || !river.is_empty();
     let terminals = has_discard
         && history
             .iter()

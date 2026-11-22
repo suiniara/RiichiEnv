@@ -128,14 +128,26 @@ fn visible_tile_counts_deduplicates_called_tiles_and_tracks_red5() {
     let mut obs_kakan = empty_obs(0);
     obs_kakan.dora_indicators.clear();
     obs_kakan.discards[2].push(40);
-    obs_kakan.melds[0].push(Meld::new(MeldType::Kakan, vec![40, 41, 42, 43], true, 2, None));
+    obs_kakan.melds[0].push(Meld::new(
+        MeldType::Kakan,
+        vec![40, 41, 42, 43],
+        true,
+        2,
+        None,
+    ));
     let vis_kakan = VisibleTileCounts::from_observation(&obs_kakan).unwrap();
     assert_eq!(vis_kakan.visible_base34[10], 4);
 
     // Orphan called_tile absent from rivers MUST be rejected
     let mut obs_orphan = empty_obs(0);
     obs_orphan.dora_indicators.clear();
-    obs_orphan.melds[0].push(Meld::new(MeldType::Pon, vec![40, 41, 42], true, 2, Some(40)));
+    obs_orphan.melds[0].push(Meld::new(
+        MeldType::Pon,
+        vec![40, 41, 42],
+        true,
+        2,
+        Some(40),
+    ));
     assert!(VisibleTileCounts::from_observation(&obs_orphan).is_err());
 
     // Live GameState preserves temporary & riichi furiten directly on frozen Observation.furiten
@@ -211,8 +223,8 @@ fn furiten_state_covers_permanent_temporary_and_riichi() {
     .unwrap();
     assert_eq!(tf_sw[4 * TILE_FEATS_DIM + 60], 1.0); // 5m discard is tenpai
     assert_eq!(tf_sw[4 * TILE_FEATS_DIM + 61], 1.0); // 5m discard -> waits {1m,4m} -> FURITEN
-    assert_eq!(tf_sw[1 * TILE_FEATS_DIM + 60], 1.0); // 2m discard is tenpai
-    assert_eq!(tf_sw[1 * TILE_FEATS_DIM + 61], 0.0); // 2m discard -> waits {4m} -> NOT furiten
+    assert_eq!(tf_sw[TILE_FEATS_DIM + 60], 1.0); // 2m discard is tenpai
+    assert_eq!(tf_sw[TILE_FEATS_DIM + 61], 0.0); // 2m discard -> waits {4m} -> NOT furiten
 
     // Verify global_feats[19] reflects temporary || riichi
     let tracker = HanchanTracker::default();
@@ -261,7 +273,13 @@ fn hand_evaluator_calc_with_rule_distinguishes_tenhou_and_mjsoul_double_yakuman(
         ..Default::default()
     };
 
-    let res_tenhou = eval.calc_with_rule(1, &[4], &[], Some(cond.clone()), &GameRule::default_tenhou());
+    let res_tenhou = eval.calc_with_rule(
+        1,
+        &[4],
+        &[],
+        Some(cond.clone()),
+        &GameRule::default_tenhou(),
+    );
     let res_mjs = eval.calc_with_rule(1, &[4], &[], Some(cond), &GameRule::default_mjsoul());
 
     assert!(res_tenhou.is_win && res_tenhou.yakuman);
@@ -511,7 +529,8 @@ fn events_10000_extreme_rounds_never_exceed_214_and_overflow_errors() {
             }
 
             // Discard
-            let do_riichi = !riichi_done[seat as usize] && melds_per_seat[seat as usize] == 0 && turn > 4;
+            let do_riichi =
+                !riichi_done[seat as usize] && melds_per_seat[seat as usize] == 0 && turn > 4;
             if do_riichi {
                 riichi_done[seat as usize] = true;
             }
@@ -599,7 +618,10 @@ fn events_10000_extreme_rounds_never_exceed_214_and_overflow_errors() {
             max_seen_len = max_seen_len.max(enc.len());
         }
     }
-    assert!(max_seen_len >= 120, "fuzz should exercise long rounds, max={max_seen_len}");
+    assert!(
+        max_seen_len >= 120,
+        "fuzz should exercise long rounds, max={max_seen_len}"
+    );
 
     // Hard error on overflow (> 256) — NEVER silently truncate!
     let mut bad_log = RoundEventLog::new(1).unwrap();
@@ -676,7 +698,12 @@ fn manifest_546_null_slots_and_all_111_daiminkan_bijection() {
             let mut obs = empty_obs(0);
             obs.hands[0] = consume_3.iter().map(|&x| u32::from(x)).collect();
             obs.dora_indicators = vec![if base34 == 0 { 4 } else { 0 }];
-            let native = Action::new(ActionType::Daiminkan, Some(claimed_t136), consume_3.clone(), Some(0));
+            let native = Action::new(
+                ActionType::Daiminkan,
+                Some(claimed_t136),
+                consume_3.clone(),
+                Some(0),
+            );
             obs._legal_actions = vec![
                 native.clone(),
                 Action::new(ActionType::Pass, None, vec![], Some(0)),
@@ -754,7 +781,10 @@ fn max_candidates_32_extreme_hands_across_all_four_phases() {
     let idx_tsumo = enc_own.cand_ids.iter().position(|&id| id == 219).unwrap();
     let idx_kyushu = enc_own.cand_ids.iter().position(|&id| id == 220).unwrap();
     assert_eq!(enc_own.cand_mode[idx_tsumo], CandidateMode::WinEval as u8);
-    assert_eq!(enc_own.cand_mode[idx_kyushu], CandidateMode::KyushuDrawEval as u8);
+    assert_eq!(
+        enc_own.cand_mode[idx_kyushu],
+        CandidateMode::KyushuDrawEval as u8
+    );
     assert!(enc_own.cand_dyn[idx_tsumo][3] == 1.0); // yakuman!
 
     // 2) DISCARD_RESP Extreme: Kamicha discards 4m(12); observer holds 2m,3m,4m,4m,4m,0m,5m,6m + winning shape
@@ -797,7 +827,11 @@ fn max_candidates_32_extreme_hands_across_all_four_phases() {
     assert!(enc_resp.num_valid <= 10);
     // Verify CHI with (4,8) (2m,3m claiming 4m) sets kuikae blocked ratio > 0 (1m/4m forbidden, and we hold three 4m!)
     let chi_23_id = lookup_chi_id(4, 2, 3).unwrap() as i16;
-    let idx_chi23 = enc_resp.cand_ids.iter().position(|&id| id == chi_23_id).unwrap();
+    let idx_chi23 = enc_resp
+        .cand_ids
+        .iter()
+        .position(|&id| id == chi_23_id)
+        .unwrap();
     assert_eq!(
         enc_resp.cand_mode[idx_chi23],
         CandidateMode::PreDiscardMeldEnvelope as u8
@@ -852,7 +886,10 @@ fn oracle_live_wall_is_permutation_invariant_and_actor_zero_leakage() {
             state.wall.tiles[14..].shuffle(&mut rng);
         }
         let (ot, op) = encode_oracle(&state, 0).unwrap();
-        assert_eq!(ot, oracle_tile_before, "Oracle must be live-wall permutation invariant");
+        assert_eq!(
+            ot, oracle_tile_before,
+            "Oracle must be live-wall permutation invariant"
+        );
         assert_eq!(op, oracle_player_before);
     }
 
@@ -942,8 +979,15 @@ fn live_simulation_enforces_conservation_bounds_and_hanchan_tracker() {
                 ..Default::default()
             };
 
-            let tf = encode_tile_feats(&obs, &vis, fur, &state.rule, phase, &V2FeatureConfig::default())
-                .unwrap();
+            let tf = encode_tile_feats(
+                &obs,
+                &vis,
+                fur,
+                &state.rule,
+                phase,
+                &V2FeatureConfig::default(),
+            )
+            .unwrap();
             let (gf, pf) = encode_global_player(&obs, fur, &tracker, &rc, &ctx).unwrap();
             let cand = encode_candidates(
                 &obs,
@@ -983,7 +1027,10 @@ fn live_simulation_enforces_conservation_bounds_and_hanchan_tracker() {
         }
         steps += 1;
     }
-    assert!(steps > 50, "expected real multi-turn simulation, ran {steps} steps");
+    assert!(
+        steps > 50,
+        "expected real multi-turn simulation, ran {steps} steps"
+    );
 }
 
 // =========================================================================
@@ -1029,9 +1076,9 @@ fn tile_feats_public_channels_zero_error_parity_with_legacy_encode_base() {
 // =========================================================================
 #[test]
 fn live_vs_mjai_replay_zero_train_serve_skew_parity() {
-    use std::collections::HashMap;
     use super::{CAND_DYN_DIM, EVENT_BYTES, GLOBAL_FEATS_DIM, PLAYER_FEATS_DIM, TILE_DIM};
     use crate::replay::MjaiEvent;
+    use std::collections::HashMap;
 
     struct Snapshot {
         mjai_len: usize,
@@ -1073,7 +1120,11 @@ fn live_vs_mjai_replay_zero_train_serve_skew_parity() {
                 ),
                 is_haitei_or_houtei: state.wall.drawable_count == 0,
                 is_tsumo_first_turn: state.is_first_turn,
-                pao_payer: state.players[observer as usize].pao.values().next().copied(),
+                pao_payer: state.players[observer as usize]
+                    .pao
+                    .values()
+                    .next()
+                    .copied(),
             },
         )
         .unwrap();
@@ -1349,4 +1400,202 @@ fn oracle_post_kan_dead_wall_shift_and_belief_targets_exactness() {
     }
 }
 
+#[test]
+fn tile_feats_and_cand_dyn_match_bit_for_bit_across_furiten_and_red5_scenarios() {
+    let tracker = HanchanTracker::default();
+    let rc_tenhou = RuleContract::default_tenhou_houou();
+    let rc_mjs = RuleContract::default_mjsoul_throne();
 
+    // Hand (14 tiles): 1m 2m 3m | 4m 0m(16) 5m(17) 6m | 1p 1p 1p | 2s 3s | 9s 9s
+    // Discarding 5m or 0m leaves 123m 456m 111p 23s 99s -> tenpai waiting on 1s(18), 4s(21).
+    // Own river already contains 1s(72), so 1s/4s tenpai is permanent-furiten,
+    // while discarding 4m leaves 123m 556m 111p 23s 99s (1-shanten, not tenpai).
+    let mut obs = empty_obs(0);
+    let hand_14: Vec<u8> = vec![
+        0, 4, 8, // 1m 2m 3m
+        12, 16, 17, 20, // 4m, 0m(red), 5m(normal), 6m
+        36, 37, 38, // 1p 1p 1p
+        76, 80, // 2s 3s
+        104, 105, // 9s 9s
+    ];
+    obs.hands[0] = hand_14.iter().map(|&t| u32::from(t)).collect();
+    obs.drawn_tile = Some(17); // drew normal 5m
+    obs.discards[0] = vec![72]; // discarded 1s earlier -> permanent furiten on 1s/4s wait!
+    obs.dora_indicators = vec![108]; // East -> South is dora
+    obs._legal_actions = hand_14
+        .iter()
+        .map(|&t| Action::new(ActionType::Discard, Some(t), vec![], Some(0)))
+        .collect();
+    obs._legal_actions
+        .push(Action::new(ActionType::Riichi, None, vec![], Some(0)));
+
+    let vis = VisibleTileCounts::from_observation(&obs).unwrap();
+    let ctx = RoundGlobalContext {
+        phase: DecisionPhase::OwnAct,
+        live_wall_left: 50,
+        ..Default::default()
+    };
+
+    // Check across all 3 non-river furiten modes: clean, temporary-only, and riichi!
+    for fur in [
+        FuritenState {
+            permanent: false,
+            temporary: false,
+            riichi: false,
+        },
+        FuritenState {
+            permanent: false,
+            temporary: true,
+            riichi: false,
+        },
+        FuritenState {
+            permanent: false,
+            temporary: false,
+            riichi: true,
+        },
+    ] {
+        for rc in [&rc_tenhou, &rc_mjs] {
+            let tf = encode_tile_feats(
+                &obs,
+                &vis,
+                fur,
+                &rc.rule,
+                DecisionPhase::OwnAct,
+                &V2FeatureConfig::default(),
+            )
+            .unwrap();
+            let enc = encode_candidates(
+                &obs,
+                &vis,
+                fur,
+                &tracker,
+                rc,
+                &ctx,
+                &WinEvalContext::default(),
+            )
+            .unwrap();
+
+            // Strictly ascending cand_ids and bijective manifest decode
+            for slot in 0..enc.num_valid {
+                assert!(enc.cand_mask[slot]);
+                if slot > 0 {
+                    assert!(enc.cand_ids[slot - 1] < enc.cand_ids[slot]);
+                }
+                let gid = enc.cand_ids[slot] as u16;
+                let decoded = decode_global_id_to_native(gid, &obs, None).unwrap();
+                assert!(!decoded.is_empty());
+
+                let entry = super::action_manifest::entry(gid).unwrap();
+                if entry.kind == super::action_manifest::ManifestActionKind::Discard {
+                    let b = entry.target_base34 as usize;
+                    assert_eq!(enc.cand_mode[slot], CandidateMode::PostDiscardExact as u8);
+                    // Exact bit-for-bit parity between tile_feats [57..62] and cand_dyn [0,2,3,4,5]
+                    assert_eq!(tf[b * TILE_FEATS_DIM + 57], enc.cand_dyn[slot][0]);
+                    assert_eq!(tf[b * TILE_FEATS_DIM + 58], enc.cand_dyn[slot][2]);
+                    assert_eq!(tf[b * TILE_FEATS_DIM + 59], enc.cand_dyn[slot][3]);
+                    assert_eq!(tf[b * TILE_FEATS_DIM + 60], enc.cand_dyn[slot][4]);
+                    assert_eq!(tf[b * TILE_FEATS_DIM + 61], enc.cand_dyn[slot][5]);
+                }
+            }
+
+            // Red 5m (tile37=0) vs normal 5m (tile37=5) have distinct IDs and distinct post_dora!
+            let id_red5_dama = lookup_discard_id(0, false, false).unwrap() as i16;
+            let id_norm5_tsumo = lookup_discard_id(5, true, false).unwrap() as i16;
+            let id_norm5_riichi = lookup_discard_id(5, true, true).unwrap() as i16;
+            let slot_red = enc
+                .cand_ids
+                .iter()
+                .position(|&id| id == id_red5_dama)
+                .unwrap();
+            let slot_norm = enc
+                .cand_ids
+                .iter()
+                .position(|&id| id == id_norm5_tsumo)
+                .unwrap();
+            let slot_riichi = enc
+                .cand_ids
+                .iter()
+                .position(|&id| id == id_norm5_riichi)
+                .unwrap();
+            assert!(enc.cand_dyn[slot_red][6] < enc.cand_dyn[slot_norm][6]);
+            assert_eq!(enc.cand_dyn[slot_norm][4], 1.0); // tenpai
+            assert_eq!(enc.cand_dyn[slot_riichi][4], 1.0); // riichi tenpai
+            assert_eq!(enc.cand_dyn[slot_norm][5], 1.0); // permanent furiten (1s in own river)
+        }
+    }
+
+    // Remove 1s from own river: now temporary furiten MUST clear on own discard,
+    // while riichi furiten MUST persist in BOTH tile_feats and cand_dyn!
+    obs.discards[0].clear();
+    let vis_clean = VisibleTileCounts::from_observation(&obs).unwrap();
+    let tf_temp = encode_tile_feats(
+        &obs,
+        &vis_clean,
+        FuritenState {
+            permanent: false,
+            temporary: true,
+            riichi: false,
+        },
+        &rc_tenhou.rule,
+        DecisionPhase::OwnAct,
+        &V2FeatureConfig::default(),
+    )
+    .unwrap();
+    let enc_temp = encode_candidates(
+        &obs,
+        &vis_clean,
+        FuritenState {
+            permanent: false,
+            temporary: true,
+            riichi: false,
+        },
+        &tracker,
+        &rc_tenhou,
+        &ctx,
+        &WinEvalContext::default(),
+    )
+    .unwrap();
+    let id_norm5_tsumo = lookup_discard_id(5, true, false).unwrap() as i16;
+    let slot_norm = enc_temp
+        .cand_ids
+        .iter()
+        .position(|&id| id == id_norm5_tsumo)
+        .unwrap();
+    assert_eq!(tf_temp[4 * TILE_FEATS_DIM + 61], 0.0);
+    assert_eq!(enc_temp.cand_dyn[slot_norm][5], 0.0);
+
+    let tf_riichi = encode_tile_feats(
+        &obs,
+        &vis_clean,
+        FuritenState {
+            permanent: false,
+            temporary: false,
+            riichi: true,
+        },
+        &rc_tenhou.rule,
+        DecisionPhase::OwnAct,
+        &V2FeatureConfig::default(),
+    )
+    .unwrap();
+    let enc_riichi = encode_candidates(
+        &obs,
+        &vis_clean,
+        FuritenState {
+            permanent: false,
+            temporary: false,
+            riichi: true,
+        },
+        &tracker,
+        &rc_tenhou,
+        &ctx,
+        &WinEvalContext::default(),
+    )
+    .unwrap();
+    let slot_norm_r = enc_riichi
+        .cand_ids
+        .iter()
+        .position(|&id| id == id_norm5_tsumo)
+        .unwrap();
+    assert_eq!(tf_riichi[4 * TILE_FEATS_DIM + 61], 1.0);
+    assert_eq!(enc_riichi.cand_dyn[slot_norm_r][5], 1.0);
+}

@@ -73,9 +73,5 @@ def test_candidate_probe_seed_and_source_identity_are_reproducible():
     first = simulate_candidate_branches(env, opportunity, **arguments)
     second = simulate_candidate_branches(env, opportunity, **arguments)
     assert [
-        (row["candidate_action_id"], row["seed"], row["source_state_identity"], row["status"])
-        for row in first
-    ] == [
-        (row["candidate_action_id"], row["seed"], row["source_state_identity"], row["status"])
-        for row in second
-    ]
+        (row["candidate_action_id"], row["seed"], row["source_state_identity"], row["status"]) for row in first
+    ] == [(row["candidate_action_id"], row["seed"], row["source_state_identity"], row["status"]) for row in second]

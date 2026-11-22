@@ -16,13 +16,15 @@ Implements the three mandatory Stage-4 stability & anti-collapse mechanisms:
 from __future__ import annotations
 
 import hashlib
+import json
 import random
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 
-from .grp import RoundBoundary, compute_hanchan_gae
+from .grp import RolloutTruncation, RoundBoundary, compute_hanchan_gae
 from .model import RolloutVersionTag
 
 
@@ -166,13 +168,9 @@ class PFSPOpponentPool:
         if not bc_anchor_id or bc_anchor_id == self.LATEST_SELF_ID:
             raise ValueError("Invalid bc_anchor_id")
         if bc_anchor_prob <= 0.0:
-            raise ValueError(
-                "Contract v2.5 violation: bc_anchor_prob MUST be > 0 to prevent self-play forgetting"
-            )
+            raise ValueError("Contract v2.5 violation: bc_anchor_prob MUST be > 0 to prevent self-play forgetting")
         if latest_self_prob < 0.0 or latest_self_prob + bc_anchor_prob > 1.0 + 1e-9:
-            raise ValueError(
-                f"Invalid probability split: latest={latest_self_prob}, bc_anchor={bc_anchor_prob}"
-            )
+            raise ValueError(f"Invalid probability split: latest={latest_self_prob}, bc_anchor={bc_anchor_prob}")
         if max_snapshots < 1:
             raise ValueError("max_snapshots must be >= 1")
 
@@ -240,9 +238,8 @@ class PFSPOpponentPool:
         if entry.games_played == 1:
             entry.ema_learner_score = float(learner_score)
         else:
-            entry.ema_learner_score = (
-                (1.0 - self.ema_alpha) * entry.ema_learner_score
-                + self.ema_alpha * float(learner_score)
+            entry.ema_learner_score = (1.0 - self.ema_alpha) * entry.ema_learner_score + self.ema_alpha * float(
+                learner_score
             )
 
     def sampling_probabilities(self) -> dict[str, float]:
@@ -264,17 +261,14 @@ class PFSPOpponentPool:
 
         pfsp_mass = max(0.0, 1.0 - self.latest_self_prob - self.bc_anchor_prob)
         raw_weights = [
-            (max(0.0, 1.0 - snap.ema_learner_score) + self.smooth_eps) ** self.pfsp_power
-            for snap in self._snapshots
+            (max(0.0, 1.0 - snap.ema_learner_score) + self.smooth_eps) ** self.pfsp_power for snap in self._snapshots
         ]
         total_w = sum(raw_weights)
         for snap, w in zip(self._snapshots, raw_weights, strict=True):
             probs[snap.opponent_id] = pfsp_mass * (w / total_w)
         return probs
 
-    def sample_table_opponents(
-        self, rng: random.Random | None = None
-    ) -> tuple[str, str, str]:
+    def sample_table_opponents(self, rng: random.Random | None = None) -> tuple[str, str, str]:
         """Sample 3 opponent IDs for a 4-player Riichi table."""
         generator = rng or random.Random()
         dist = self.sampling_probabilities()
@@ -292,7 +286,66 @@ class HanchanTrajectoryInput:
     round_start_potentials: Sequence[float]
     terminated: bool
     terminal_reward: float | None = None
+    truncation: RolloutTruncation | None = None
     truncated_bootstrap_v_shaped: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "steps": [step.to_dict() for step in self.steps],
+            "round_start_potentials": [float(p) for p in self.round_start_potentials],
+            "terminated": bool(self.terminated),
+            "terminal_reward": (float(self.terminal_reward) if self.terminal_reward is not None else None),
+            "truncation": (self.truncation.to_dict() if self.truncation is not None else None),
+            "truncated_bootstrap_v_shaped": (
+                float(self.truncated_bootstrap_v_shaped) if self.truncated_bootstrap_v_shaped is not None else None
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> HanchanTrajectoryInput:
+        raw_trunc = data.get("truncation")
+        return cls(
+            steps=[RoundBoundary.from_dict(s) for s in data["steps"]],
+            round_start_potentials=[float(p) for p in data["round_start_potentials"]],
+            terminated=bool(data["terminated"]),
+            terminal_reward=(float(data["terminal_reward"]) if data.get("terminal_reward") is not None else None),
+            truncation=(RolloutTruncation.from_dict(raw_trunc) if raw_trunc is not None else None),
+            truncated_bootstrap_v_shaped=(
+                float(data["truncated_bootstrap_v_shaped"])
+                if data.get("truncated_bootstrap_v_shaped") is not None
+                else None
+            ),
+        )
+
+
+def _extract_trajectory_boundary_metadata(traj: HanchanTrajectoryInput) -> dict[str, Any]:
+    last_k = traj.steps[-1].round_index if traj.steps else None
+    first_k = traj.steps[0].round_index if traj.steps else None
+    if traj.terminated:
+        boundary_type = "terminal"
+        trunc_dict: dict[str, Any] | None = None
+    elif traj.truncation is not None:
+        boundary_type = traj.truncation.kind
+        trunc_dict = traj.truncation.to_dict()
+    else:
+        assert traj.truncated_bootstrap_v_shaped is not None and last_k is not None
+        boundary_type = "intra_round"
+        trunc_dict = RolloutTruncation(
+            kind="intra_round",
+            bootstrap_v_shaped=float(traj.truncated_bootstrap_v_shaped),
+            next_round_index=last_k,
+            next_round_phi=float(traj.round_start_potentials[last_k]),
+            bootstrap_round_index=last_k,
+        ).to_dict()
+    return {
+        "num_steps": len(traj.steps),
+        "first_round_index": first_k,
+        "last_round_index": last_k,
+        "boundary_type": boundary_type,
+        "terminated": bool(traj.terminated),
+        "terminal_reward": (float(traj.terminal_reward) if traj.terminal_reward is not None else None),
+        "truncation": trunc_dict,
+    }
 
 
 class FrozenGAERolloutBatch:
@@ -301,9 +354,11 @@ class FrozenGAERolloutBatch:
     Enforces Contract v2.4.1 / v2.5:
     - GAE advantages and shaped returns are computed ONCE at rollout finalization
       from frozen rollout-time Critic predictions (`version_tag.critic_version`).
-    - Stored tensors are detached (`requires_grad == False`) and fingerprinted with
-      SHA-256 so multi-epoch PPO loops CANNOT silently mutate or recompute GAE
-      targets as Critic parameters update.
+    - Stored tensors (`step_rewards`, `advantages`, `shaped_returns`, `rollout_v_shaped`)
+      are detached (`requires_grad == False`), retain explicit per-trajectory boundary
+      metadata (`trajectory_boundaries`), and are fingerprinted with SHA-256 so multi-epoch
+      PPO loops and checkpoint serialization/resume CANNOT silently mutate targets or drop
+      `RolloutTruncation` boundary semantics.
     """
 
     def __init__(
@@ -316,6 +371,7 @@ class FrozenGAERolloutBatch:
         rollout_v_shaped: torch.Tensor,
         gamma: float,
         gae_lambda: float,
+        trajectory_boundaries: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         self.version_tag = version_tag
         self.step_rewards = step_rewards.detach().clone().float()
@@ -324,13 +380,25 @@ class FrozenGAERolloutBatch:
         self.rollout_v_shaped = rollout_v_shaped.detach().clone().float()
         self.gamma = float(gamma)
         self.gae_lambda = float(gae_lambda)
+        self.trajectory_boundaries: tuple[dict[str, Any], ...] = tuple(dict(b) for b in trajectory_boundaries)
         self._target_sha256 = self._compute_target_digest()
 
     def _compute_target_digest(self) -> str:
         h = hashlib.sha256()
+        h.update(self.step_rewards.detach().cpu().contiguous().numpy().tobytes())
         h.update(self.advantages.detach().cpu().contiguous().numpy().tobytes())
         h.update(self.shaped_returns.detach().cpu().contiguous().numpy().tobytes())
         h.update(self.rollout_v_shaped.detach().cpu().contiguous().numpy().tobytes())
+        meta = {
+            "policy_version": self.version_tag.policy_version,
+            "critic_version": self.version_tag.critic_version,
+            "grp_sha256": self.version_tag.grp_sha256,
+            "ruleset_sha256": self.version_tag.ruleset_sha256,
+            "gamma": self.gamma,
+            "gae_lambda": self.gae_lambda,
+            "trajectory_boundaries": list(self.trajectory_boundaries),
+        }
+        h.update(json.dumps(meta, sort_keys=True, separators=(",", ":")).encode("utf-8"))
         return h.hexdigest()
 
     @property
@@ -340,6 +408,62 @@ class FrozenGAERolloutBatch:
     @property
     def target_sha256(self) -> str:
         return self._target_sha256
+
+    def state_dict(self) -> dict[str, Any]:
+        """Serialize frozen rollout batch including full boundary metadata and SHA-256 digest."""
+        return {
+            "version_tag": {
+                "policy_version": int(self.version_tag.policy_version),
+                "critic_version": int(self.version_tag.critic_version),
+                "grp_sha256": str(self.version_tag.grp_sha256),
+                "ruleset_sha256": str(self.version_tag.ruleset_sha256),
+            },
+            "step_rewards": self.step_rewards.detach().cpu().clone(),
+            "advantages": self.advantages.detach().cpu().clone(),
+            "shaped_returns": self.shaped_returns.detach().cpu().clone(),
+            "rollout_v_shaped": self.rollout_v_shaped.detach().cpu().clone(),
+            "gamma": float(self.gamma),
+            "gae_lambda": float(self.gae_lambda),
+            "trajectory_boundaries": [dict(b) for b in self.trajectory_boundaries],
+            "target_sha256": self._target_sha256,
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: Mapping[str, Any]) -> FrozenGAERolloutBatch:
+        """Restore a serialized [`FrozenGAERolloutBatch`] and verify cryptographic integrity."""
+        vt_raw = state["version_tag"]
+        tag = RolloutVersionTag(
+            policy_version=int(vt_raw["policy_version"]),
+            critic_version=int(vt_raw["critic_version"]),
+            grp_sha256=str(vt_raw["grp_sha256"]),
+            ruleset_sha256=str(vt_raw["ruleset_sha256"]),
+        )
+        raw_boundaries = state.get("trajectory_boundaries", ())
+        normalized_boundaries: list[dict[str, Any]] = []
+        for entry in raw_boundaries:
+            item = dict(entry)
+            if item.get("truncation") is not None:
+                # Re-validate RolloutTruncation schema on restore
+                item["truncation"] = RolloutTruncation.from_dict(item["truncation"]).to_dict()
+            normalized_boundaries.append(item)
+
+        batch = cls(
+            version_tag=tag,
+            step_rewards=torch.as_tensor(state["step_rewards"], dtype=torch.float32),
+            advantages=torch.as_tensor(state["advantages"], dtype=torch.float32),
+            shaped_returns=torch.as_tensor(state["shaped_returns"], dtype=torch.float32),
+            rollout_v_shaped=torch.as_tensor(state["rollout_v_shaped"], dtype=torch.float32),
+            gamma=float(state["gamma"]),
+            gae_lambda=float(state["gae_lambda"]),
+            trajectory_boundaries=normalized_boundaries,
+        )
+        expected_sha = str(state["target_sha256"])
+        if batch.target_sha256 != expected_sha:
+            raise RuntimeError(
+                f"Contract v2.4.1 violation: Restored FrozenGAERolloutBatch SHA-256 mismatch "
+                f"(expected={expected_sha}, got={batch.target_sha256})"
+            )
+        return batch
 
     @classmethod
     def from_hanchan_trajectories(
@@ -355,6 +479,7 @@ class FrozenGAERolloutBatch:
         all_adv: list[float] = []
         all_ret: list[float] = []
         all_v_shaped: list[float] = []
+        boundaries: list[dict[str, Any]] = []
 
         for traj in trajectories:
             rewards, adv, ret = compute_hanchan_gae(
@@ -362,6 +487,7 @@ class FrozenGAERolloutBatch:
                 traj.round_start_potentials,
                 terminated=traj.terminated,
                 terminal_reward=traj.terminal_reward,
+                truncation=traj.truncation,
                 truncated_bootstrap_v_shaped=traj.truncated_bootstrap_v_shaped,
                 gamma=gamma,
                 gae_lambda=gae_lambda,
@@ -370,6 +496,8 @@ class FrozenGAERolloutBatch:
             all_adv.extend(adv)
             all_ret.extend(ret)
             all_v_shaped.extend(s.v_shaped for s in traj.steps)
+            if traj.steps:
+                boundaries.append(_extract_trajectory_boundary_metadata(traj))
 
         if not all_adv:
             raise ValueError("Cannot construct FrozenGAERolloutBatch with 0 steps")
@@ -382,6 +510,7 @@ class FrozenGAERolloutBatch:
             rollout_v_shaped=torch.tensor(all_v_shaped, dtype=torch.float32),
             gamma=gamma,
             gae_lambda=gae_lambda,
+            trajectory_boundaries=boundaries,
         )
 
     def assert_ready_for_ppo_epoch(
@@ -399,11 +528,12 @@ class FrozenGAERolloutBatch:
             expected_ruleset_sha256=expected_ruleset_sha256,
             max_staleness=max_staleness,
         )
-        if self.advantages.requires_grad or self.shaped_returns.requires_grad:
-            raise RuntimeError(
-                "Contract v2.4.1 violation: GAE advantages/shaped_returns MUST remain detached"
-            )
+        if (
+            self.step_rewards.requires_grad
+            or self.advantages.requires_grad
+            or self.shaped_returns.requires_grad
+            or self.rollout_v_shaped.requires_grad
+        ):
+            raise RuntimeError("Contract v2.4.1 violation: GAE rollout targets MUST remain detached")
         if self._compute_target_digest() != self._target_sha256:
-            raise RuntimeError(
-                "Contract v2.4.1 violation: Frozen GAE targets were mutated across PPO epochs!"
-            )
+            raise RuntimeError("Contract v2.4.1 violation: Frozen GAE targets were mutated across PPO epochs!")

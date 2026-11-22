@@ -17,9 +17,7 @@ use riichienv_core::v2_features::global_player::{RoundGlobalContext, encode_glob
 use riichienv_core::v2_features::oracle::{encode_belief_targets, encode_oracle};
 use riichienv_core::v2_features::tile_feats::encode_tile_feats;
 use riichienv_core::v2_features::visible::VisibleTileCounts;
-use riichienv_core::v2_features::{
-    DecisionPhase, HanchanTracker, RuleContract, V2FeatureConfig,
-};
+use riichienv_core::v2_features::{DecisionPhase, HanchanTracker, RuleContract, V2FeatureConfig};
 
 use crate::env::RiichiEnv;
 
@@ -292,7 +290,11 @@ fn v2_encode_env_step<'py>(
             is_chankan: matches!(phase, DecisionPhase::KakanResp | DecisionPhase::AnkanResp),
             is_haitei_or_houtei: state.wall.drawable_count == 0,
             is_tsumo_first_turn: state.is_first_turn,
-            pao_payer: state.players[observer as usize].pao.values().next().copied(),
+            pao_payer: state.players[observer as usize]
+                .pao
+                .values()
+                .next()
+                .copied(),
         },
     )
     .map_err(PyValueError::new_err)?;
@@ -316,7 +318,10 @@ fn v2_encode_env_step<'py>(
     d.set_item("num_valid", cands.num_valid)?;
     d.set_item("events", slice_to_pybytes(py, &events_flat))?;
     d.set_item("event_len", events.len())?;
-    d.set_item("rounds_completed", state.v2_hanchan_tracker.rounds_completed)?;
+    d.set_item(
+        "rounds_completed",
+        state.v2_hanchan_tracker.rounds_completed,
+    )?;
     d.set_item("ruleset_sha256", rc.ruleset_sha256())?;
 
     if include_oracle {

@@ -135,6 +135,7 @@ pub fn encode_belief_targets(state: &GameState, observer: u8) -> Result<BeliefTa
                     riichi: opp_state.riichi_declared,
                     double_riichi: opp_state.double_riichi_declared,
                     ippatsu: opp_state.ippatsu_cycle,
+                    houtei: state.wall.drawable_count == 0,
                     player_wind: opp_wind,
                     round_wind: Wind::from(state.round_wind),
                     honba: u32::from(state.honba),
@@ -168,7 +169,13 @@ pub fn encode_belief_targets(state: &GameState, observer: u8) -> Result<BeliefTa
 pub fn encode_oracle(
     state: &GameState,
     observer: u8,
-) -> Result<([f32; TILE_DIM * ORACLE_TILE_DIM], [[f32; ORACLE_PLAYER_DIM]; 3]), String> {
+) -> Result<
+    (
+        [f32; TILE_DIM * ORACLE_TILE_DIM],
+        [[f32; ORACLE_PLAYER_DIM]; 3],
+    ),
+    String,
+> {
     let pid = observer as usize;
     if pid >= 4 {
         return Err(format!("invalid observer {observer}"));
@@ -334,7 +341,9 @@ pub fn encode_oracle(
         if is_tenpai {
             let opp_wind = Wind::from((opp as u8 + 4 - state.oya) % 4);
             let opp_is_furiten = opp_furiten.any()
-                || waits.iter().any(|&w| (w as usize) < TILE_MAX && opp_own_disc[w as usize]);
+                || waits
+                    .iter()
+                    .any(|&w| (w as usize) < TILE_MAX && opp_own_disc[w as usize]);
 
             for &w in &waits {
                 let wb = w as usize;
@@ -349,6 +358,7 @@ pub fn encode_oracle(
                     riichi: opp_state.riichi_declared,
                     double_riichi: opp_state.double_riichi_declared,
                     ippatsu: opp_state.ippatsu_cycle,
+                    houtei: state.wall.drawable_count == 0,
                     player_wind: opp_wind,
                     round_wind: Wind::from(state.round_wind),
                     honba: u32::from(state.honba),

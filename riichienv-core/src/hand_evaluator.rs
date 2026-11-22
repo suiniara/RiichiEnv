@@ -209,14 +209,8 @@ impl HandEvaluator {
             if cap > 0 {
                 res.han = res.han.saturating_sub(cap).max(13);
                 let is_oya = cond.player_wind == Wind::East;
-                let capped = score::calculate_score(
-                    res.han as u8,
-                    0,
-                    is_oya,
-                    cond.tsumo,
-                    cond.honba,
-                    4,
-                );
+                let capped =
+                    score::calculate_score(res.han as u8, 0, is_oya, cond.tsumo, cond.honba, 4);
                 res.ron_agari = capped.pay_ron;
                 res.tsumo_agari_oya = capped.pay_tsumo_oya;
                 res.tsumo_agari_ko = capped.pay_tsumo_ko;

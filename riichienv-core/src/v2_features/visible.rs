@@ -51,9 +51,7 @@ impl VisibleTileCounts {
                 return Err(format!("concealed tile id out of range: {tile}"));
             }
             if hand_seen[tile] {
-                return Err(format!(
-                    "duplicate physical tile in observer hand: {tile}"
-                ));
+                return Err(format!("duplicate physical tile in observer hand: {tile}"));
             }
             hand_seen[tile] = true;
             seen_136[tile] = true;
@@ -69,7 +67,9 @@ impl VisibleTileCounts {
                     return Err(format!("discard tile id out of range: {tile}"));
                 }
                 if discard_seen[tile] {
-                    return Err(format!("duplicate physical tile in discard records: {tile}"));
+                    return Err(format!(
+                        "duplicate physical tile in discard records: {tile}"
+                    ));
                 }
                 if hand_seen[tile] {
                     return Err(format!(
@@ -105,9 +105,7 @@ impl VisibleTileCounts {
                             );
                         }
                         _ => {
-                            return Err(
-                                "Kakan has multiple claimed physical tiles".to_string()
-                            );
+                            return Err("Kakan has multiple claimed physical tiles".to_string());
                         }
                     }
                 } else {
@@ -122,9 +120,7 @@ impl VisibleTileCounts {
                         return Err(format!("called tile {called} is absent from its meld"));
                     }
                     if !discard_seen[called] {
-                        return Err(format!(
-                            "called tile {called} has no public source discard"
-                        ));
+                        return Err(format!("called tile {called} has no public source discard"));
                     }
                     if called_from_river[called] {
                         return Err(format!("physical tile called more than once: {called}"));
@@ -195,8 +191,7 @@ impl VisibleTileCounts {
         }
 
         for base in 0..TILE_MAX {
-            let alg_v = i16::from(river_counts[base])
-                + i16::from(meld_counts[base])
+            let alg_v = i16::from(river_counts[base]) + i16::from(meld_counts[base])
                 - i16::from(called_counts[base])
                 + i16::from(dora_counts[base]);
             if alg_v != i16::from(visible_base34[base]) {
@@ -326,13 +321,7 @@ mod remote_parity_tests {
     fn counts_called_tile_once_across_river_and_meld() {
         let mut obs = observation();
         obs.discards[1].push(4);
-        obs.melds[0].push(Meld::new(
-            MeldType::Chi,
-            vec![4, 8, 12],
-            true,
-            -1,
-            Some(4),
-        ));
+        obs.melds[0].push(Meld::new(MeldType::Chi, vec![4, 8, 12], true, -1, Some(4)));
         let counts = VisibleTileCounts::from_observation(&obs).unwrap();
         assert_eq!(counts.visible_count(1), Some(1));
         assert_eq!(counts.visible_count(2), Some(1));

@@ -99,9 +99,8 @@ impl Observation {
             discards.map(|d| d.into_iter().map(|x| x as u32).collect());
         let dora_u32: Vec<u32> = dora_indicators.iter().map(|&x| x as u32).collect();
 
-        let own_disc_mask = crate::v2_features::furiten::own_discard_mask_u32(
-            &discards_u32[player_id as usize],
-        );
+        let own_disc_mask =
+            crate::v2_features::furiten::own_discard_mask_u32(&discards_u32[player_id as usize]);
         let permanent_furiten = waits
             .iter()
             .any(|&w| (w as usize) < 34 && own_disc_mask[w as usize]);

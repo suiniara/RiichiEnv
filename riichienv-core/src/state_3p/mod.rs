@@ -402,38 +402,37 @@ impl GameState3P {
                     ActionType::KyushuKyuhai => {
                         self._trigger_ryukyoku("kyushu_kyuhai");
                     }
-                    ActionType::Riichi => {
+                    ActionType::Riichi
+                        if self.players[pid as usize].score >= 1000
+                            && self.wall.drawable_count > 0
+                            && !self.players[pid as usize].riichi_declared
+                            && !self.players[pid as usize].riichi_stage =>
+                    {
                         // `!riichi_stage` guards against a second Riichi
                         // action arriving while the previous one is still
                         // mid-declaration (between the reach event and its
                         // committing discard).
-                        if self.players[pid as usize].score >= 1000
-                            && self.wall.drawable_count > 0
-                            && !self.players[pid as usize].riichi_declared
-                            && !self.players[pid as usize].riichi_stage
-                        {
-                            self.players[pid as usize].riichi_stage = true;
-                            if !self.skip_mjai_logging {
-                                let mut ev = serde_json::Map::new();
-                                ev.insert("type".to_string(), Value::String("reach".to_string()));
-                                ev.insert("actor".to_string(), Value::Number(pid.into()));
-                                self._push_mjai_event(Value::Object(ev));
+                        self.players[pid as usize].riichi_stage = true;
+                        if !self.skip_mjai_logging {
+                            let mut ev = serde_json::Map::new();
+                            ev.insert("type".to_string(), Value::String("reach".to_string()));
+                            ev.insert("actor".to_string(), Value::Number(pid.into()));
+                            self._push_mjai_event(Value::Object(ev));
+                        }
+                        if let Some(t) = act.tile {
+                            let mut tsumogiri = false;
+                            if let Some(dt) = self.drawn_tile
+                                && dt == t
+                            {
+                                tsumogiri = true;
                             }
-                            if let Some(t) = act.tile {
-                                let mut tsumogiri = false;
-                                if let Some(dt) = self.drawn_tile
-                                    && dt == t
-                                {
-                                    tsumogiri = true;
-                                }
-                                if let Some(idx) =
-                                    self.players[pid as usize].hand.iter().position(|&x| x == t)
-                                {
-                                    self.players[pid as usize].hand.remove(idx);
-                                    self.players[pid as usize].hand.sort();
-                                }
-                                self._resolve_discard(pid, t, tsumogiri);
+                            if let Some(idx) =
+                                self.players[pid as usize].hand.iter().position(|&x| x == t)
+                            {
+                                self.players[pid as usize].hand.remove(idx);
+                                self.players[pid as usize].hand.sort();
                             }
+                            self._resolve_discard(pid, t, tsumogiri);
                         }
                     }
                     ActionType::Ankan => {

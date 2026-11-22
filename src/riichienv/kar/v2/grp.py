@@ -15,8 +15,10 @@ Implements Contract Sections 3.1 and 3.3:
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any, Literal
 
 import torch
 import torch.nn.functional as F
@@ -131,9 +133,7 @@ class FrozenGRP:
             param.requires_grad_(False)
         actual_sha = model.parameter_sha256()
         if expected_grp_sha256 is not None and actual_sha != expected_grp_sha256:
-            raise ValueError(
-                f"GRP checksum mismatch: expected {expected_grp_sha256}, got {actual_sha}"
-            )
+            raise ValueError(f"GRP checksum mismatch: expected {expected_grp_sha256}, got {actual_sha}")
         self.model = model
         self.grp_version = grp_version
         self.grp_sha256 = actual_sha
@@ -197,6 +197,13 @@ def compute_pbrs_round_rewards(
     return rewards
 
 
+def _require_finite(value: float, name: str) -> float:
+    val = float(value)
+    if not math.isfinite(val):
+        raise ValueError(f"{name} must be finite, got {val}")
+    return val
+
+
 @dataclass(frozen=True)
 class RoundBoundary:
     """One decision step inside a Hanchan trajectory for a single seat."""
@@ -209,20 +216,198 @@ class RoundBoundary:
     def v_shaped(self) -> float:
         return self.v_raw - self.phi_k
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "round_index": int(self.round_index),
+            "phi_k": float(self.phi_k),
+            "v_raw": float(self.v_raw),
+        }
 
-def compute_hanchan_gae(
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> RoundBoundary:
+        return cls(
+            round_index=int(data["round_index"]),
+            phi_k=float(data["phi_k"]),
+            v_raw=float(data["v_raw"]),
+        )
+
+
+@dataclass(frozen=True)
+class RolloutTruncation:
+    """Explicit non-terminal rollout truncation boundary (Contract v2.5.1).
+
+    Distinguishes:
+    - `kind="intra_round"`: Rollout hit step cap while still inside `steps[-1].round_index`
+      (`step_rewards[-1] == 0.0`, bootstrap `V_shaped(z_trunc)` evaluated in round `last_k`).
+    - `kind="cross_round"`: Round `steps[-1].round_index` (and optionally one or more
+      zero-decision skipped rounds) already settled and round `next_round_index > steps[-1].round_index`
+      started with potential `next_round_phi` before any decision in `next_round_index`
+      was recorded (`step_rewards[-1] == next_round_phi - Phi_{last_k}`, bootstrap
+      `V_shaped(z_trunc)` evaluated in round `next_round_index` using `next_round_phi`).
+
+    Optional `bootstrap_round_index` and `bootstrap_v_raw` allow strict fail-closed
+    verification that `bootstrap_v_shaped` was evaluated in the declared boundary round
+    with the matching round potential (never stale `Phi_k` after crossing rounds).
+    """
+
+    kind: Literal["intra_round", "cross_round"]
+    bootstrap_v_shaped: float
+    next_round_index: int | None = None
+    next_round_phi: float | None = None
+    bootstrap_round_index: int | None = None
+    bootstrap_v_raw: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "bootstrap_v_shaped": float(self.bootstrap_v_shaped),
+            "next_round_index": (int(self.next_round_index) if self.next_round_index is not None else None),
+            "next_round_phi": (float(self.next_round_phi) if self.next_round_phi is not None else None),
+            "bootstrap_round_index": (
+                int(self.bootstrap_round_index) if self.bootstrap_round_index is not None else None
+            ),
+            "bootstrap_v_raw": (float(self.bootstrap_v_raw) if self.bootstrap_v_raw is not None else None),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> RolloutTruncation:
+        raw_kind = str(data["kind"])
+        if raw_kind not in ("intra_round", "cross_round"):
+            raise ValueError(f"Unknown truncation.kind={raw_kind!r}")
+        kind: Literal["intra_round", "cross_round"] = "intra_round" if raw_kind == "intra_round" else "cross_round"
+        return cls(
+            kind=kind,
+            bootstrap_v_shaped=float(data["bootstrap_v_shaped"]),
+            next_round_index=(int(data["next_round_index"]) if data.get("next_round_index") is not None else None),
+            next_round_phi=(float(data["next_round_phi"]) if data.get("next_round_phi") is not None else None),
+            bootstrap_round_index=(
+                int(data["bootstrap_round_index"]) if data.get("bootstrap_round_index") is not None else None
+            ),
+            bootstrap_v_raw=(float(data["bootstrap_v_raw"]) if data.get("bootstrap_v_raw") is not None else None),
+        )
+
+
+def _validate_bootstrap_consistency(
+    truncation: RolloutTruncation,
+    *,
+    expected_round_index: int,
+    expected_phi: float,
+    bootstrap_val: float,
+) -> None:
+    if truncation.bootstrap_round_index is not None and truncation.bootstrap_round_index != expected_round_index:
+        raise ValueError(
+            f"{truncation.kind} truncation bootstrap_round_index={truncation.bootstrap_round_index} "
+            f"disagrees with boundary round {expected_round_index}"
+        )
+    if truncation.bootstrap_v_raw is not None:
+        v_raw = _require_finite(truncation.bootstrap_v_raw, "bootstrap_v_raw")
+        expected_v_shaped = v_raw - expected_phi
+        if abs(expected_v_shaped - bootstrap_val) > 1e-5:
+            raise ValueError(
+                f"{truncation.kind} truncation bootstrap_v_shaped={bootstrap_val} disagrees with "
+                f"bootstrap_v_raw - expected_phi ({v_raw} - {expected_phi} = {expected_v_shaped}); "
+                "ensure bootstrap V_shaped uses the target round potential"
+            )
+
+
+def _resolve_truncation_terminal_step(
+    *,
+    last_k: int,
+    round_start_potentials: Sequence[float],
+    truncation: RolloutTruncation | None,
+    truncated_bootstrap_v_shaped: float | None,
+) -> tuple[float, float]:
+    """Resolve `(last_step_reward, bootstrap_v_shaped)` for a non-terminal truncated rollout."""
+    n_potentials = len(round_start_potentials)
+    if truncation is not None and truncated_bootstrap_v_shaped is not None:
+        raise ValueError(
+            "Pass either `truncation=RolloutTruncation(...)` or legacy `truncated_bootstrap_v_shaped`, not both"
+        )
+    if truncation is None and truncated_bootstrap_v_shaped is None:
+        raise ValueError(
+            "truncation (or truncated_bootstrap_v_shaped) is required when terminated=False "
+            "(Contract v2.5.1: truncated rollouts MUST NOT bootstrap with 0.0)"
+        )
+
+    if truncation is None:
+        if n_potentials > last_k + 1:
+            raise ValueError(
+                f"round_start_potentials has {n_potentials} entries beyond last_k={last_k}; "
+                "pass explicit `truncation=RolloutTruncation(kind='cross_round', ...)` "
+                "so cross-round potential rewards are never silently dropped"
+            )
+        assert truncated_bootstrap_v_shaped is not None
+        truncation = RolloutTruncation(
+            kind="intra_round",
+            bootstrap_v_shaped=_require_finite(truncated_bootstrap_v_shaped, "truncated_bootstrap_v_shaped"),
+            next_round_index=last_k,
+            next_round_phi=float(round_start_potentials[last_k]),
+            bootstrap_round_index=last_k,
+        )
+
+    bootstrap_val = _require_finite(truncation.bootstrap_v_shaped, "bootstrap_v_shaped")
+    phi_last = float(round_start_potentials[last_k])
+
+    if truncation.kind == "intra_round":
+        if truncation.next_round_index is not None and truncation.next_round_index != last_k:
+            raise ValueError(
+                f"intra_round truncation requires next_round_index == last_k ({last_k}), "
+                f"got {truncation.next_round_index}"
+            )
+        if truncation.next_round_phi is not None:
+            phi_intra = _require_finite(truncation.next_round_phi, "intra_round next_round_phi")
+            if abs(phi_intra - phi_last) > 1e-5:
+                raise ValueError(
+                    f"intra_round next_round_phi={phi_intra} disagrees with round_start_potentials[{last_k}]={phi_last}"
+                )
+        _validate_bootstrap_consistency(
+            truncation,
+            expected_round_index=last_k,
+            expected_phi=phi_last,
+            bootstrap_val=bootstrap_val,
+        )
+        return 0.0, bootstrap_val
+
+    if truncation.kind == "cross_round":
+        nxt_k = truncation.next_round_index
+        if nxt_k is None or nxt_k <= last_k:
+            raise ValueError(f"cross_round truncation requires next_round_index > last_k ({last_k}), got {nxt_k}")
+        if truncation.next_round_phi is None:
+            raise ValueError(
+                f"cross_round truncation at next_round_index={nxt_k} requires explicit `next_round_phi` "
+                "(fail-closed: never infer or zero-fill missing cross-round potential)"
+            )
+        phi_next = _require_finite(truncation.next_round_phi, "cross_round next_round_phi")
+        if nxt_k < n_potentials and abs(phi_next - float(round_start_potentials[nxt_k])) > 1e-5:
+            raise ValueError(
+                f"cross_round next_round_phi={phi_next} disagrees with "
+                f"round_start_potentials[{nxt_k}]={round_start_potentials[nxt_k]}"
+            )
+        _validate_bootstrap_consistency(
+            truncation,
+            expected_round_index=nxt_k,
+            expected_phi=phi_next,
+            bootstrap_val=bootstrap_val,
+        )
+        return phi_next - phi_last, bootstrap_val
+
+    raise ValueError(f"Unknown truncation.kind={truncation.kind!r}")
+
+
+def compute_hanchan_gae(  # noqa: PLR0912
     steps: Sequence[RoundBoundary],
     round_start_potentials: Sequence[float],
     *,
     terminated: bool,
     terminal_reward: float | None = None,
+    truncation: RolloutTruncation | None = None,
     truncated_bootstrap_v_shaped: float | None = None,
     gamma: float = 1.0,
     gae_lambda: float = 0.95,
 ) -> tuple[list[float], list[float], list[float]]:
     """Compute full-Hanchan continuous GAE (`lambda_round == gae_lambda`) over shaped values.
 
-    Handles ALL Contract v2.4 Section 3.3 boundaries:
+    Handles ALL Contract v2.5.1 Section 3.3 boundaries:
     1. Intra-round consecutive steps: r_t = 0.0, bootstrap V_shaped(z_{t+1}).
     2. Cross-round normal transitions (k -> k+1): r_t = Phi_{k+1} - Phi_k.
     3. Zero-decision skipped rounds (seat had 0 decisions in round k+1, e.g. opponent Tenhou):
@@ -230,23 +415,38 @@ def compute_hanchan_gae(
        active decision before the gap, preserving exact telescoping.
     4. Hanchan termination (`terminated=True`): last step gets `R_terminal - Phi_{last_round}`
        and `next_value = 0.0` (the ONLY place `next_value == 0.0`).
-    5. Mid-Hanchan rollout truncation (`terminated=False`, `truncated=True`):
-       MUST supply `truncated_bootstrap_v_shaped` (NEVER silently zeroed!).
+    5. Mid-Hanchan intra-round truncation (`RolloutTruncation(kind="intra_round", ...)`):
+       last step gets `r_t = 0.0` and bootstraps `bootstrap_v_shaped` (NEVER `0.0`!).
+    6. Cross-round / round-end truncation (`RolloutTruncation(kind="cross_round", ...)`):
+       when round `last_k` (and any skipped zero-decision rounds) settled before rollout cap
+       and round `next_round_index > last_k` started with potential `Phi_{next_round}`,
+       last step gets `r_t = Phi_{next_round} - Phi_{last_k}` AND bootstraps
+       `bootstrap_v_shaped`, preserving exact multi-chunk telescoping!
 
     Returns `(step_rewards, advantages, shaped_gae_returns)`.
     """
+    gamma = _require_finite(gamma, "gamma")
+    gae_lambda = _require_finite(gae_lambda, "gae_lambda")
     n_steps = len(steps)
     if n_steps == 0:
         return [], [], []
-    if terminated and terminal_reward is None:
-        raise ValueError("terminal_reward is required when terminated=True")
-    if not terminated and truncated_bootstrap_v_shaped is None:
-        raise ValueError(
-            "truncated_bootstrap_v_shaped is required when terminated=False "
-            "(Contract v2.4: truncated rollouts MUST NOT bootstrap with 0.0)"
-        )
 
-    # Validate monotone round indices and assign exact telescoping step rewards.
+    n_potentials = len(round_start_potentials)
+    for idx, phi_val in enumerate(round_start_potentials):
+        _require_finite(phi_val, f"round_start_potentials[{idx}]")
+    for idx, step in enumerate(steps):
+        if not 0 <= step.round_index < n_potentials:
+            raise ValueError(
+                f"step.round_index={step.round_index} out of bounds for {n_potentials} round_start_potentials"
+            )
+        step_phi = _require_finite(step.phi_k, f"steps[{idx}].phi_k")
+        _require_finite(step.v_raw, f"steps[{idx}].v_raw")
+        if abs(step_phi - float(round_start_potentials[step.round_index])) > 1e-5:
+            raise ValueError(
+                f"step.phi_k={step_phi} disagrees with "
+                f"round_start_potentials[{step.round_index}]={round_start_potentials[step.round_index]}"
+            )
+
     step_rewards = [0.0] * n_steps
     for t in range(n_steps - 1):
         cur_k = steps[t].round_index
@@ -254,20 +454,26 @@ def compute_hanchan_gae(
         if nxt_k < cur_k:
             raise ValueError(f"Non-monotone round indices: {cur_k} -> {nxt_k}")
         if nxt_k > cur_k:
-            # Automatically merges any zero-decision skipped rounds between cur_k and nxt_k!
-            step_rewards[t] = float(round_start_potentials[nxt_k]) - float(
-                round_start_potentials[cur_k]
-            )
+            step_rewards[t] = float(round_start_potentials[nxt_k]) - float(round_start_potentials[cur_k])
 
     last_k = steps[-1].round_index
     if terminated:
-        assert terminal_reward is not None
-        # Also merges any trailing zero-decision rounds before Hanchan end:
-        # (Phi_{K-1} - Phi_{last_k}) + (R_terminal - Phi_{K-1}) == R_terminal - Phi_{last_k}!
-        step_rewards[-1] = float(terminal_reward) - float(round_start_potentials[last_k])
+        if terminal_reward is None:
+            raise ValueError("terminal_reward is required when terminated=True")
+        if truncation is not None or truncated_bootstrap_v_shaped is not None:
+            raise ValueError("truncation / truncated_bootstrap_v_shaped must not be supplied when terminated=True")
+        r_term = _require_finite(terminal_reward, "terminal_reward")
+        step_rewards[-1] = r_term - float(round_start_potentials[last_k])
+        bootstrap_val = 0.0
     else:
-        # Mid-Hanchan truncation inside round `last_k` (no round-end jump unless caller ended at boundary)
-        step_rewards[-1] = 0.0
+        if terminal_reward is not None:
+            raise ValueError("terminal_reward must not be supplied when terminated=False")
+        step_rewards[-1], bootstrap_val = _resolve_truncation_terminal_step(
+            last_k=last_k,
+            round_start_potentials=round_start_potentials,
+            truncation=truncation,
+            truncated_bootstrap_v_shaped=truncated_bootstrap_v_shaped,
+        )
 
     advantages = [0.0] * n_steps
     shaped_returns = [0.0] * n_steps
@@ -276,13 +482,8 @@ def compute_hanchan_gae(
     for t in reversed(range(n_steps)):
         v_t = steps[t].v_shaped
         if t == n_steps - 1:
-            if terminated:
-                next_val = 0.0
-                non_terminal = 0.0
-            else:
-                assert truncated_bootstrap_v_shaped is not None
-                next_val = float(truncated_bootstrap_v_shaped)
-                non_terminal = 1.0
+            next_val = 0.0 if terminated else bootstrap_val
+            non_terminal = 0.0 if terminated else 1.0
         else:
             next_val = steps[t + 1].v_shaped
             non_terminal = 1.0
@@ -339,9 +540,7 @@ def evaluate_grp_calibration(
     if probs.ndim != 2 or probs.shape[1] != 4:
         raise ValueError(f"Expected probs shape [N, 4], got {tuple(probs.shape)}")
     if final_ranks.ndim != 1 or final_ranks.shape[0] != probs.shape[0]:
-        raise ValueError(
-            f"Expected final_ranks shape [{probs.shape[0]}], got {tuple(final_ranks.shape)}"
-        )
+        raise ValueError(f"Expected final_ranks shape [{probs.shape[0]}], got {tuple(final_ranks.shape)}")
     if n_bins < 1:
         raise ValueError(f"n_bins must be >= 1, got {n_bins}")
 
@@ -389,9 +588,7 @@ def evaluate_grp_calibration(
             in_bin = (p_c >= lo) & (p_c <= hi) if b == 0 else (p_c > lo) & (p_c <= hi)
             cnt = int(in_bin.sum().item())
             if cnt > 0:
-                cls_ece += (cnt / n) * abs(
-                    float(p_c[in_bin].mean().item()) - float(y_c[in_bin].mean().item())
-                )
+                cls_ece += (cnt / n) * abs(float(p_c[in_bin].mean().item()) - float(y_c[in_bin].mean().item()))
         cw_ece_sum += cls_ece
     classwise_ece = cw_ece_sum / 4.0
 
@@ -416,9 +613,7 @@ def train_pure_state_grp_step(
 ) -> dict[str, float]:
     """Perform one supervised 4-class cross-entropy update step on [`PureStateGRP`]."""
     if state_feats.ndim != 2 or state_feats.shape[1] != PURE_STATE_GRP_INPUT_DIM:
-        raise ValueError(
-            f"Expected state_feats shape [B, {PURE_STATE_GRP_INPUT_DIM}], got {tuple(state_feats.shape)}"
-        )
+        raise ValueError(f"Expected state_feats shape [B, {PURE_STATE_GRP_INPUT_DIM}], got {tuple(state_feats.shape)}")
     model.train()
     optimizer.zero_grad(set_to_none=True)
     logits = model(state_feats.float())

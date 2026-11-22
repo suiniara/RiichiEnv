@@ -119,7 +119,8 @@ impl GameState {
 
         if self.is_done || self.phase != Phase::WaitAct || self.pending_kan.is_some() {
             return Err(RiichiError::InvalidState {
-                message: "Continuation wall can only be prepared at a stable own-action cutoff".into(),
+                message: "Continuation wall can only be prepared at a stable own-action cutoff"
+                    .into(),
             });
         }
         let mut visible = [false; 136];
@@ -151,7 +152,8 @@ impl GameState {
         for (index, &indicator) in self.wall.dora_indicators.iter().enumerate() {
             if visible[indicator as usize] {
                 return Err(RiichiError::InvalidState {
-                    message: "A public dora indicator is also present in a visible player zone".into(),
+                    message: "A public dora indicator is also present in a visible player zone"
+                        .into(),
                 });
             }
             let position = (4 + 2 * index).saturating_sub(self.wall.rinshan_draw_count as usize);
@@ -162,7 +164,8 @@ impl GameState {
             }
             let Some(found) = pool.iter().position(|&tile| tile == indicator) else {
                 return Err(RiichiError::InvalidState {
-                    message: "A revealed dora indicator is missing from the unknown tile pool".into(),
+                    message: "A revealed dora indicator is missing from the unknown tile pool"
+                        .into(),
                 });
             };
             pool.swap_remove(found);
@@ -219,7 +222,8 @@ impl GameState {
         }
         if self.is_done || self.phase != Phase::WaitAct || self.pending_kan.is_some() {
             return Err(RiichiError::InvalidState {
-                message: "Continuation wall can only be prepared at a stable own-action cutoff".into(),
+                message: "Continuation wall can only be prepared at a stable own-action cutoff"
+                    .into(),
             });
         }
         let obs = observer as usize;
@@ -260,7 +264,8 @@ impl GameState {
         for (index, &indicator) in self.wall.dora_indicators.iter().enumerate() {
             if visible[indicator as usize] {
                 return Err(RiichiError::InvalidState {
-                    message: "A public dora indicator is also present in a visible player zone".into(),
+                    message: "A public dora indicator is also present in a visible player zone"
+                        .into(),
                 });
             }
             let position = (4 + 2 * index).saturating_sub(self.wall.rinshan_draw_count as usize);
@@ -271,7 +276,8 @@ impl GameState {
             }
             let Some(found) = pool.iter().position(|&tile| tile == indicator) else {
                 return Err(RiichiError::InvalidState {
-                    message: "A revealed dora indicator is missing from the unknown tile pool".into(),
+                    message: "A revealed dora indicator is missing from the unknown tile pool"
+                        .into(),
                 });
             };
             pool.swap_remove(found);
@@ -730,38 +736,37 @@ impl GameState {
                     ActionType::KyushuKyuhai => {
                         self._trigger_ryukyoku("kyushu_kyuhai");
                     }
-                    ActionType::Riichi => {
+                    ActionType::Riichi
+                        if self.players[pid as usize].score >= 1000
+                            && self.wall.drawable_count >= 4
+                            && !self.players[pid as usize].riichi_declared
+                            && !self.players[pid as usize].riichi_stage =>
+                    {
                         // Declare Riichi. `!riichi_stage` guards against a
                         // second Riichi action arriving while the previous
                         // one is still mid-declaration (between the reach
                         // event and its committing discard).
-                        if self.players[pid as usize].score >= 1000
-                            && self.wall.drawable_count >= 4
-                            && !self.players[pid as usize].riichi_declared
-                            && !self.players[pid as usize].riichi_stage
-                        {
-                            self.players[pid as usize].riichi_stage = true;
-                            if !self.skip_mjai_logging {
-                                let mut ev = serde_json::Map::new();
-                                ev.insert("type".to_string(), Value::String("reach".to_string()));
-                                ev.insert("actor".to_string(), Value::Number(pid.into()));
-                                self._push_mjai_event(Value::Object(ev));
+                        self.players[pid as usize].riichi_stage = true;
+                        if !self.skip_mjai_logging {
+                            let mut ev = serde_json::Map::new();
+                            ev.insert("type".to_string(), Value::String("reach".to_string()));
+                            ev.insert("actor".to_string(), Value::Number(pid.into()));
+                            self._push_mjai_event(Value::Object(ev));
+                        }
+                        if let Some(t) = act.tile {
+                            let mut tsumogiri = false;
+                            if let Some(dt) = self.drawn_tile
+                                && dt == t
+                            {
+                                tsumogiri = true;
                             }
-                            if let Some(t) = act.tile {
-                                let mut tsumogiri = false;
-                                if let Some(dt) = self.drawn_tile
-                                    && dt == t
-                                {
-                                    tsumogiri = true;
-                                }
-                                if let Some(idx) =
-                                    self.players[pid as usize].hand.iter().position(|&x| x == t)
-                                {
-                                    self.players[pid as usize].hand.remove(idx);
-                                    self.players[pid as usize].hand.sort();
-                                }
-                                self._resolve_discard(pid, t, tsumogiri);
+                            if let Some(idx) =
+                                self.players[pid as usize].hand.iter().position(|&x| x == t)
+                            {
+                                self.players[pid as usize].hand.remove(idx);
+                                self.players[pid as usize].hand.sort();
                             }
+                            self._resolve_discard(pid, t, tsumogiri);
                         }
                     }
                     ActionType::Ankan => {
@@ -846,16 +851,17 @@ impl GameState {
                         let kakan_meld_idx = self.players[pid as usize]
                             .melds
                             .iter()
-                            .position(|m| m.meld_type == MeldType::Pon && m.tiles[0] / 4 == tile / 4)
+                            .position(|m| {
+                                m.meld_type == MeldType::Pon && m.tiles[0] / 4 == tile / 4
+                            })
                             .unwrap_or(0) as u8;
-                        self.v2_round_events.push(
-                            crate::v2_features::events::RoundEvent::Kakan {
+                        self.v2_round_events
+                            .push(crate::v2_features::events::RoundEvent::Kakan {
                                 actor: pid,
                                 tile37: crate::v2_features::tile136_to_tile37(tile),
                                 turn_idx: self.v2_discard_seq,
                                 meld_idx: kakan_meld_idx,
-                            },
-                        );
+                            });
                         if !self.skip_mjai_logging {
                             let mut ev = serde_json::Map::new();
                             ev.insert("type".to_string(), Value::String("kakan".to_string()));
@@ -1789,15 +1795,14 @@ impl GameState {
                         .iter()
                         .any(|&x| crate::v2_features::is_red5_tile136(x));
                     let meld_idx = (self.players[p_idx].melds.len().saturating_sub(1)) as u8;
-                    self.v2_round_events.push(
-                        crate::v2_features::events::RoundEvent::Ankan {
+                    self.v2_round_events
+                        .push(crate::v2_features::events::RoundEvent::Ankan {
                             actor: pid,
                             tile37,
                             involves_red5,
                             turn_idx: self.v2_discard_seq,
                             meld_idx,
-                        },
-                    );
+                        });
                 }
                 ActionType::Daiminkan => {
                     if let Some((target, tile)) = self.last_discard {
@@ -1863,14 +1868,13 @@ impl GameState {
                 self.wall.pending_kan_dora_count += 1;
             }
 
-            self.v2_round_events.push(
-                crate::v2_features::events::RoundEvent::TsumoPrivate {
+            self.v2_round_events
+                .push(crate::v2_features::events::RoundEvent::TsumoPrivate {
                     actor: pid,
                     tile37: crate::v2_features::tile136_to_tile37(t),
                     is_rinshan: true,
                     turn_idx: self.v2_discard_seq,
-                },
-            );
+                });
 
             if !self.skip_mjai_logging {
                 // Rinshan tsumo logging should apply to Kakan as well
@@ -1892,12 +1896,11 @@ impl GameState {
             self.riichi_sticks += 1;
             self.players[p as usize].riichi_declared = true;
             self.players[p as usize].ippatsu_cycle = true;
-            self.v2_round_events.push(
-                crate::v2_features::events::RoundEvent::ReachAccepted {
+            self.v2_round_events
+                .push(crate::v2_features::events::RoundEvent::ReachAccepted {
                     actor: p,
                     turn_idx: self.v2_discard_seq,
-                },
-            );
+                });
             if !self.skip_mjai_logging {
                 let mut ev = serde_json::Map::new();
                 ev.insert(
@@ -1925,14 +1928,13 @@ impl GameState {
             self.needs_tsumo = false;
             self.phase = Phase::WaitAct;
             self.active_players = vec![pid];
-            self.v2_round_events.push(
-                crate::v2_features::events::RoundEvent::TsumoPrivate {
+            self.v2_round_events
+                .push(crate::v2_features::events::RoundEvent::TsumoPrivate {
                     actor: pid,
                     tile37: crate::v2_features::tile136_to_tile37(t),
                     is_rinshan: false,
                     turn_idx: self.v2_discard_seq,
-                },
-            );
+                });
 
             if !self.skip_mjai_logging {
                 let mut ev = serde_json::Map::new();
@@ -2153,14 +2155,13 @@ impl GameState {
             self.players[self.oya as usize].hand.push(t);
             self.drawn_tile = Some(t);
             self.needs_tsumo = false;
-            self.v2_round_events.push(
-                crate::v2_features::events::RoundEvent::TsumoPrivate {
+            self.v2_round_events
+                .push(crate::v2_features::events::RoundEvent::TsumoPrivate {
                     actor: self.oya,
                     tile37: crate::v2_features::tile136_to_tile37(t),
                     is_rinshan: false,
                     turn_idx: self.v2_discard_seq,
-                },
-            );
+                });
 
             if !self.skip_mjai_logging {
                 let mut ev = serde_json::Map::new();
@@ -2605,8 +2606,8 @@ impl GameState {
 impl GameState {
     pub(crate) fn v2_init_round_tracking(&mut self, dora0_tile136: u8, start_scores: [i32; NP]) {
         let dora0_t37 = crate::v2_features::tile136_to_tile37(dora0_tile136);
-        self.v2_round_events = crate::v2_features::events::RoundEventLog::new(dora0_t37)
-            .unwrap_or_default();
+        self.v2_round_events =
+            crate::v2_features::events::RoundEventLog::new(dora0_t37).unwrap_or_default();
         self.v2_round_start_scores = start_scores;
         self.v2_round_won = [false; NP];
         self.v2_round_dealt_in = [false; NP];
@@ -2617,7 +2618,10 @@ impl GameState {
         self.v2_replay_has_deltas = false;
     }
 
-    pub(crate) fn v2_record_round_end_if_needed(&mut self, fallback_next_scores: Option<[i32; NP]>) {
+    pub(crate) fn v2_record_round_end_if_needed(
+        &mut self,
+        fallback_next_scores: Option<[i32; NP]>,
+    ) {
         if self.v2_round_settled {
             return;
         }

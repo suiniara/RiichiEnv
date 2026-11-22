@@ -14,9 +14,21 @@ mod unit_tests {
 
         let mut state = GameState::new(0, true, Some(17), 0, GameRule::default());
         state._deal_next();
-        let hands = state.players.iter().map(|player| player.hand.clone()).collect::<Vec<_>>();
-        let rivers = state.players.iter().map(|player| player.discards.clone()).collect::<Vec<_>>();
-        let melds = state.players.iter().map(|player| player.melds.clone()).collect::<Vec<_>>();
+        let hands = state
+            .players
+            .iter()
+            .map(|player| player.hand.clone())
+            .collect::<Vec<_>>();
+        let rivers = state
+            .players
+            .iter()
+            .map(|player| player.discards.clone())
+            .collect::<Vec<_>>();
+        let melds = state
+            .players
+            .iter()
+            .map(|player| player.melds.clone())
+            .collect::<Vec<_>>();
         let indicators = state.wall.dora_indicators.clone();
         let wall_len = state.wall.tiles.len();
         let drawable_count = state.wall.drawable_count;
@@ -35,9 +47,30 @@ mod unit_tests {
         assert_eq!(state.wall.drawable_count, drawable_count);
         assert_eq!(state.wall.rinshan_draw_count, rinshan_count);
         assert_eq!(state.wall.dora_indicators, indicators);
-        assert_eq!(state.players.iter().map(|player| player.hand.clone()).collect::<Vec<_>>(), hands);
-        assert_eq!(state.players.iter().map(|player| player.discards.clone()).collect::<Vec<_>>(), rivers);
-        assert_eq!(state.players.iter().map(|player| player.melds.clone()).collect::<Vec<_>>(), melds);
+        assert_eq!(
+            state
+                .players
+                .iter()
+                .map(|player| player.hand.clone())
+                .collect::<Vec<_>>(),
+            hands
+        );
+        assert_eq!(
+            state
+                .players
+                .iter()
+                .map(|player| player.discards.clone())
+                .collect::<Vec<_>>(),
+            rivers
+        );
+        assert_eq!(
+            state
+                .players
+                .iter()
+                .map(|player| player.melds.clone())
+                .collect::<Vec<_>>(),
+            melds
+        );
 
         for (index, indicator) in indicators.iter().enumerate() {
             let position = (4 + 2 * index).saturating_sub(rinshan_count as usize);
@@ -66,7 +99,7 @@ mod unit_tests {
         use crate::state::GameState;
 
         let mut state = GameState::new(0, true, Some(17), 0, GameRule::default_mjsoul());
-        let events = vec![
+        let events = [
             MjaiEvent::StartGame {
                 id: None,
                 names: None,
@@ -80,26 +113,22 @@ mod unit_tests {
                 dora_marker: "1m".into(),
                 tehais: vec![
                     [
-                        "1m", "1m", "2m", "3m", "4m", "5mr", "5m", "6m", "7m", "8m", "9m", "E",
-                        "E",
+                        "1m", "1m", "2m", "3m", "4m", "5mr", "5m", "6m", "7m", "8m", "9m", "E", "E",
                     ]
                     .map(String::from)
                     .to_vec(),
                     [
-                        "1p", "1p", "2p", "3p", "4p", "5pr", "5p", "6p", "7p", "8p", "9p", "P",
-                        "P",
+                        "1p", "1p", "2p", "3p", "4p", "5pr", "5p", "6p", "7p", "8p", "9p", "P", "P",
                     ]
                     .map(String::from)
                     .to_vec(),
                     [
-                        "1s", "1s", "2s", "3s", "4s", "5sr", "5s", "6s", "7s", "8s", "9s", "F",
-                        "F",
+                        "1s", "1s", "2s", "3s", "4s", "5sr", "5s", "6s", "7s", "8s", "9s", "F", "F",
                     ]
                     .map(String::from)
                     .to_vec(),
                     [
-                        "2m", "2m", "3m", "3m", "4m", "4m", "5m", "6m", "6m", "7m", "8m", "C",
-                        "C",
+                        "2m", "2m", "3m", "3m", "4m", "4m", "5m", "6m", "6m", "7m", "8m", "C", "C",
                     ]
                     .map(String::from)
                     .to_vec(),
@@ -254,7 +283,9 @@ mod unit_tests {
         ok_state.drawn_tile = Some(3);
         let ok_actions = ok_state._get_legal_actions_internal(0);
         assert!(
-            ok_actions.iter().any(|a| a.action_type == ActionType::Ankan),
+            ok_actions
+                .iter()
+                .any(|a| a.action_type == ActionType::Ankan),
             "Post-riichi Ankan of isolated 1m triplet should remain legal"
         );
     }
@@ -790,7 +821,9 @@ mod unit_tests {
             state.wall.dora_indicators[0]
         );
         assert!(
-            !state.players[0].hand.contains(&state.wall.dora_indicators[0]),
+            !state.players[0]
+                .hand
+                .contains(&state.wall.dora_indicators[0]),
             "dora_marker should be physically distinct from tiles held in hand"
         );
 
@@ -831,7 +864,9 @@ mod unit_tests {
             state.wall.dora_indicators[1]
         );
         assert!(
-            !state.players[0].hand.contains(&state.wall.dora_indicators[1]),
+            !state.players[0]
+                .hand
+                .contains(&state.wall.dora_indicators[1]),
             "dora F should be physically distinct from tiles held in hand"
         );
     }

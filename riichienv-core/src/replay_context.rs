@@ -329,15 +329,14 @@ impl GameState {
                     called_tile: None,
                 });
                 let meld_idx = (self.players[actor as usize].melds.len().saturating_sub(1)) as u8;
-                self.v2_round_events.push(
-                    crate::v2_features::events::RoundEvent::Ankan {
+                self.v2_round_events
+                    .push(crate::v2_features::events::RoundEvent::Ankan {
                         actor,
                         tile37,
                         involves_red5,
                         turn_idx: self.v2_discard_seq,
                         meld_idx,
-                    },
-                );
+                    });
             }
         }
         for (seat, actions) in window.responses {
@@ -376,7 +375,12 @@ impl GameState {
         base
     }
 
-    pub(crate) fn take_replay_hand_tile(&mut self, actor: usize, mjai: &str, tsumogiri: bool) -> u8 {
+    pub(crate) fn take_replay_hand_tile(
+        &mut self,
+        actor: usize,
+        mjai: &str,
+        tsumogiri: bool,
+    ) -> u8 {
         let Some(target) = mjai_to_tid(mjai) else {
             return 0;
         };
@@ -480,7 +484,11 @@ impl GameState {
         }
     }
 
-    fn peek_replay_hand_tiles(&mut self, actor: usize, mjai_tiles: &[String]) -> Result<Vec<u8>, String> {
+    fn peek_replay_hand_tiles(
+        &mut self,
+        actor: usize,
+        mjai_tiles: &[String],
+    ) -> Result<Vec<u8>, String> {
         let hand = self.players[actor].hand.clone();
         let mut used = vec![false; hand.len()];
         let mut resolved = Vec::with_capacity(mjai_tiles.len());
@@ -673,7 +681,8 @@ impl GameState {
                         )
                     }
                     MjaiEvent::Kakan { pai, .. } => {
-                        let tiles = self.peek_replay_hand_tiles(*actor, std::slice::from_ref(pai))?;
+                        let tiles =
+                            self.peek_replay_hand_tiles(*actor, std::slice::from_ref(pai))?;
                         Action::new(
                             ActionType::Kakan,
                             tiles.first().copied(),

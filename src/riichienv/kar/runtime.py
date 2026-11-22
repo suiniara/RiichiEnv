@@ -152,8 +152,7 @@ class RuntimePolicy:
         ):
             reason = "candidate_action_branch_supervision_unavailable"
         elif (
-            self._branch_summary is None
-            or self._branch_summary["candidate_action_conditional_status"] != "passed"
+            self._branch_summary is None or self._branch_summary["candidate_action_conditional_status"] != "passed"
         ) and not (artifact.diagnostic_fixture and self.allow_diagnostic_calibration):
             reason = "candidate_action_conditional_calibration_unavailable"
         elif self.options.mode == "certified" and bounds is None:

@@ -49,7 +49,9 @@ class EventSupport:
     def candidate_supported(self, action_ids: Sequence[int]) -> bool:
         ids = tuple(action_ids)
         return bool(ids) and all(
-            type(action) is int and 0 <= action < 148 and self.candidate_action_source_counts[action] >= CANDIDATE_ACTION_SUPPORT_MIN_SOURCES
+            type(action) is int
+            and 0 <= action < 148
+            and self.candidate_action_source_counts[action] >= CANDIDATE_ACTION_SUPPORT_MIN_SOURCES
             for action in ids
         )
 

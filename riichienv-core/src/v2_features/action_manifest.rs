@@ -14,8 +14,8 @@ use crate::observation::Observation;
 use crate::types::MeldType;
 
 use super::{
-    ACTION_COUNT, MAX_CANDIDATES, NULL_SOURCE_IDX, NULL_TILE_IDX, is_red5_tile37,
-    tile136_to_tile37, tile37_to_base34,
+    ACTION_COUNT, MAX_CANDIDATES, NULL_SOURCE_IDX, NULL_TILE_IDX, is_red5_tile37, tile37_to_base34,
+    tile136_to_tile37,
 };
 
 #[repr(u8)]
@@ -342,7 +342,9 @@ pub fn manifest() -> &'static [ActionManifestEntry] {
 pub fn entry(global_id: u16) -> Result<&'static ActionManifestEntry, String> {
     let table = manifest();
     if usize::from(global_id) >= ACTION_COUNT {
-        return Err(format!("global_id {global_id} out of range [0, {ACTION_COUNT})"));
+        return Err(format!(
+            "global_id {global_id} out of range [0, {ACTION_COUNT})"
+        ));
     }
     Ok(&table[usize::from(global_id)])
 }
@@ -376,7 +378,9 @@ pub fn lookup_chi_id(claimed_tile37: u8, c0_tile37: u8, c1_tile37: u8) -> Result
     };
     manifest()[222..312]
         .iter()
-        .find(|e| e.tile37 == claimed_tile37 && e.consumed0_tile37 == lo && e.consumed1_tile37 == hi)
+        .find(|e| {
+            e.tile37 == claimed_tile37 && e.consumed0_tile37 == lo && e.consumed1_tile37 == hi
+        })
         .map(|e| e.global_id)
         .ok_or_else(|| format!("unknown CHI ({claimed_tile37}, [{lo}, {hi}])"))
 }
@@ -522,7 +526,8 @@ pub fn resolve_legal_candidates(
         let dt37 = tile136_to_tile37(dt);
         legal.iter().any(|a| {
             a.action_type == ActionType::Discard
-                && a.tile.is_some_and(|t| t != dt && tile136_to_tile37(t) == dt37)
+                && a.tile
+                    .is_some_and(|t| t != dt && tile136_to_tile37(t) == dt37)
         })
     });
 
@@ -682,16 +687,14 @@ pub fn resolve_legal_candidates(
 
     // Expand Riichi + Discard pairs.
     if let Some(ra) = riichi_action {
-        let has_riichi_drawn = drawn_tile.is_some_and(|dt| {
-            riichi_discards
-                .iter()
-                .any(|a| a.tile == Some(dt))
-        });
+        let has_riichi_drawn =
+            drawn_tile.is_some_and(|dt| riichi_discards.iter().any(|a| a.tile == Some(dt)));
         let has_riichi_other = drawn_tile.is_some_and(|dt| {
             let dt37 = tile136_to_tile37(dt);
-            riichi_discards
-                .iter()
-                .any(|a| a.tile.is_some_and(|t| t != dt && tile136_to_tile37(t) == dt37))
+            riichi_discards.iter().any(|a| {
+                a.tile
+                    .is_some_and(|t| t != dt && tile136_to_tile37(t) == dt37)
+            })
         });
 
         for d_act in &riichi_discards {

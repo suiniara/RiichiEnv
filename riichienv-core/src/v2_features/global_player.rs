@@ -81,7 +81,11 @@ pub fn encode_global_player(
     global[13] = (obs.dora_indicators.len() as f32 / 5.0).min(1.0);
 
     // [14]: is_first_uninterrupted_turn
-    global[14] = if ctx.is_first_uninterrupted_turn { 1.0 } else { 0.0 };
+    global[14] = if ctx.is_first_uninterrupted_turn {
+        1.0
+    } else {
+        0.0
+    };
 
     // [15..18]: decision phase one-hot
     global[15 + ctx.phase as usize] = 1.0;

@@ -136,12 +136,12 @@ def _finish_response(
         counts.observe(window.phase, closure, status)
 
 
-def replay_game(
+def replay_game(  # noqa: PLR0915
     game: Any,
     *,
     on_decision: Callable[[ReplayDecision], None] | None = None,
     on_opportunity: Callable[[Any, ReplayOpportunity, str, int], None] | None = None,
-) -> dict[str, Any]:  # noqa: PLR0915
+) -> dict[str, Any]:
     env = MJSOUL_RULESET.create_env(seed=0)
     ledgers = [ObserverLedger(seat, (0, 1, 2, 3)) for seat in range(4)]
     own: ReplayOpportunity | None = None

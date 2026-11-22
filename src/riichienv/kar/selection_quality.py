@@ -235,9 +235,7 @@ def validate_finite_tau_selection(
         or games != expected_manifest["game_ids"]
         or selection.get("scenario_manifest") != expected_manifest
         or selection.get("selection_partition") != "cal_fit"
-        or any(
-            game_split(game, main_split_salt) != "validation" or not calibration_is_fit(game) for game in games
-        )
+        or any(game_split(game, main_split_salt) != "validation" or not calibration_is_fit(game) for game in games)
     ):
         raise ValueError("Validation gain requires the complete registered cal_fit scenario manifest")
     grid = selection.get("grid")

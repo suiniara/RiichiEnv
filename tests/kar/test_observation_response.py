@@ -248,6 +248,7 @@ def test_nagashi_pending_kakan_preserves_the_existing_pon_not_a_committed_kan():
     view = ledger(
         round_events()
         + [
+            {"type": "dahai", "actor": 2, "pai": "1s", "tsumogiri": False},
             {"type": "dahai", "actor": 3, "pai": "5s", "tsumogiri": False},
             {"type": "dahai", "actor": 1, "pai": "9p", "tsumogiri": False},
             {"type": "pon", "actor": 2, "target": 1, "pai": "9p", "consumed": ["9p", "9p"]},

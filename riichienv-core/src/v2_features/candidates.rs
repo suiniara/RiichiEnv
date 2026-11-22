@@ -164,26 +164,27 @@ pub fn encode_candidates(
         .sum();
 
     // Current hand baseline for 3k+1 (response phases) or 3k+2 (OwnAct).
-    let (cur_shanten_3k1, cur_ukeire_3k1, cur_tenpai_3k1, cur_furiten_3k1) =
-        if hand_u8.len() % 3 == 1 {
-            let (s, u, _) = visible.shanten_and_visible_ukeire(&visible.self_hand_base34);
-            let eval = HandEvaluator::new(hand_u8.clone(), obs.melds[pid].clone());
-            let waits = eval.get_waits_u8_with_rule(&rule_contract.rule);
-            let tenpai = !waits.is_empty();
-            let u_exact = if tenpai {
-                waits
-                    .iter()
-                    .map(|&w| u32::from(visible.unseen_base34[w as usize]))
-                    .sum()
-            } else {
-                u
-            };
-            let is_fur = tenpai && furiten.is_post_discard_furiten(&waits, &self_discarded_ever, None);
-            (s, u_exact, tenpai, is_fur)
+    let (cur_shanten_3k1, cur_ukeire_3k1, cur_tenpai_3k1, cur_furiten_3k1) = if hand_u8.len() % 3
+        == 1
+    {
+        let (s, u, _) = visible.shanten_and_visible_ukeire(&visible.self_hand_base34);
+        let eval = HandEvaluator::new(hand_u8.clone(), obs.melds[pid].clone());
+        let waits = eval.get_waits_u8_with_rule(&rule_contract.rule);
+        let tenpai = !waits.is_empty();
+        let u_exact = if tenpai {
+            waits
+                .iter()
+                .map(|&w| u32::from(visible.unseen_base34[w as usize]))
+                .sum()
         } else {
-            let s = crate::shanten::calculate_shanten(&obs.hands[pid]) as i8;
-            (s, 0, s == 0, furiten.any())
+            u
         };
+        let is_fur = tenpai && furiten.is_post_discard_furiten(&waits, &self_discarded_ever, None);
+        (s, u_exact, tenpai, is_fur)
+    } else {
+        let s = crate::shanten::calculate_shanten(&obs.hands[pid]) as i8;
+        (s, 0, s == 0, furiten.any())
+    };
 
     // Precompute best discard shanten & ukeire across all legal DISCARD candidates in OwnAct.
     let mut discard_stats: [Option<(i8, u32, bool, bool)>; TILE_MAX] = [None; TILE_MAX];
@@ -197,7 +198,7 @@ pub fn encode_candidates(
                 if b < TILE_MAX && discard_stats[b].is_none() && visible.self_hand_base34[b] > 0 {
                     let mut next_counts = visible.self_hand_base34;
                     next_counts[b] -= 1;
-                    let (s, mut u, _) = visible.shanten_and_visible_ukeire(&next_counts);
+                    let (mut s, mut u, _) = visible.shanten_and_visible_ukeire(&next_counts);
                     let mut tenpai = false;
                     let mut is_fur = false;
                     if s == 0 {
@@ -218,6 +219,10 @@ pub fn encode_candidates(
                                 &self_discarded_ever,
                                 Some(b as u8),
                             );
+                        } else {
+                            // Formal-tenpai excluded (e.g. MJS 5th-copy rule): not tenpai, 0 valid waits.
+                            s = 1;
+                            u = 0;
                         }
                     }
                     if s < min_discard_shanten {
@@ -246,8 +251,8 @@ pub fn encode_candidates(
                     .last()
                     .and_then(|a| a.tile)
                     .unwrap_or((b * 4) as u8);
-                let dropped_dora = u32::from(dora_counts[b])
-                    + u32::from(is_red5_tile136(discard_t136));
+                let dropped_dora =
+                    u32::from(dora_counts[b]) + u32::from(is_red5_tile136(discard_t136));
                 let post_dora = cur_known_dora.saturating_sub(dropped_dora);
 
                 if let Some((s, u, tenpai, is_fur)) = discard_stats[b] {
@@ -316,6 +321,7 @@ pub fn encode_candidates(
                     let mut after_d = post_counts;
                     after_d[b] -= 1;
                     let (s, mut u, _) = visible.shanten_and_visible_ukeire(&after_d);
+                    let mut s = s;
                     let mut is_fur = false;
                     if s == 0 {
                         let mut rem = post_hand.clone();
@@ -329,15 +335,16 @@ pub fn encode_candidates(
                                 .iter()
                                 .map(|&w| u32::from(visible.unseen_base34[w as usize]))
                                 .sum();
-                            // Temporary furiten carries forward across CHI/PON!
+                            // Post-discard furiten clears temporary furiten and recomputes W(h' \ b) ∩ (R_self ∪ {b}).
                             is_fur = furiten.is_post_discard_furiten(
                                 &waits,
                                 &self_discarded_ever,
                                 Some(b as u8),
                             );
                         } else {
-                            // Formal-tenpai rejected (e.g. MJS 5th-copy exclusion)
-                            continue;
+                            // Formal-tenpai rejected (e.g. MJS 5th-copy exclusion): not a formal tenpai exit.
+                            s = 1;
+                            u = 0;
                         }
                     }
                     if s < best_s {
@@ -371,7 +378,9 @@ pub fn encode_candidates(
                 // Contract v2.4 P1-3: never fabricate post-rinshan ukeire; explicitly flag Chankan risk.
                 let chankan_possible = match cand.entry.kind {
                     ManifestActionKind::Kakan => true,
-                    ManifestActionKind::Ankan => rule_contract.rule.allows_ron_on_ankan_for_kokushi_musou,
+                    ManifestActionKind::Ankan => {
+                        rule_contract.rule.allows_ron_on_ankan_for_kokushi_musou
+                    }
                     ManifestActionKind::Daiminkan => false,
                     _ => false,
                 };
@@ -432,13 +441,8 @@ pub fn encode_candidates(
                 let dora_u8: Vec<u8> = obs.dora_indicators.iter().map(|&x| x as u8).collect();
                 let eval = HandEvaluator::new(hand_u8.clone(), obs.melds[pid].clone());
                 // Strictly empty uradora (zero leakage) + rule-aware evaluation!
-                let win_res = eval.calc_with_rule(
-                    win_tile,
-                    &dora_u8,
-                    &[],
-                    Some(cond),
-                    &rule_contract.rule,
-                );
+                let win_res =
+                    eval.calc_with_rule(win_tile, &dora_u8, &[], Some(cond), &rule_contract.rule);
 
                 // Contract v2.4 P1-4: Unilateral single-win settlement (honba + full kyoutaku + public Pao)
                 let mut post_scores = obs.scores;
@@ -446,10 +450,15 @@ pub fn encode_candidates(
                 let honba_total = i32::from(obs.honba) * 300;
                 let is_oya = pid == obs.oya as usize;
 
+                let pao_seat = if win_res.yakuman {
+                    win_ctx.pao_payer
+                } else {
+                    None
+                };
                 let gain: i32 = if is_tsumo {
                     let tsumo_oya = win_res.tsumo_agari_oya as i32;
                     let tsumo_ko = win_res.tsumo_agari_ko as i32;
-                    if let Some(pao_seat) = win_ctx.pao_payer {
+                    if let Some(pao_seat) = pao_seat {
                         // Public Pao tsumo: liable payer pays full amount + honba
                         let base_pay = if is_oya {
                             tsumo_ko * 3
@@ -482,7 +491,7 @@ pub fn encode_candidates(
                 } else {
                     let loser = (pid + cand.entry.source_rel as usize) % 4;
                     let base_pay = win_res.ron_agari as i32;
-                    if let Some(pao_seat) = win_ctx.pao_payer {
+                    if let Some(pao_seat) = pao_seat {
                         if pao_seat as usize == loser {
                             let total = base_pay + honba_total;
                             post_scores[loser] -= total;

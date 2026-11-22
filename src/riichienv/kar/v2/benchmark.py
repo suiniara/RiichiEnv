@@ -8,6 +8,7 @@ Measures real numbers on actual hardware (zero theoretical guesses):
 
 from __future__ import annotations
 
+import argparse
 import json
 import time
 from typing import Any
@@ -278,9 +279,7 @@ def _bench_critic(
     return {
         "params_total": count_params(critic),
         "train_samples_per_sec": batch_size / train_s,
-        "peak_vram_mb": (
-            torch.cuda.max_memory_allocated() / (1024 * 1024) if device.type == "cuda" else 0.0
-        ),
+        "peak_vram_mb": (torch.cuda.max_memory_allocated() / (1024 * 1024) if device.type == "cuda" else 0.0),
     }
 
 
@@ -303,12 +302,9 @@ def benchmark_models(
         "C2_v2_large": V2ModelConfig.v2_large(),
     }
     models_out: dict[str, Any] = {
-        name: _bench_actor(cfg, batch, device, amp_dtype, warmup, iters)
-        for name, cfg in presets.items()
+        name: _bench_actor(cfg, batch, device, amp_dtype, warmup, iters) for name, cfg in presets.items()
     }
-    models_out["OracleCriticV2_independent"] = _bench_critic(
-        batch, device, amp_dtype, warmup, iters
-    )
+    models_out["OracleCriticV2_independent"] = _bench_critic(batch, device, amp_dtype, warmup, iters)
     return {
         "device": str(device),
         "device_name": torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU",
@@ -319,9 +315,22 @@ def benchmark_models(
     }
 
 
-def main() -> None:
-    rust_bench = benchmark_rust_encoding(num_steps=2000)
-    model_bench = benchmark_models(batch_size=64, seq_len=64, warmup=3, iters=10)
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="KAR V2 Rust encoding and PyTorch throughput benchmark.")
+    parser.add_argument("--rust-steps", type=int, default=2000)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--seq-len", type=int, default=64)
+    parser.add_argument("--warmup", type=int, default=3)
+    parser.add_argument("--iters", type=int, default=10)
+    args = parser.parse_args(argv)
+
+    rust_bench = benchmark_rust_encoding(num_steps=args.rust_steps)
+    model_bench = benchmark_models(
+        batch_size=args.batch_size,
+        seq_len=args.seq_len,
+        warmup=args.warmup,
+        iters=args.iters,
+    )
     print(json.dumps({"rust_encoding": rust_bench, "pytorch_models": model_bench}, indent=2))
 
 

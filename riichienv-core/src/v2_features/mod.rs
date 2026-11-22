@@ -274,14 +274,8 @@ pub fn seat_rank_and_gaps(
         if ord != std::cmp::Ordering::Equal {
             ord
         } else {
-            let ia = initial_seat_order
-                .iter()
-                .position(|&x| x == a)
-                .unwrap_or(0);
-            let ib = initial_seat_order
-                .iter()
-                .position(|&x| x == b)
-                .unwrap_or(0);
+            let ia = initial_seat_order.iter().position(|&x| x == a).unwrap_or(0);
+            let ib = initial_seat_order.iter().position(|&x| x == b).unwrap_or(0);
             ia.cmp(&ib)
         }
     });

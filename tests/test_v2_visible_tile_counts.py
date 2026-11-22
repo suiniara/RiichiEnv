@@ -42,9 +42,7 @@ def decode_visible_counts(raw):
 
 def test_visible_tile_counts_python_binary_layout_and_conservation():
     obs = make_observation()
-    seen, visible, own, unseen, red_unseen = decode_visible_counts(
-        obs.encode_visible_tile_counts()
-    )
+    seen, visible, own, unseen, red_unseen = decode_visible_counts(obs.encode_visible_tile_counts())
 
     assert seen[0] == 1 and seen[1] == 1 and seen[16] == 1
     assert own[0] == 2 and own[4] == 1
