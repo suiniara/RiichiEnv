@@ -7,6 +7,7 @@ torch = pytest.importorskip("torch")
 from riichienv.kar.calibration import (
     CalibrationArtifact,
     CalibrationRow,
+    CandidateBranchCalibrationRow,
     calibrate_static_rows,
     calibrated_policy_identity,
     calibration_split,
@@ -66,6 +67,19 @@ def policy_fixture():
             value_valid=True,
         )
 
+    branch_check = [
+        CandidateBranchCalibrationRow(
+            split.check_games[0],
+            split.check_games[0] + "/decision",
+            4,
+            0,
+            (8.0,) + (0.0,) * 20,
+            ((8.0, 0.0, 0.0, 0.0),) * 21,
+            (True,) * 21,
+            0,
+            0,
+        )
+    ]
     artifact = calibrate_static_rows(
         [row(split.fit_games[0])],
         [row(split.check_games[0])],
@@ -76,6 +90,7 @@ def policy_fixture():
         source_reference="synthetic production-shaped logits,not actual model calibration",
         quality_policy=quality,
         inference_device_type="cpu",
+        candidate_branch_check_rows=branch_check,
     )
     identity = calibrated_policy_identity(binding, support, artifact)
     outcomes = {float("inf"): {game: -0.5 for game in split.fit_games}, 0.5: {game: 0.5 for game in split.fit_games}}

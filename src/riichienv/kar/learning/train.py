@@ -82,7 +82,7 @@ def create_scheduler(optimizer: torch.optim.Optimizer, total_updates: int) -> to
     def multiplier(step: int) -> float:
         if step < warmup:
             return (step + 1) / warmup
-        progress = min(1.0, (step - warmup) / max(1, total_updates - warmup))
+        progress = min(1.0, (step - warmup + 1) / max(1, total_updates - warmup))
         return 0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress))
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, multiplier)

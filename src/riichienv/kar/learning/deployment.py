@@ -19,7 +19,7 @@ from ..selection_quality import TAU_SELECTION_VERSION, validate_finite_tau_selec
 from ..support import EventSupport
 from ..versioning import artifact_contract, validate_artifact_contract
 from .config import ModelConfig
-from .inference import FrozenModelPredictor, model_weights_sha256
+from .inference import FrozenModelPredictor
 from .model import KARTransformer
 from .precision import FrozenBackendPrecision
 
@@ -75,6 +75,12 @@ def validate_frozen_policy(
         raise ValueError("Finite deployment requires at least one train-supported, quality-qualified response branch")
     if not calibration.diagnostic_fixture and support.candidate_branch_source_decisions <= 0:
         raise ValueError("Finite deployment requires completed candidate-action branch supervision")
+    if (
+        not calibration.diagnostic_fixture
+        and calibration.branch_quality_report.get("candidate_action_conditional_validation", {}).get("status")
+        != "passed"
+    ):
+        raise ValueError("Finite deployment requires passed held-out candidate-action conditional validation")
     expected = calibrated_policy_identity(
         binding, support, calibration, mode=options.mode, max_prior_amplification=options.max_prior_amplification
     )
@@ -84,7 +90,11 @@ def validate_frozen_policy(
         or selection.get("diagnostic_fixture") is not False
     ):
         raise ValueError("Missing production validation-policy selection")
-    validate_finite_tau_selection(selection, expected_game_ids=calibration.split.fit_games)
+    validate_finite_tau_selection(
+        selection,
+        expected_game_ids=calibration.split.fit_games,
+        main_split_salt=calibration.split.main_split_salt or "kar-riichienv-v1-games",
+    )
     unsigned = {key: value for key, value in selection.items() if key != "tau_selection_sha256"}
     if (
         selection.get("tau_selection_sha256") != content_hash(unsigned)
@@ -238,7 +248,8 @@ class FrozenRelease:
             inference_device_type=next(self.model.parameters()).device.type,
         )
         self.record = record
-        self.initial_weight_hash = model_weights_sha256(self.model)
+        self._probe_identity = probe._identity
+        self.initial_weight_hash = probe.binding.model_weights_sha256
 
     def policy(self, *, seed: int, baseline: bool = False) -> RuntimePolicy:
         options = (
@@ -250,6 +261,7 @@ class FrozenRelease:
             self.model,
             self.record["binding"]["train_manifest_sha256"],
             use_rule_features=self.record["use_rule_features"],
+            _verified_weights=(self._probe_identity, self.initial_weight_hash),
         )
         if predictor.binding.to_record() != self.record["binding"]:
             raise ValueError("A cached release model changed")

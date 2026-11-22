@@ -10,7 +10,7 @@ import torch
 from ..observation import PublicSnapshot
 from ..runtime_contracts import RuntimeBinding
 from ..schema import TOKEN_BYTE_SIZE
-from ..tokenize import TokenHistoryCache, TokenSequence, append_action, encode_prefix
+from ..tokenize import TokenHistoryCache, TokenSequence, encode_action_token, encode_prefix
 from .batch import collate_inputs, rule_feature_view
 from .config import frozen_inference_recipe_sha256
 from .model import KARTransformer, PrefixCache
@@ -31,7 +31,14 @@ def model_weights_sha256(model: KARTransformer) -> str:
 
 
 class FrozenModelPredictor:
-    def __init__(self, model: KARTransformer, train_manifest_sha256: str, *, use_rule_features: bool = True):
+    def __init__(
+        self,
+        model: KARTransformer,
+        train_manifest_sha256: str,
+        *,
+        use_rule_features: bool = True,
+        _verified_weights: tuple[Any, str] | None = None,
+    ):
         self.backend_precision = capture_frozen_backend_precision(next(model.parameters()).device.type)
         recipe = frozen_inference_recipe_sha256(
             model.config, use_rule_features=use_rule_features, backend_precision=self.backend_precision
@@ -43,15 +50,21 @@ class FrozenModelPredictor:
             raise ValueError("Frozen FP32 inference requires FP32 model parameters and floating buffers")
         self.model = model.eval()
         self.use_rule_features = use_rule_features
-        self.binding = RuntimeBinding.current(
-            model_weights_sha256(model), train_manifest_sha256, inference_recipe_sha256=recipe
-        )
         self._identity = self._frozen_identity()
+        weights_sha256 = (
+            _verified_weights[1]
+            if _verified_weights is not None and _verified_weights[0] == self._identity
+            else model_weights_sha256(model)
+        )
+        self.binding = RuntimeBinding.current(
+            weights_sha256, train_manifest_sha256, inference_recipe_sha256=recipe
+        )
         # Bounded by the four seats, with at most one active stream per seat.
         self._history_caches: dict[int, tuple[object, TokenHistoryCache]] = {}
         self._cache: PrefixCache | None = None
         self._prefix: TokenSequence | None = None
-        self._context: tuple[str, object | None, str, tuple[int, ...]] | None = None
+        self._snapshot: PublicSnapshot | None = None
+        self._context: tuple[str, object | None, tuple[int, ...]] | None = None
         self.prefix_calls = self.candidate_calls = self.candidates_scored = 0
 
     def _frozen_identity(self):
@@ -110,6 +123,49 @@ class FrozenModelPredictor:
         return torch.stack(logits)
 
     @torch.no_grad()
+    def score_candidate_branch_rows(
+        self,
+        source_row: Mapping[str, Any],
+        branch_rows: Sequence[Mapping[str, Any]],
+    ) -> dict[int, tuple[tuple[float, ...], tuple[tuple[float, ...], ...]]]:
+        """Score completed candidate-branch rows using deployed single-prefix arithmetic."""
+        self._unchanged()
+        self._cache = self._prefix = self._context = None
+        if not branch_rows:
+            return {}
+        cache = self._encode_policy_row(source_row)
+        self.prefix_calls += 1
+        seen: dict[int, Mapping[str, Any]] = {}
+        for branch in branch_rows:
+            action_id = int(branch["candidate_action_id"])
+            if action_id not in seen:
+                seen[action_id] = branch
+        ordered_actions = sorted(seen)
+        action_rows = [
+            {
+                "tokens": seen[action_id]["tokens"][-139:],
+                "candidates": source_row["candidates"],
+                "decide_index": 0,
+                "action_index": 0,
+                "decision_row_id": source_row["decision_row_id"],
+            }
+            for action_id in ordered_actions
+        ]
+        device = next(self.model.parameters()).device
+        batch = collate_inputs(action_rows).to(device)
+        with self.frozen_forward():
+            responses, ranks = self.model.score_actions(cache, batch)
+        self.candidate_calls += 1
+        self.candidates_scored += len(action_rows)
+        return {
+            action_id: (
+                tuple(float(v) for v in responses[index].cpu().tolist()),
+                tuple(tuple(float(v) for v in row) for row in ranks[index].cpu().tolist()),
+            )
+            for index, action_id in enumerate(ordered_actions)
+        }
+
+    @torch.no_grad()
     def policy(self, snapshot: PublicSnapshot, candidates: tuple[int, ...], context: str) -> Sequence[float]:
         self._unchanged()
         self._cache = self._prefix = self._context = None
@@ -135,8 +191,8 @@ class FrozenModelPredictor:
         }
         self._cache = self._encode_policy_row(row)
         self._prefix = prefix
-        snapshot_sha256 = hashlib.sha256(snapshot.to_bytes()).hexdigest()
-        self._context = (context, snapshot._history_session, snapshot_sha256, candidates)
+        self._snapshot = snapshot
+        self._context = (context, snapshot._history_session, candidates)
         self.prefix_calls += 1
         return self._cache.policy_logits[0].cpu().tolist()
 
@@ -145,8 +201,11 @@ class FrozenModelPredictor:
         self, snapshot: PublicSnapshot, candidates: tuple[int, ...], supported_discards: tuple[int, ...], context: str
     ) -> Mapping[int, tuple[Sequence[float], Sequence[Sequence[float]]]]:
         self._unchanged()
-        expected = (context, snapshot._history_session, hashlib.sha256(snapshot.to_bytes()).hexdigest(), candidates)
-        if self._context != expected or self._cache is None or self._prefix is None:
+        expected = (context, snapshot._history_session, candidates)
+        same_snapshot = snapshot is self._snapshot or (
+            self._snapshot is not None and snapshot.to_bytes() == self._snapshot.to_bytes()
+        )
+        if self._context != expected or not same_snapshot or self._cache is None or self._prefix is None:
             raise ValueError("Candidate scores cannot reuse another observer/decision prefix")
         if (
             not supported_discards
@@ -154,18 +213,16 @@ class FrozenModelPredictor:
             or any(action not in candidates or not 0 <= action < 148 for action in supported_discards)
         ):
             raise ValueError("Expected the full distinct gated discard set")
-        rows = []
-        for action in supported_discards:
-            conditional = append_action(self._prefix, action)
-            rows.append(
-                {
-                    "tokens": conditional.to_bytes()[-139:],
-                    "candidates": candidates,
-                    "decide_index": 0,
-                    "action_index": 0,
-                    "decision_row_id": context,
-                }
-            )
+        rows = [
+            {
+                "tokens": encode_action_token(self._prefix, action),
+                "candidates": candidates,
+                "decide_index": 0,
+                "action_index": 0,
+                "decision_row_id": context,
+            }
+            for action in supported_discards
+        ]
         device = next(self.model.parameters()).device
         batch = collate_inputs(rows).to(device)
         with self.frozen_forward():

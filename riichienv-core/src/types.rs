@@ -94,7 +94,7 @@ impl Wind {
 }
 
 #[cfg_attr(feature = "python", pyclass(from_py_object))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Meld {
     pub meld_type: MeldType,
     pub tiles: Vec<u8>,

@@ -73,18 +73,86 @@ def test_explicit_empirical_mode_scores_all_s_and_has_no_certificate(
     assert result.probabilities[min(ids)] > 1 / len(ids)
 
 
+def _production_calibration(calibration_fixture, binding, support, public_view, *, with_candidate_branches=False):
+    from riichienv.kar.calibration import (
+        CalibrationRow,
+        CandidateBranchCalibrationRow,
+        calibrate_static_rows,
+        calibration_split,
+    )
+    from riichienv.kar.contracts import game_split
+
+    base, _, _ = calibration_fixture
+    _, ids = public_view
+    val_games = [
+        f"runtime-prod-{index}"
+        for index in range(1000)
+        if game_split(f"runtime-prod-{index}", "kar-riichienv-v1-games") == "validation"
+    ][:20]
+    split = replace(
+        calibration_split(val_games),
+        validation_manifest_sha256="a" * 64,
+        main_split_salt="kar-riichienv-v1-games",
+    )
+
+    def row(game, event=0):
+        return CalibrationRow(
+            game,
+            game + f"/row{event}",
+            ids,
+            (0.0,) * 546,
+            ids[0],
+            response_logits=(0.0,) * 21,
+            rank_logits=((0.0,) * 4,) * 21,
+            response_allowed=(True,) * 21,
+            response_target=event,
+            response_valid=True,
+            rank_target=0,
+            value_valid=True,
+        )
+
+    branch_rows = (
+        [
+            CandidateBranchCalibrationRow(
+                split.check_games[0],
+                split.check_games[0] + "/row0",
+                ids[0],
+                0,
+                (0.0,) * 21,
+                ((0.0,) * 4,) * 21,
+                (True,) * 21,
+                0,
+                0,
+            )
+        ]
+        if with_candidate_branches
+        else []
+    )
+    return calibrate_static_rows(
+        [row(split.fit_games[0])],
+        [row(split.check_games[0], event) for event in range(21)],
+        split=split,
+        binding=binding,
+        support=support,
+        temperatures=(1.0,),
+        source_reference="synthetic production-shaped fixture",
+        diagnostic_fixture=False,
+        quality_policy=base.quality_policy,
+        inference_device_type="cpu",
+        candidate_branch_check_rows=branch_rows,
+    )
+
+
 def test_finite_policy_falls_back_when_candidate_actions_have_no_branch_supervision(
-    fixed_predictor, event_support, calibration_fixture, public_view
+    fixed_predictor, binding, event_support, calibration_fixture, public_view
 ):
-    artifact, _, _ = calibration_fixture
-    artifact = replace(artifact, diagnostic_fixture=False)
+    artifact = _production_calibration(calibration_fixture, binding, event_support, public_view)
     view, ids = public_view
     policy = RuntimePolicy(
         fixed_predictor,
         options=PolicyOptions("empirical_only", 0.5),
         support=event_support,
         calibration=artifact,
-        allow_diagnostic_calibration=True,
     )
     result = policy.decide(view, ids, "candidate-support-gap")
     assert result.evidence_status == "certificate_unavailable"
@@ -143,15 +211,40 @@ def test_foreign_model_visibility_gap_and_production_fixture_are_rejected(
 
 
 def test_production_event_calibration_alone_cannot_enable_candidate_value_reranking(
-    fixed_predictor, event_support, calibration_fixture, public_view
+    fixed_predictor, binding, event_support, calibration_fixture, public_view
 ):
-    artifact, _, _ = calibration_fixture
-    artifact = replace(artifact, diagnostic_fixture=False)
     supported = replace(event_support, candidate_branch_source_decisions=100, candidate_action_source_counts=(50,) * 148)
+    artifact = _production_calibration(calibration_fixture, binding, supported, public_view)
     view, ids = public_view
-    policy = RuntimePolicy(fixed_predictor, options=PolicyOptions("empirical_only", 0.5),
-        support=supported, calibration=artifact, allow_diagnostic_calibration=True)
+    policy = RuntimePolicy(
+        fixed_predictor,
+        options=PolicyOptions("empirical_only", 0.5),
+        support=supported,
+        calibration=artifact,
+    )
     result = policy.decide(view, ids, "candidate-calibration-gap")
     assert result.evidence_status == "certificate_unavailable"
     assert result.fallback_reason == "candidate_action_conditional_calibration_unavailable"
     assert fixed_predictor.value_calls == 0
+
+
+def test_production_candidate_branch_validation_enables_finite_tau_reranking(
+    fixed_predictor, binding, event_support, calibration_fixture, public_view
+):
+    supported = replace(event_support, candidate_branch_source_decisions=100, candidate_action_source_counts=(50,) * 148)
+    artifact = _production_calibration(
+        calibration_fixture, binding, supported, public_view, with_candidate_branches=True
+    )
+    assert artifact.branch_quality_report["candidate_action_conditional_validation"]["status"] == "passed"
+    view, ids = public_view
+    policy = RuntimePolicy(
+        fixed_predictor,
+        options=PolicyOptions("empirical_only", 0.5),
+        support=supported,
+        calibration=artifact,
+    )
+    result = policy.decide(view, ids, "candidate-calibration-passed")
+    assert result.evidence_status == "empirical_only"
+    assert result.fallback_reason is None
+    assert fixed_predictor.value_calls == 1
+    assert result.telemetry["candidate_forward_count"] == len([action for action in ids if action < 148])

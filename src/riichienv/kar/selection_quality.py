@@ -79,6 +79,47 @@ def cal_fit_scenario_manifest(
     return {**record, "scenario_manifest_sha256": content_hash(record)}
 
 
+def empirical_bernstein_gain_bound(
+    differences: Sequence[float],
+    candidates: int,
+    policy: TauSelectionPolicy,
+) -> dict[str, Any]:
+    """Finite-sample Maurer-Pontil (2009) empirical Bernstein one-sided lower bound.
+
+    For independent paired rank-utility differences in [-3, 3] (range R=6),
+    uses the empirical sample variance V_n instead of worst-case Hoeffding variance 9
+    while remaining 100% distribution-free and finite-sample valid.
+    """
+    n = len(differences)
+    if n < 2 or candidates < 1:
+        raise ValueError("Empirical Bernstein bound requires at least two paired differences and one candidate")
+    if any(
+        isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not -3.0 <= v <= 3.0
+        for v in differences
+    ):
+        raise ValueError("Paired differences must be finite values in [-3, 3]")
+    mean = math.fsum(differences) / n
+    sample_var = math.fsum((v - mean) ** 2 for v in differences) / (n - 1)
+    delta = (1.0 - policy.confidence) / candidates
+    log_term = math.log(2.0 / delta)
+    range_width = 6.0
+    radius = math.sqrt(2.0 * sample_var * log_term / n) + (7.0 * range_width * log_term) / (3.0 * (n - 1))
+    return {
+        "version": "paired_rank_empirical_bernstein_union_v1",
+        "difference_range": [-3.0, 3.0],
+        "independent_games": n,
+        "finite_candidates": candidates,
+        "confidence": policy.confidence,
+        "per_candidate_failure_probability": delta,
+        "mean": mean,
+        "sample_variance": sample_var,
+        "radius": radius,
+        "lower": max(-3.0, mean - radius),
+        "assumption": "independent_preregistered_scenario_blocks",
+        "scope": "expected_paired_utility_not_statewise_error",
+    }
+
+
 def _gain_bound(mean: float, count: int, candidates: int, policy: TauSelectionPolicy) -> dict[str, Any]:
     """Simultaneous one-sided bounds for the preregistered finite grid.
 
@@ -164,6 +205,7 @@ def validate_finite_tau_selection(
     selection: Mapping[str, Any],
     *,
     expected_game_ids: Sequence[str],
+    main_split_salt: str = "kar-riichienv-v1-games",
 ) -> TauSelectionPolicy:
     unsigned = {key: value for key, value in selection.items() if key != "tau_selection_sha256"}
     if (
@@ -194,7 +236,7 @@ def validate_finite_tau_selection(
         or selection.get("scenario_manifest") != expected_manifest
         or selection.get("selection_partition") != "cal_fit"
         or any(
-            game_split(game, "kar-riichienv-v1-games") != "validation" or not calibration_is_fit(game) for game in games
+            game_split(game, main_split_salt) != "validation" or not calibration_is_fit(game) for game in games
         )
     ):
         raise ValueError("Validation gain requires the complete registered cal_fit scenario manifest")

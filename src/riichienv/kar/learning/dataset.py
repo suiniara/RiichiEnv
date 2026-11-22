@@ -203,8 +203,8 @@ class DecisionDataset(Dataset[dict[str, Any]]):
         branch_rows = (
             self._db().execute(
                 "SELECT candidate_action_id,replicate,status,tokens,payload FROM branch_samples "
-                "WHERE source_decision_row_id=? ORDER BY candidate_action_id,replicate",
-                (row_id,),
+                "WHERE source_game_id=? AND source_decision_row_id=? ORDER BY candidate_action_id,replicate",
+                (row["game_id"], row_id),
             ).fetchall()
             if self.has_candidate_branches
             else []

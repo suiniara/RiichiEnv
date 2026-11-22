@@ -149,7 +149,7 @@ def test_frozen_job_failures_settle_last_work_without_any_model_execution(job, m
             fake = ValidationMetadata(
                 manifest={"manifest_sha256": "d" * 64, "games": [{"game_id": "v", "split": "validation"}]}
             )
-            monkeypatch.setattr(calibration_job, "DecisionDataset", lambda *args: fake)
+            monkeypatch.setattr(calibration_job, "DecisionDataset", lambda *args, **kwargs: fake)
             monkeypatch.setattr(
                 calibration_job, "calibration_job_plan", lambda *args, **kwargs: {"plan_sha256": digest}
             )

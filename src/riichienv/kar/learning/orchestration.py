@@ -295,12 +295,18 @@ def run_m2(
                 error = caught
         context.coordinate(error, "unique M2 model registration")
         target = output / "training"
-        if resume and (target / "run_manifest.json").exists():
+        resumed = None
+        resume_error = None
+        if context.primary and resume and (target / "run_manifest.json").exists():
             try:
-                return _read_run(target / "run_manifest.json", config, manifest["manifest_sha256"])
-            except (ValueError, KeyError, OSError):
+                resumed = _read_run(target / "run_manifest.json", config, manifest["manifest_sha256"])
+            except (ValueError, KeyError, OSError) as caught:
                 if not (target / "checkpoint.json").is_file():
-                    raise
+                    resume_error = caught
+        context.coordinate(resume_error, "M2 resume manifest inspection")
+        resumed = context.broadcast_from_primary(resumed)
+        if resumed is not None:
+            return resumed
         return train_production(
             dataset,
             target,

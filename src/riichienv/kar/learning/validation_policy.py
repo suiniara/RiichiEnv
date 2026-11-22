@@ -43,6 +43,15 @@ def validation_tau_plan(
         )
     if any(math.isfinite(tau) for tau in values) and subject.support.candidate_branch_source_decisions <= 0:
         raise ValueError("Finite tau selection requires completed candidate-action branch supervision; keep the prior")
+    if (
+        any(math.isfinite(tau) for tau in values)
+        and not subject.calibration.diagnostic_fixture
+        and subject.calibration.branch_quality_report.get("candidate_action_conditional_validation", {}).get("status")
+        != "passed"
+    ):
+        raise ValueError(
+            "Finite tau selection requires passed held-out candidate-action conditional validation; keep the prior"
+        )
     split = subject.calibration.split
     identity = calibrated_policy_identity(
         subject.calibration.binding,

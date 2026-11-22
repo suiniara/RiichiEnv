@@ -19,9 +19,10 @@ from riichienv.kar.versioning import game_count_contract
 
 
 class FullSyntheticDataset(SyntheticDataset):
-    def __init__(self, directory, split):
+    def __init__(self, directory, split, *, include_candidate_branches=False, **_kwargs):
         super().__init__()
         self.split = split
+        self.has_candidate_branches = bool(include_candidate_branches)
         self.indices = [(f"synthetic-row-{index}", 9) for index in range(3)]
         available = {"train": 3, "validation": 3, "test": 0}
         self.manifest.update(game_count_contract(available))

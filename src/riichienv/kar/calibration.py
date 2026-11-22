@@ -279,6 +279,87 @@ class CalibrationRow:
                 finite_vector(row, 4, "rank logits")
 
 
+@dataclass(frozen=True)
+class CandidateBranchCalibrationRow:
+    game_id: str
+    source_decision_row_id: str
+    candidate_action_id: int
+    replicate: int
+    response_logits: tuple[float, ...]
+    rank_logits: tuple[tuple[float, ...], ...]
+    response_allowed: tuple[bool, ...]
+    response_target: int
+    rank_target: int
+
+    def validate(self) -> None:
+        if (
+            not self.game_id
+            or not self.source_decision_row_id
+            or type(self.candidate_action_id) is not int
+            or not 0 <= self.candidate_action_id < 148
+            or type(self.replicate) is not int
+            or self.replicate < 0
+        ):
+            raise ValueError("Candidate branch calibration row requires valid source/action/replicate identity")
+        finite_vector(self.response_logits, 21, "candidate branch response logits")
+        if (
+            len(self.response_allowed) != 21
+            or any(type(value) is not bool for value in self.response_allowed)
+            or not any(self.response_allowed)
+        ):
+            raise ValueError("Invalid candidate branch public response mask")
+        if (
+            type(self.response_target) is not int
+            or not 0 <= self.response_target < 21
+            or not self.response_allowed[self.response_target]
+        ):
+            raise ValueError("Candidate branch response target is excluded by the public mask")
+        if len(self.rank_logits) != 21 or type(self.rank_target) is not int or not 0 <= self.rank_target < 4:
+            raise ValueError("Invalid candidate branch rank logits or target")
+        for row in self.rank_logits:
+            finite_vector(row, 4, "candidate branch rank logits")
+
+
+def _candidate_branch_metrics(
+    rows: Sequence[CandidateBranchCalibrationRow],
+    temperatures: tuple[float, float, float],
+) -> dict[str, Any]:
+    response_table = ClassificationMetrics(21)
+    rank_table = ClassificationMetrics(4)
+    games: set[str] = set()
+    source_decisions: set[str] = set()
+    pairs: set[tuple[str, int]] = set()
+    for row in rows:
+        row.validate()
+        games.add(row.game_id)
+        source_decisions.add(row.source_decision_row_id)
+        pairs.add((row.source_decision_row_id, row.candidate_action_id))
+        resp_logs = masked_log_softmax(row.response_logits, row.response_allowed, temperatures[1])
+        resp_probs = [math.exp(value) for value in resp_logs]
+        response_table.add(resp_probs, row.response_target, log_probability=resp_logs[row.response_target])
+        rank_logs = masked_log_softmax(row.rank_logits[row.response_target], (True,) * 4, temperatures[2])
+        rank_probs = [math.exp(value) for value in rank_logs]
+        rank_table.add(rank_probs, row.rank_target, log_probability=rank_logs[row.rank_target])
+    return {
+        "observations": len(rows),
+        "distinct_source_decisions": len(source_decisions),
+        "distinct_source_decision_and_candidate_action": len(pairs),
+        "independent_games": len(games),
+        "response": {
+            "count": response_table.count,
+            "nll": response_table.nll / response_table.count if response_table.count else None,
+            "brier": response_table.brier / response_table.count if response_table.count else None,
+            "ece": response_table.confidence.report()["ece"],
+        },
+        "rank": {
+            "count": rank_table.count,
+            "nll": rank_table.nll / rank_table.count if rank_table.count else None,
+            "brier": rank_table.brier / rank_table.count if rank_table.count else None,
+            "ece": rank_table.confidence.report()["ece"],
+        },
+    }
+
+
 def _observed_log_probabilities(
     row: CalibrationRow, head: str, temperature: float
 ) -> tuple[tuple[float, ...], int] | None:
@@ -316,15 +397,57 @@ def temperature_nll(rows: Sequence[CalibrationRow], head: str, temperature: floa
     return {"count": len(losses), "nll": math.fsum(losses) / len(losses) if losses else None}
 
 
-def select_static_temperature(
-    rows: Sequence[CalibrationRow], head: str, temperatures: Sequence[float]
+def optimize_static_temperature(
+    rows: Sequence[CalibrationRow],
+    head: str,
+    *,
+    low: float = 0.05,
+    high: float = 10.0,
+    tol: float = 1e-4,
+    max_iter: int = 64,
 ) -> tuple[float, dict[str, float | int | None]]:
+    """Continuous 1D golden-section search in log-temperature space for convex NLL."""
+    if not (0.0 < low < high) or tol <= 0 or max_iter < 1:
+        raise ValueError("Invalid continuous temperature search bounds")
+    phi = (math.sqrt(5.0) - 1.0) / 2.0
+    a, b = math.log(low), math.log(high)
+    c = b - phi * (b - a)
+    d = a + phi * (b - a)
+    fc = temperature_nll(rows, head, math.exp(c))
+    if not fc["count"]:
+        raise ValueError("Cannot fit a temperature without valid observations")
+    fd = temperature_nll(rows, head, math.exp(d))
+    for _ in range(max_iter):
+        if b - a <= tol:
+            break
+        nll_c = fc["nll"]
+        nll_d = fd["nll"]
+        assert nll_c is not None and nll_d is not None
+        if float(nll_c) <= float(nll_d):
+            b, d, fd = d, c, fc
+            c = b - phi * (b - a)
+            fc = temperature_nll(rows, head, math.exp(c))
+        else:
+            a, c, fc = c, d, fd
+            d = a + phi * (b - a)
+            fd = temperature_nll(rows, head, math.exp(d))
+    best_t = math.exp((a + b) / 2.0)
+    return best_t, temperature_nll(rows, head, best_t)
+
+
+def select_static_temperature(
+    rows: Sequence[CalibrationRow], head: str, temperatures: Sequence[float] | str
+) -> tuple[float, dict[str, float | int | None]]:
+    if isinstance(temperatures, str):
+        if temperatures != "continuous":
+            raise ValueError("Unsupported temperature search strategy; use a fixed grid or 'continuous'")
+        return optimize_static_temperature(rows, head)
     if not temperatures or len(set(temperatures)) != len(temperatures):
         raise ValueError("Use a nonempty fixed temperature grid")
-    scored = [(value, temperature_nll(rows, head, value)) for value in temperatures]
+    scored = [(float(value), temperature_nll(rows, head, float(value))) for value in temperatures]
     if not scored[0][1]["count"]:
         raise ValueError("Cannot fit a temperature without valid observations")
-    best = min(scored, key=lambda item: (float(item[1]["nll"]), item[0]))
+    best = min(scored, key=lambda item: (float(item[1]["nll"] or 0.0), item[0]))
     return best
 
 
@@ -367,6 +490,7 @@ def calibration_metrics(
     log_threshold: float | None,
     *,
     support: EventSupport | None = None,
+    candidate_branch_rows: Sequence[CandidateBranchCalibrationRow] = (),
     bootstrap_seed: int = 17,
     bootstrap_replicates: int = 2000,
 ) -> dict[str, Any]:
@@ -473,6 +597,8 @@ def calibration_metrics(
         diagnostics=details,
         evidence_status="empirical_only_not_uniform_error_bounds",
     )
+    if candidate_branch_rows:
+        report["candidate_action_conditional_metrics"] = _candidate_branch_metrics(candidate_branch_rows, temperatures)
     return report
 
 
@@ -530,7 +656,7 @@ class CalibrationArtifact:
     @property
     def branch_quality_report(self) -> dict[str, Any]:
         policy = None if self.quality_policy is None else self.quality_policy.branch_policy
-        return evaluate_branch_quality(self.check_metrics, policy)
+        return evaluate_branch_quality(self.check_metrics, policy, quality_policy=self.quality_policy)
 
     @property
     def value_branch_statuses(self) -> tuple[str, ...]:
@@ -760,6 +886,7 @@ def calibrate_static_rows(
     diagnostic_fixture: bool = False,
     quality_policy: CalibrationQualityPolicy | None = None,
     inference_device_type: str = "unspecified",
+    candidate_branch_check_rows: Sequence[CandidateBranchCalibrationRow] = (),
 ) -> CalibrationArtifact:
     split.validate()
     fit_games, check_games = set(split.fit_games), set(split.check_games)
@@ -767,6 +894,8 @@ def calibrate_static_rows(
         row.game_id not in check_games for row in check_rows
     ):
         raise ValueError("cal_check cannot fit temperatures or p_min, and foreign games are forbidden")
+    if any(row.game_id not in check_games for row in candidate_branch_check_rows):
+        raise ValueError("Candidate-action conditional validation rows must belong strictly to held-out cal_check")
     if len({row.row_id for row in chain(fit_rows, check_rows)}) != len(fit_rows) + len(check_rows):
         raise ValueError("Duplicate calibration decision identities")
     fitted = (
@@ -776,9 +905,11 @@ def calibrate_static_rows(
     )
     threshold, _ = gate_log_threshold(fit_rows, fitted[0])
     fit_metrics = calibration_metrics(fit_rows, fitted, threshold, support=support)
-    check_metrics = calibration_metrics(check_rows, fitted, threshold, support=support)
+    check_metrics = calibration_metrics(
+        check_rows, fitted, threshold, support=support, candidate_branch_rows=candidate_branch_check_rows
+    )
     branch_policy = None if quality_policy is None else quality_policy.branch_policy
-    branch_report = evaluate_branch_quality(check_metrics, branch_policy)
+    branch_report = evaluate_branch_quality(check_metrics, branch_policy, quality_policy=quality_policy)
     covered = support.value_supported(_value_branch_statuses(branch_report))
     # Both partitions describe this same frozen policy. The cal_fit histogram
     # is descriptive only: neither histogram feeds any fit or quality decision.

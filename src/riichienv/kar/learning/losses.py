@@ -98,7 +98,13 @@ class LossSums:
         }
 
 
-def _masked_ce(logits: Tensor, target: Tensor, valid: Tensor, allowed: Tensor) -> Tensor:
+def _masked_ce(
+    logits: Tensor,
+    target: Tensor,
+    valid: Tensor,
+    allowed: Tensor,
+    weights: Tensor | None = None,
+) -> Tensor:
     safe_target = torch.where(valid, target, 0)
     if torch.any(valid & ~allowed.any(-1)):
         raise ValueError("A valid sample has an empty rule/legal mask")
@@ -108,6 +114,8 @@ def _masked_ce(logits: Tensor, target: Tensor, valid: Tensor, allowed: Tensor) -
     dummy_logits = torch.where(valid[:, None], logits.float(), 0.0)
     masked = dummy_logits.masked_fill(~dummy_allowed, -torch.inf)
     nll = F.cross_entropy(masked, safe_target, reduction="none")
+    if weights is not None:
+        nll = nll * weights
     return torch.where(valid, nll, 0.0).sum()
 
 
@@ -132,14 +140,13 @@ def loss_sums(outputs: ModelOutputs, labels: Labels, legal_mask: Tensor) -> Loss
     response_valid = labels.response_valid
     if labels.response_weight is None or labels.value_weight is None:
         raise ValueError("Auxiliary loss weights must be materialized")
-    response_allowed = torch.where(response_valid[:, None], labels.response_allowed, True)
-    response_logits = torch.where(response_valid[:, None], outputs.response_logits.float(), 0.0)
-    response_nll = F.cross_entropy(
-        response_logits.masked_fill(~response_allowed, -torch.inf),
-        torch.where(response_valid, labels.response_target, 0),
-        reduction="none",
+    response = _masked_ce(
+        outputs.response_logits,
+        labels.response_target,
+        response_valid,
+        labels.response_allowed,
+        weights=labels.response_weight,
     )
-    response = torch.where(response_valid, response_nll * labels.response_weight, 0.0).sum()
     safe_event = torch.where(labels.value_valid, labels.response_target, 0)
     safe_rank = torch.where(labels.value_valid, labels.final_rank_target, 0)
     selected = outputs.rank_logits.float().gather(1, safe_event[:, None, None].expand(-1, 1, 4)).squeeze(1)

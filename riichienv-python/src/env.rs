@@ -379,6 +379,19 @@ impl RiichiEnv {
         }
     }
 
+    /// Install a seeded continuation wall while also resampling non-riichi opponents'
+    /// concealed hands from the observer's unknown tile pool.
+    pub fn prepare_observer_continuation_wall(&mut self, observer: u8, seed: u64) -> PyResult<()> {
+        match &mut self.variant {
+            GameStateVariant::FourPlayer(state) => state
+                .prepare_observer_continuation_wall(observer, seed)
+                .map_err(pyo3::PyErr::from),
+            GameStateVariant::ThreePlayer(_) => Err(pyo3::exceptions::PyValueError::new_err(
+                "Observer continuation wall preparation currently requires four-player state",
+            )),
+        }
+    }
+
     pub fn __copy__(&self) -> Self {
         self.py_clone()
     }

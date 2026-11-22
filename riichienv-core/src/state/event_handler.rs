@@ -1,11 +1,17 @@
 use crate::action::{ActionType, Phase};
-use crate::parser::mjai_to_tid;
 use crate::replay::{Action as LogAction, MjaiEvent};
+use crate::replay_context::same_mjai_tile;
 use crate::state::GameState;
 use crate::types::{INITIAL_HAND_SIZE, Meld, MeldType, TILES_4P, Wind};
 
-fn parse_mjai_tile(s: &str) -> u8 {
-    mjai_to_tid(s).unwrap_or(0)
+fn remove_hand_tile_matching(hand: &mut Vec<u8>, tile: u8) -> Option<u8> {
+    if let Some(idx) = hand.iter().position(|&x| x == tile) {
+        return Some(hand.remove(idx));
+    }
+    if let Some(idx) = hand.iter().position(|&x| same_mjai_tile(x, tile)) {
+        return Some(hand.remove(idx));
+    }
+    None
 }
 
 pub trait GameStateEventHandler {
@@ -103,7 +109,6 @@ impl GameStateEventHandler for GameState {
                 self.riichi_sutehais = [None; 4];
                 self.last_tedashis = [None; 4];
                 self.wall.tiles = vec![0; TILES_4P - INITIAL_HAND_SIZE * 4];
-                self.wall.dora_indicators = vec![parse_mjai_tile(&dora_marker)];
                 self.wall.rinshan_draw_count = 0;
                 self.wall.pending_kan_dora_count = 0;
                 // Match _initialize_round: 14 = dead wall (rinshan + dora stacks).
@@ -120,16 +125,20 @@ impl GameStateEventHandler for GameState {
                     p.score = scores[i];
                 });
                 for (i, hand_strs) in tehais.iter().enumerate() {
-                    let mut hand = Vec::new();
+                    let mut hand = Vec::with_capacity(hand_strs.len());
                     for tile_str in hand_strs {
-                        hand.push(parse_mjai_tile(tile_str));
+                        hand.push(self.allocate_replay_tile(tile_str));
                     }
                     hand.sort();
                     self.players[i].hand = hand;
                 }
+                // Allocate the opening dora indicator after tehais so seat 0 keeps
+                // canonical base IDs for first copies while the indicator stays disjoint.
+                let dora_tid = self.allocate_replay_tile(&dora_marker);
+                self.wall.dora_indicators = vec![dora_tid];
             }
             MjaiEvent::Tsumo { actor, pai } => {
-                let tile = parse_mjai_tile(&pai);
+                let tile = self.allocate_replay_tile(&pai);
                 self.current_player = actor as u8;
                 self.drawn_tile = Some(tile);
                 self.players[actor].hand.push(tile);
@@ -148,12 +157,12 @@ impl GameStateEventHandler for GameState {
                 pai,
                 tsumogiri,
             } => {
-                let tile = parse_mjai_tile(&pai);
+                let tile = self.take_replay_hand_tile(actor, &pai, tsumogiri);
+                let is_riichi = self.players[actor].riichi_stage;
                 self.current_player = actor as u8;
-                if let Some(idx) = self.players[actor].hand.iter().position(|&t| t == tile) {
-                    self.players[actor].hand.remove(idx);
-                }
                 self.players[actor].discards.push(tile);
+                self.players[actor].discard_from_hand.push(!tsumogiri);
+                self.players[actor].discard_is_riichi.push(is_riichi);
                 // Match live step / LogAction replay: only own public discards
                 // and other players calling them revoke nagashi eligibility.
                 self.players[actor].nagashi_eligible &= crate::types::is_terminal_tile(tile);
@@ -167,8 +176,10 @@ impl GameStateEventHandler for GameState {
                     self.is_first_turn = false;
                 }
 
-                if self.players[actor].riichi_stage {
+                if is_riichi {
                     self.riichi_sutehais[actor] = Some(tile);
+                    self.players[actor].riichi_declaration_index =
+                        Some(self.players[actor].discards.len() - 1);
                     self.players[actor].riichi_declared = true;
                     self.players[actor].riichi_stage = false;
                 }
@@ -190,26 +201,21 @@ impl GameStateEventHandler for GameState {
                 pai,
                 consumed,
             } => {
-                let tile = parse_mjai_tile(&pai);
+                let tile = self.resolve_replay_called_tile(target, &pai);
                 self.players[target].nagashi_eligible = false;
                 self.current_player = actor as u8;
-                let c1 = parse_mjai_tile(&consumed[0]);
-                let c2 = parse_mjai_tile(&consumed[1]);
+                let c1 = self.take_replay_hand_tile(actor, &consumed[0], false);
+                let c2 = self.take_replay_hand_tile(actor, &consumed[1], false);
                 let form_tiles = vec![tile, c1, c2];
-
-                for t in &[c1, c2] {
-                    if let Some(idx) = self.players[actor].hand.iter().position(|&x| x == *t) {
-                        self.players[actor].hand.remove(idx);
-                    }
-                }
 
                 self.players[actor].melds.push(Meld {
                     meld_type: MeldType::Pon,
                     tiles: form_tiles,
                     opened: true,
-                    from_who: -1,
+                    from_who: target as i8,
                     called_tile: Some(tile),
                 });
+                self.record_replay_pao(actor, target, tile);
                 self.drawn_tile = None;
                 self.phase = Phase::WaitAct;
                 self.active_players = vec![actor as u8];
@@ -226,24 +232,18 @@ impl GameStateEventHandler for GameState {
                 pai,
                 consumed,
             } => {
-                let tile = parse_mjai_tile(&pai);
+                let tile = self.resolve_replay_called_tile(target, &pai);
                 self.players[target].nagashi_eligible = false;
                 self.current_player = actor as u8;
-                let c1 = parse_mjai_tile(&consumed[0]);
-                let c2 = parse_mjai_tile(&consumed[1]);
+                let c1 = self.take_replay_hand_tile(actor, &consumed[0], false);
+                let c2 = self.take_replay_hand_tile(actor, &consumed[1], false);
                 let form_tiles = vec![tile, c1, c2];
-
-                for t in &[c1, c2] {
-                    if let Some(idx) = self.players[actor].hand.iter().position(|&x| x == *t) {
-                        self.players[actor].hand.remove(idx);
-                    }
-                }
 
                 self.players[actor].melds.push(Meld {
                     meld_type: MeldType::Chi,
                     tiles: form_tiles,
                     opened: true,
-                    from_who: -1,
+                    from_who: target as i8,
                     called_tile: Some(tile),
                 });
                 self.drawn_tile = None;
@@ -276,28 +276,23 @@ impl GameStateEventHandler for GameState {
                 pai,
                 consumed,
             } => {
-                let tile = parse_mjai_tile(&pai);
+                let tile = self.resolve_replay_called_tile(target, &pai);
                 self.players[target].nagashi_eligible = false;
                 self.current_player = actor as u8;
                 let mut tiles = vec![tile];
                 for c in &consumed {
-                    tiles.push(parse_mjai_tile(c));
-                }
-
-                for c in &consumed {
-                    let tv = parse_mjai_tile(c);
-                    if let Some(idx) = self.players[actor].hand.iter().position(|&x| x == tv) {
-                        self.players[actor].hand.remove(idx);
-                    }
+                    tiles.push(self.take_replay_hand_tile(actor, c, false));
                 }
 
                 self.players[actor].melds.push(Meld {
                     meld_type: MeldType::Daiminkan,
                     tiles,
                     opened: true,
-                    from_who: -1,
+                    from_who: target as i8,
                     called_tile: Some(tile),
                 });
+                self.record_replay_pao(actor, target, tile);
+                self.sync_replay_pending_kan_dora();
                 self.phase = Phase::WaitAct;
                 self.active_players = vec![actor as u8];
                 self.needs_tsumo = true;
@@ -318,8 +313,9 @@ impl GameStateEventHandler for GameState {
                 self.players[actor].score -= 1000;
             }
             MjaiEvent::Dora { dora_marker } => {
-                let tile = parse_mjai_tile(&dora_marker);
+                let tile = self.allocate_replay_tile(&dora_marker);
                 self.wall.dora_indicators.push(tile);
+                self.sync_replay_pending_kan_dora();
             }
             MjaiEvent::Kita { .. } => {
                 // Kita is 3P only; ignored in 4P event handler
@@ -375,9 +371,7 @@ impl GameStateEventHandler for GameState {
                     }
                 }
 
-                if let Some(idx) = self.players[s].hand.iter().position(|&x| x == t) {
-                    self.players[s].hand.remove(idx);
-                }
+                remove_hand_tile_matching(&mut self.players[s].hand, t);
                 self.players[s].hand.sort();
                 self.players[s].discards.push(t);
                 self.players[s].discard_from_hand.push(!is_tsumogiri);
@@ -503,11 +497,8 @@ impl GameStateEventHandler for GameState {
                 }
                 // Remove tiles from hand
                 for (i, t) in tiles.iter().enumerate() {
-                    if i < froms.len()
-                        && froms[i] == *seat
-                        && let Some(idx) = self.players[*seat].hand.iter().position(|&x| x == *t)
-                    {
-                        self.players[*seat].hand.remove(idx);
+                    if i < froms.len() && froms[i] == *seat {
+                        remove_hand_tile_matching(&mut self.players[*seat].hand, *t);
                     }
                 }
                 self.players[*seat].hand.sort();
@@ -642,9 +633,7 @@ impl GameStateEventHandler for GameState {
                 } else {
                     // Kakan
                     let tile = tiles[0];
-                    if let Some(idx) = self.players[*seat].hand.iter().position(|&x| x == tile) {
-                        self.players[*seat].hand.remove(idx);
-                    }
+                    remove_hand_tile_matching(&mut self.players[*seat].hand, tile);
                     for m in self.players[*seat].melds.iter_mut() {
                         if m.meld_type == MeldType::Pon && m.tiles[0] / 4 == tile / 4 {
                             m.meld_type = MeldType::Kakan;

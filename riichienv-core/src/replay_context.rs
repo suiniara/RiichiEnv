@@ -27,7 +27,7 @@ pub struct KanReplayWindow {
     pub ended_by_win: bool,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ReplayContext {
     pub pending_double: [Option<bool>; 4],
     pub replacement_actor: Option<u8>,
@@ -35,6 +35,29 @@ pub struct ReplayContext {
     // A public-only MJAI client may use '?' for an opponent's concealed tiles.
     // Such a prefix cannot certify that opponent's private Ron opportunities.
     pub private_hands_complete: [bool; 4],
+    // Track physical 0..136 tile IDs already assigned within the current round
+    // so MJAI replays preserve unique physical copies for native continuation.
+    pub allocated_tiles: [bool; 136],
+}
+
+impl Default for ReplayContext {
+    fn default() -> Self {
+        Self {
+            pending_double: [None; 4],
+            replacement_actor: None,
+            kan_window: None,
+            private_hands_complete: [false; 4],
+            allocated_tiles: [false; 136],
+        }
+    }
+}
+
+pub(crate) fn is_red_five(tid: u8) -> bool {
+    matches!(tid, 16 | 52 | 88)
+}
+
+pub(crate) fn same_mjai_tile(a: u8, b: u8) -> bool {
+    a / 4 == b / 4 && is_red_five(a) == is_red_five(b)
 }
 
 fn canonical_name(value: &str) -> Result<String, String> {
@@ -292,11 +315,158 @@ impl GameState {
             }
         }
         self.interrupt_replay_calls();
+        self.sync_replay_pending_kan_dora();
         self.current_claims.clear();
         self.phase = Phase::WaitAct;
         self.current_player = window.actor;
         self.active_players.clear();
         self.needs_tsumo = true;
+    }
+
+    pub(crate) fn allocate_replay_tile(&mut self, mjai: &str) -> u8 {
+        let Some(base) = mjai_to_tid(mjai) else {
+            return 0;
+        };
+        if is_red_five(base) {
+            self.replay_context.allocated_tiles[base as usize] = true;
+            return base;
+        }
+        let start = base as usize;
+        let end = ((base / 4) as usize) * 4 + 4;
+        for tid in start..end {
+            if !self.replay_context.allocated_tiles[tid] {
+                self.replay_context.allocated_tiles[tid] = true;
+                return tid as u8;
+            }
+        }
+        base
+    }
+
+    pub(crate) fn take_replay_hand_tile(&mut self, actor: usize, mjai: &str, tsumogiri: bool) -> u8 {
+        let Some(target) = mjai_to_tid(mjai) else {
+            return 0;
+        };
+        if actor < self.players.len() && self.replay_context.private_hands_complete[actor] {
+            let hand = &mut self.players[actor].hand;
+            if tsumogiri
+                && let Some(dt) = self.drawn_tile
+                && same_mjai_tile(dt, target)
+                && let Some(idx) = hand.iter().position(|&t| t == dt)
+            {
+                return hand.remove(idx);
+            }
+            if !tsumogiri
+                && let Some(dt) = self.drawn_tile
+                && same_mjai_tile(dt, target)
+                && let Some(idx) = hand
+                    .iter()
+                    .position(|&t| same_mjai_tile(t, target) && t != dt)
+            {
+                return hand.remove(idx);
+            }
+            if let Some(idx) = hand.iter().position(|&t| same_mjai_tile(t, target)) {
+                return hand.remove(idx);
+            }
+        } else if actor < self.players.len() {
+            // Public-only replay where actor's hand may hold partial/unknown tiles.
+            let hand = &mut self.players[actor].hand;
+            if let Some(idx) = hand.iter().position(|&t| same_mjai_tile(t, target))
+                && (target != 0 || self.replay_context.allocated_tiles[hand[idx] as usize])
+            {
+                return hand.remove(idx);
+            }
+        }
+        self.allocate_replay_tile(mjai)
+    }
+
+    pub(crate) fn resolve_replay_called_tile(&mut self, target: usize, mjai: &str) -> u8 {
+        let Some(canonical) = mjai_to_tid(mjai) else {
+            return 0;
+        };
+        if let Some((last_actor, last_tile)) = self.last_discard
+            && last_actor as usize == target
+            && same_mjai_tile(last_tile, canonical)
+        {
+            return last_tile;
+        }
+        if target < self.players.len()
+            && let Some(&last_tile) = self.players[target].discards.last()
+            && same_mjai_tile(last_tile, canonical)
+        {
+            return last_tile;
+        }
+        self.allocate_replay_tile(mjai)
+    }
+
+    pub(crate) fn sync_replay_pending_kan_dora(&mut self) {
+        let committed_kans = self
+            .players
+            .iter()
+            .flat_map(|player| &player.melds)
+            .filter(|meld| {
+                matches!(
+                    meld.meld_type,
+                    MeldType::Ankan | MeldType::Kakan | MeldType::Daiminkan
+                )
+            })
+            .count();
+        let revealed_kan_doras = self.wall.dora_indicators.len().saturating_sub(1);
+        let max_remaining = 5usize.saturating_sub(self.wall.dora_indicators.len());
+        self.wall.pending_kan_dora_count = committed_kans
+            .saturating_sub(revealed_kan_doras)
+            .min(max_remaining) as u8;
+    }
+
+    pub(crate) fn record_replay_pao(&mut self, actor: usize, target: usize, called_tile: u8) {
+        let tile_val = called_tile / 4;
+        if (31..=33).contains(&tile_val) {
+            let dragon_melds = self.players[actor]
+                .melds
+                .iter()
+                .filter(|m| {
+                    let t = m.tiles[0] / 4;
+                    (31..=33).contains(&t) && m.meld_type != MeldType::Chi
+                })
+                .count();
+            if dragon_melds == 3 {
+                self.players[actor].pao.insert(37, target as u8);
+            }
+        } else if (27..=30).contains(&tile_val) {
+            let wind_melds = self.players[actor]
+                .melds
+                .iter()
+                .filter(|m| {
+                    let t = m.tiles[0] / 4;
+                    (27..=30).contains(&t) && m.meld_type != MeldType::Chi
+                })
+                .count();
+            if wind_melds == 4 {
+                self.players[actor].pao.insert(50, target as u8);
+            }
+        }
+    }
+
+    fn peek_replay_hand_tiles(&mut self, actor: usize, mjai_tiles: &[String]) -> Result<Vec<u8>, String> {
+        let hand = self.players[actor].hand.clone();
+        let mut used = vec![false; hand.len()];
+        let mut resolved = Vec::with_capacity(mjai_tiles.len());
+        for tile_str in mjai_tiles {
+            let canonical = mjai_to_tid(tile_str).ok_or("Invalid kan tile")?;
+            if let Some(idx) = hand
+                .iter()
+                .enumerate()
+                .position(|(i, &t)| !used[i] && same_mjai_tile(t, canonical))
+                && (self.replay_context.private_hands_complete[actor]
+                    || canonical != 0
+                    || self.replay_context.allocated_tiles[hand[idx] as usize])
+            {
+                used[idx] = true;
+                resolved.push(hand[idx]);
+            } else {
+                resolved.push(self.allocate_replay_tile(tile_str));
+            }
+        }
+        Ok(resolved)
     }
 
     pub(crate) fn open_replay_kan_window(&mut self, actor: u8) {
@@ -460,10 +630,7 @@ impl GameState {
                 self.replay_context.replacement_actor = Some(*actor as u8);
                 let action = match event {
                     MjaiEvent::Ankan { consumed, .. } => {
-                        let tiles = consumed
-                            .iter()
-                            .map(|tile| mjai_to_tid(tile).ok_or("Invalid kan tile"))
-                            .collect::<Result<Vec<_>, _>>()?;
+                        let tiles = self.peek_replay_hand_tiles(*actor, consumed)?;
                         Action::new(
                             ActionType::Ankan,
                             tiles.first().copied(),
@@ -471,12 +638,15 @@ impl GameState {
                             Some(*actor as u8),
                         )
                     }
-                    MjaiEvent::Kakan { pai, .. } => Action::new(
-                        ActionType::Kakan,
-                        mjai_to_tid(pai),
-                        vec![],
-                        Some(*actor as u8),
-                    ),
+                    MjaiEvent::Kakan { pai, .. } => {
+                        let tiles = self.peek_replay_hand_tiles(*actor, std::slice::from_ref(pai))?;
+                        Action::new(
+                            ActionType::Kakan,
+                            tiles.first().copied(),
+                            vec![],
+                            Some(*actor as u8),
+                        )
+                    }
                     _ => unreachable!(),
                 };
                 self.pending_kan = Some((*actor as u8, action));

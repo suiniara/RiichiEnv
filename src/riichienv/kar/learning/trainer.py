@@ -518,7 +518,19 @@ def train_production(  # noqa: PLR0915
             if validation.manifest != train.manifest:
                 raise ValueError("Dataset manifest changed after startup authorization")
             _dataset_contract(train, validation, config)
-            lengths = [int(history) + 65 for _, history in train.indices]
+            branch_multipliers: dict[str, int] = {}
+            if getattr(train, "has_candidate_branches", False) and hasattr(train, "_db"):
+                branch_multipliers = {
+                    row_id: int(count)
+                    for row_id, count in train._db().execute(
+                        "SELECT source_decision_row_id, COUNT(*) FROM branch_samples "
+                        "WHERE split='train' AND status='PASS' GROUP BY source_decision_row_id"
+                    )
+                }
+            lengths = [
+                (int(history) + 65) * (1 + branch_multipliers.get(row_id, 0))
+                for row_id, history in train.indices
+            ]
             updates = math.ceil(len(train) / config.effective_batch_size)
             passes = 1 + len(validation_updates(updates)) * config.planned_epochs
             planned_work = len(train) * config.planned_epochs + len(validation) * passes

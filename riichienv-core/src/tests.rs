@@ -58,6 +58,208 @@ mod unit_tests {
     }
 
     #[test]
+    fn mjai_replay_continuation_wall_allocates_unique_physical_tiles_and_tracks_state() {
+        use std::collections::HashSet;
+
+        use crate::replay::MjaiEvent;
+        use crate::rule::GameRule;
+        use crate::state::GameState;
+
+        let mut state = GameState::new(0, true, Some(17), 0, GameRule::default_mjsoul());
+        let events = vec![
+            MjaiEvent::StartGame {
+                id: None,
+                names: None,
+            },
+            MjaiEvent::StartKyoku {
+                bakaze: "E".into(),
+                kyoku: 1,
+                honba: 0,
+                kyoutaku: 0,
+                scores: vec![25000; 4],
+                dora_marker: "1m".into(),
+                tehais: vec![
+                    [
+                        "1m", "1m", "2m", "3m", "4m", "5mr", "5m", "6m", "7m", "8m", "9m", "E",
+                        "E",
+                    ]
+                    .map(String::from)
+                    .to_vec(),
+                    [
+                        "1p", "1p", "2p", "3p", "4p", "5pr", "5p", "6p", "7p", "8p", "9p", "P",
+                        "P",
+                    ]
+                    .map(String::from)
+                    .to_vec(),
+                    [
+                        "1s", "1s", "2s", "3s", "4s", "5sr", "5s", "6s", "7s", "8s", "9s", "F",
+                        "F",
+                    ]
+                    .map(String::from)
+                    .to_vec(),
+                    [
+                        "2m", "2m", "3m", "3m", "4m", "4m", "5m", "6m", "6m", "7m", "8m", "C",
+                        "C",
+                    ]
+                    .map(String::from)
+                    .to_vec(),
+                ],
+                oya: 0,
+            },
+            MjaiEvent::Tsumo {
+                actor: 0,
+                pai: "1m".into(),
+            },
+            MjaiEvent::Dahai {
+                actor: 0,
+                pai: "P".into(),
+                tsumogiri: false,
+            },
+        ];
+        // Replay clean prefix: seat 0 draws 1m (3rd copy, while dora_marker is 1st copy),
+        // then holds 3 distinct physical 1m copies so tedashi vs tsumogiri is unambiguous.
+        for event in &events[..3] {
+            state.apply_mjai_event(event.clone());
+            assert!(state.last_error.is_none(), "{:?}", state.last_error);
+        }
+        // Seat 0 must hold 3 physically distinct 1m tiles (none equal to dora_marker).
+        let p0_1m: Vec<u8> = state.players[0]
+            .hand
+            .iter()
+            .copied()
+            .filter(|&t| t / 4 == 0)
+            .collect();
+        assert_eq!(p0_1m.len(), 3);
+        let p0_1m_set: HashSet<u8> = p0_1m.iter().copied().collect();
+        assert_eq!(p0_1m_set.len(), 3);
+        assert!(!p0_1m_set.contains(&state.wall.dora_indicators[0]));
+
+        // Continuation wall must succeed on a real MJAI replay prefix!
+        state.prepare_replay_continuation_wall(0xCAFE).unwrap();
+        let mut visible = HashSet::new();
+        for player in &state.players {
+            visible.extend(player.hand.iter().copied());
+            visible.extend(player.discards.iter().copied());
+            for meld in &player.melds {
+                visible.extend(meld.tiles.iter().copied());
+            }
+        }
+        let wall: HashSet<_> = state.wall.tiles.iter().copied().collect();
+        assert_eq!(visible.len(), 53);
+        assert_eq!(wall.len(), 83);
+        assert!(visible.is_disjoint(&wall));
+        assert_eq!(visible.union(&wall).count(), 136);
+
+        // Verify Pon / Chi / Daiminkan / Riichi metadata tracking on MJAI replay.
+        let mut s2 = GameState::new(0, true, Some(17), 0, GameRule::default_mjsoul());
+        for event in [
+            events[0].clone(),
+            events[1].clone(),
+            MjaiEvent::Tsumo {
+                actor: 0,
+                pai: "P".into(),
+            },
+            MjaiEvent::Dahai {
+                actor: 0,
+                pai: "P".into(),
+                tsumogiri: true,
+            },
+            MjaiEvent::Pon {
+                actor: 1,
+                target: 0,
+                pai: "P".into(),
+                consumed: vec!["P".into(), "P".into()],
+            },
+            MjaiEvent::Dahai {
+                actor: 1,
+                pai: "1p".into(),
+                tsumogiri: false,
+            },
+            MjaiEvent::Tsumo {
+                actor: 2,
+                pai: "F".into(),
+            },
+            MjaiEvent::Reach { actor: 2 },
+            MjaiEvent::Dahai {
+                actor: 2,
+                pai: "1s".into(),
+                tsumogiri: false,
+            },
+            MjaiEvent::ReachAccepted { actor: 2 },
+            MjaiEvent::Tsumo {
+                actor: 3,
+                pai: "C".into(),
+            },
+        ] {
+            s2.apply_mjai_event(event);
+            assert!(s2.last_error.is_none(), "{:?}", s2.last_error);
+        }
+        assert_eq!(s2.players[0].discard_from_hand, vec![false]);
+        assert_eq!(s2.players[0].discard_is_riichi, vec![false]);
+        assert_eq!(s2.players[1].melds[0].from_who, 0);
+        assert_eq!(s2.players[1].discard_from_hand, vec![true]);
+        assert_eq!(s2.players[2].discard_is_riichi, vec![true]);
+        assert_eq!(s2.players[2].riichi_declaration_index, Some(0));
+        s2.prepare_replay_continuation_wall(0xBEEF).unwrap();
+    }
+
+    #[test]
+    fn post_riichi_ankan_rejects_mentsu_decomposition_change_even_when_waits_match() {
+        use crate::action::{ActionType, Phase};
+        use crate::rule::GameRule;
+        use crate::state::GameState;
+        use crate::state::legal_actions::GameStateLegalActions;
+        use crate::types::{Meld, MeldType};
+
+        // 111m 222m 333m 4m + concealed 567p (represented via hand tiles):
+        // Waits on {4m, 5m} both before and after Ankan 1m, YET winning on 4m
+        // has alternate decomposition [123m][123m][123m][44m][567p] where 1m is
+        // in sequences. MJSoul/Tenhou forbid post-riichi Ankan of 1m here.
+        let mut state = GameState::new(0, true, Some(17), 0, GameRule::default_mjsoul());
+        state.phase = Phase::WaitAct;
+        state.current_player = 0;
+        state.needs_tsumo = false;
+        state.wall.drawable_count = 10;
+        state.players[0].riichi_declared = true;
+        state.players[0].melds = vec![Meld::new(MeldType::Chi, vec![52, 56, 60], false, -1, None)];
+        state.players[0].hand = vec![
+            0, 1, 2, 3, // 4x 1m (just drew tile 3)
+            4, 5, 6, // 3x 2m
+            8, 9, 10, // 3x 3m
+            12, // 1x 4m
+        ];
+        state.drawn_tile = Some(3);
+        let actions = state._get_legal_actions_internal(0);
+        assert!(
+            !actions.iter().any(|a| a.action_type == ActionType::Ankan),
+            "Post-riichi Ankan of 1m changes mentsu decomposition and must be forbidden"
+        );
+
+        // By contrast, 111m 456p 234s 789s E (wait E) + 4th 1m preserves both
+        // waits and every valid mentsu decomposition -> Ankan 1m MUST be legal.
+        let mut ok_state = GameState::new(0, true, Some(17), 0, GameRule::default_mjsoul());
+        ok_state.phase = Phase::WaitAct;
+        ok_state.current_player = 0;
+        ok_state.needs_tsumo = false;
+        ok_state.wall.drawable_count = 10;
+        ok_state.players[0].riichi_declared = true;
+        ok_state.players[0].melds.clear();
+        ok_state.players[0].hand = vec![
+            0, 1, 2, 3, // 4x 1m (just drew tile 3)
+            48, 52, 56, // 4p 5p 6p
+            76, 80, 84, // 2s 3s 4s
+            96, 100, 104, // 7s 8s 9s
+            108, // E
+        ];
+        ok_state.drawn_tile = Some(3);
+        let ok_actions = ok_state._get_legal_actions_internal(0);
+        assert!(
+            ok_actions.iter().any(|a| a.action_type == ActionType::Ankan),
+            "Post-riichi Ankan of isolated 1m triplet should remain legal"
+        );
+    }
+
+    #[test]
     fn test_agari_standard() {
         // Pinfu Tsumo: 123 456 789 m 234 p 55 s
         let tiles = [
@@ -580,11 +782,16 @@ mod unit_tests {
             hand2
         );
 
-        // Dora marker "P" should be tid 124
+        // Dora marker "P" should be a distinct physical copy of White Dragon (t34 = 31)
         assert_eq!(
-            state.wall.dora_indicators[0], 124,
-            "dora_marker P should be tid 124, got: {}",
+            state.wall.dora_indicators[0] / 4,
+            31,
+            "dora_marker P should be White Dragon (t34=31), got tid: {}",
             state.wall.dora_indicators[0]
+        );
+        assert!(
+            !state.players[0].hand.contains(&state.wall.dora_indicators[0]),
+            "dora_marker should be physically distinct from tiles held in hand"
         );
 
         // Test tsumo with honor tile
@@ -612,15 +819,20 @@ mod unit_tests {
             state.players[0].discards
         );
 
-        // Test dora event with mjai honor
+        // Test dora event with mjai honor (distinct physical copy of Green Dragon, t34 = 32)
         let dora = MjaiEvent::Dora {
-            dora_marker: "F".to_string(), // Green dragon (tid 128)
+            dora_marker: "F".to_string(),
         };
         state.apply_mjai_event(dora);
         assert_eq!(
-            state.wall.dora_indicators[1], 128,
-            "dora F should be tid 128, got: {}",
+            state.wall.dora_indicators[1] / 4,
+            32,
+            "dora F should be Green Dragon (t34=32), got tid: {}",
             state.wall.dora_indicators[1]
+        );
+        assert!(
+            !state.players[0].hand.contains(&state.wall.dora_indicators[1]),
+            "dora F should be physically distinct from tiles held in hand"
         );
     }
 

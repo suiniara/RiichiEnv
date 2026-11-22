@@ -96,7 +96,8 @@ def run_match(agents: dict[int, KARAgent], *, wall_seed: int, max_decisions: int
                 "parameter_updates_executed": False,
             }
         choices = {}
-        for seat, observation in observations.items():
+        for seat in sorted(observations):
+            observation = observations[seat]
             if not observation.legal_actions():
                 continue
             snapshot = projection.snapshot(seat)

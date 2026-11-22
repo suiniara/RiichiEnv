@@ -329,7 +329,7 @@ def test_dataset_lengths_and_context_creation_are_inside_durable_compute(startup
             clock.now += 15.0
             return super().__iter__()
 
-    def dataset(directory, split):
+    def dataset(directory, split, **_kwargs):
         _assert_metered(output, settings)
         visits.append(split)
         clock.now += 60.0
@@ -362,7 +362,7 @@ def test_preprocessing_memory_error_is_charged_and_retries_keep_history(startup_
     run, output, base = startup_driver
     settings, clock = _metered_config(base, monkeypatch)
 
-    def dataset(directory, split):
+    def dataset(directory, split, **_kwargs):
         _assert_metered(output, settings)
         clock.now += 60.0
         if split == "validation":
@@ -405,7 +405,7 @@ def test_preprocessing_overrun_is_settled_before_group_or_model_allocation(start
     run, output, base = startup_driver
     settings, clock = _metered_config(base, monkeypatch)
 
-    def expensive_dataset(directory, split):
+    def expensive_dataset(directory, split, **_kwargs):
         _assert_metered(output, settings)
         clock.now += 6000.0
         return FullSyntheticDataset(directory, split)
@@ -432,7 +432,7 @@ def test_authorized_identity_is_bound_before_loading_and_checked_before_model(st
     settings, clock = _metered_config(base, monkeypatch)
     loaded = []
 
-    def changed_dataset(directory, split):
+    def changed_dataset(directory, split, **_kwargs):
         _assert_metered(output, settings)
         clock.now += 20.0
         loaded.append(split)

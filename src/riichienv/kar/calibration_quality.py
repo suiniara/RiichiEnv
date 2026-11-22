@@ -171,7 +171,78 @@ class CalibrationQualityPolicy:
         return value
 
 
-def evaluate_branch_quality(metrics: Mapping[str, Any], policy: BranchQualityPolicy | None) -> dict[str, Any]:
+def _evaluate_candidate_conditional_validation(
+    metrics: Mapping[str, Any],
+    policy: BranchQualityPolicy | None,
+    quality_policy: CalibrationQualityPolicy | None,
+) -> dict[str, Any]:
+    measured = metrics.get("candidate_action_conditional_metrics")
+    if not isinstance(measured, Mapping) or not measured.get("observations"):
+        return {
+            "status": "unavailable",
+            "reasons": ["heldout_candidate_branch_metrics_not_collected"],
+            "partition": "cal_check",
+            "counting_unit": "distinct_source_decision_and_candidate_action",
+            "uniform_error_certificate": False,
+        }
+    observations = measured.get("observations")
+    distinct_sources = measured.get("distinct_source_decisions")
+    distinct_pairs = measured.get("distinct_source_decision_and_candidate_action")
+    independent_games = measured.get("independent_games")
+    missing: list[str] = []
+    failed: list[str] = []
+    if policy is None:
+        missing.append("preregistered_branch_policy_missing")
+    if quality_policy is None:
+        missing.append("preregistered_quality_policy_missing")
+    if policy is not None and quality_policy is not None:
+        min_games = min(criterion.minimum_independent_games for criterion in policy.criteria)
+        if type(independent_games) is not int or independent_games < min_games:
+            missing.append("independent_validation_games")
+        if type(distinct_pairs) is not int or distinct_pairs < 1:
+            missing.append("candidate_action_pairs")
+        if type(observations) is not int or (type(distinct_pairs) is int and observations < distinct_pairs):
+            missing.append("observations")
+        for head in BRANCH_HEADS:
+            values = measured.get(head, {})
+            count = values.get("count") if isinstance(values, Mapping) else None
+            if type(count) is not int or count < 1:
+                missing.append(head + "_observations")
+            for metric, limits in (
+                ("nll", quality_policy.max_nll),
+                ("brier", quality_policy.max_brier),
+                ("ece", quality_policy.max_ece),
+            ):
+                value = values.get(metric) if isinstance(values, Mapping) else None
+                if value is None:
+                    missing.append(head + "_" + metric)
+                elif (
+                    isinstance(value, bool)
+                    or not isinstance(value, (float, int))
+                    or not math.isfinite(value)
+                    or value < 0
+                    or value > limits[head]
+                ):
+                    failed.append(head + "_" + metric)
+    return {
+        "status": "failed" if failed else "unavailable" if missing else "passed",
+        "reasons": sorted(set(failed + missing)),
+        "partition": "cal_check",
+        "counting_unit": "distinct_source_decision_and_candidate_action",
+        "observations": observations,
+        "distinct_source_decisions": distinct_sources,
+        "distinct_source_decision_and_candidate_action": distinct_pairs,
+        "independent_games": independent_games,
+        "uniform_error_certificate": False,
+    }
+
+
+def evaluate_branch_quality(
+    metrics: Mapping[str, Any],
+    policy: BranchQualityPolicy | None,
+    *,
+    quality_policy: CalibrationQualityPolicy | None = None,
+) -> dict[str, Any]:
     criteria = {} if policy is None else {(value.head, value.event_id): value for value in policy.criteria}
     measured = metrics.get("branch_metrics", {})
     branches = {}
@@ -229,13 +300,9 @@ def evaluate_branch_quality(metrics: Mapping[str, Any], policy: BranchQualityPol
         "partition": "cal_check",
         "branches": branches,
         "branch_quality_policy_sha256": None if policy is None else policy.digest,
-        "candidate_action_conditional_validation": {
-            "status": "unavailable",
-            "reasons": ["heldout_candidate_branch_metrics_not_collected"],
-            "partition": "cal_check",
-            "counting_unit": "distinct_source_decision_and_candidate_action",
-            "uniform_error_certificate": False,
-        },
+        "candidate_action_conditional_validation": _evaluate_candidate_conditional_validation(
+            metrics, policy, quality_policy
+        ),
         "fallback": BRANCH_FALLBACK,
         "uniform_error_certificate": False,
     }

@@ -21,13 +21,17 @@ _END_REASONS = {
     "fanpai": Response.EXHAUSTIVE_DRAW,
     "four_winds": Response.ABORT_FOUR_WINDS,
     "suufon_renda": Response.ABORT_FOUR_WINDS,
+    "sufuurenta": Response.ABORT_FOUR_WINDS,
     "four_riichi": Response.ABORT_FOUR_RIICHI,
     "suucha_riichi": Response.ABORT_FOUR_RIICHI,
     "four_kans": Response.ABORT_FOUR_KANS,
     "suukaikan": Response.ABORT_FOUR_KANS,
+    "suukansansen": Response.ABORT_FOUR_KANS,
     "triple_ron": Response.ABORT_TRIPLE_RON,
     "sanchahou": Response.ABORT_TRIPLE_RON,
+    "sanchaho": Response.ABORT_TRIPLE_RON,
     "nagashi_mangan": Response.NAGASHI_MANGAN,
+    "nagashimangan": Response.NAGASHI_MANGAN,
 }
 
 

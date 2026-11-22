@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .contracts import content_hash, game_split
+from .contracts import Response, content_hash, game_split
 from .probability import masked_softmax
 from .runtime_contracts import SUPPORT_VERSION, UTILITIES, RuntimeBinding, runtime_contract, sha256_value
 from .versioning import validate_artifact_contract
@@ -113,7 +113,11 @@ class EventSupport:
 
 
 def support_from_train_games(
-    train_manifest: Mapping[str, Any], observed_events: Mapping[str, Sequence[int]], *, source_reference: str
+    train_manifest: Mapping[str, Any],
+    observed_events: Mapping[str, Sequence[int]],
+    *,
+    source_reference: str,
+    dataset_manifest: Mapping[str, Any] | None = None,
 ) -> EventSupport:
     digest = train_manifest.get("manifest_sha256")
     if not isinstance(digest, str) or digest != content_hash(train_manifest["games"]):
@@ -138,7 +142,19 @@ def support_from_train_games(
             raise ValueError("Unknown response event in training evidence")
         for event in set(events):
             counts[event] += 1
-    branch_counts = train_manifest.get("candidate_branch_counts", {})
+    bound_digest = digest
+    branch_source = train_manifest
+    if dataset_manifest is not None:
+        unsigned = {key: value for key, value in dataset_manifest.items() if key != "manifest_sha256"}
+        ds_digest = dataset_manifest.get("manifest_sha256")
+        if not isinstance(ds_digest, str) or ds_digest != content_hash(unsigned):
+            raise ValueError("Exported dataset manifest integrity mismatch")
+        ds_train = [row["game_id"] for row in dataset_manifest.get("games", ()) if row.get("split") == "train"]
+        if set(ds_train) != set(identities):
+            raise ValueError("Exported dataset train games differ from training-selection manifest")
+        bound_digest = ds_digest
+        branch_source = dataset_manifest
+    branch_counts = branch_source.get("candidate_branch_counts", {})
     complete_by_split = branch_counts.get("complete_source_decisions_by_split", {})
     actions_by_split = branch_counts.get("candidate_action_source_counts_by_split", {})
     complete_sources = complete_by_split.get("train", 0)
@@ -151,7 +167,7 @@ def support_from_train_games(
         if not 0 <= action < 148 or type(value) is not int or value < 0:
             raise ValueError("Candidate action branch coverage contains invalid identities/counts")
         action_counts[action] = value
-    return EventSupport(digest, tuple(counts), source_reference, complete_sources, tuple(action_counts))
+    return EventSupport(bound_digest, tuple(counts), source_reference, complete_sources, tuple(action_counts))
 
 
 def unsupported_response_mass(probabilities: Sequence[float], supported: Sequence[bool]) -> float:
@@ -175,6 +191,17 @@ class CandidateValue:
     value_supported: tuple[bool, ...]
 
 
+_NEUTRAL_DRAW_EVENTS = frozenset(
+    {
+        int(Response.EXHAUSTIVE_DRAW),
+        int(Response.ABORT_FOUR_WINDS),
+        int(Response.ABORT_FOUR_RIICHI),
+        int(Response.ABORT_FOUR_KANS),
+        int(Response.NAGASHI_MANGAN),
+    }
+)
+
+
 def candidate_value(
     action_id: int,
     response_logits: Sequence[float],
@@ -185,11 +212,14 @@ def candidate_value(
     response_temperature: float = 1.0,
     rank_temperature: float = 1.0,
     branch_quality_statuses: Sequence[str] | None = None,
+    unsupported_fallback: str = "worst_case",
 ) -> CandidateValue:
     if type(action_id) is not int or not 0 <= action_id < 148:
         raise ValueError("Only complete discard actions have response/rank value semantics")
     if len(allowed) != 21 or len(rank_logits) != 21:
         raise ValueError("Expected twenty-one response branches")
+    if unsupported_fallback not in {"worst_case", "neutral_draws"}:
+        raise ValueError("Unsupported branch fallback must be 'worst_case' or 'neutral_draws'")
     probabilities = masked_softmax(response_logits, allowed, response_temperature)
     conditional = tuple(
         math.fsum(
@@ -202,8 +232,13 @@ def candidate_value(
     states = tuple(branch_quality_statuses) if branch_quality_statuses is not None else ("unavailable",) * 21
     covered = support.value_supported(states)
     conservative = math.fsum(
-        probability * (utility if supported else -1.5)
-        for probability, utility, supported in zip(probabilities, conditional, covered)
+        probability
+        * (
+            utility
+            if supported
+            else (0.0 if unsupported_fallback == "neutral_draws" and event in _NEUTRAL_DRAW_EVENTS else -1.5)
+        )
+        for event, (probability, utility, supported) in enumerate(zip(probabilities, conditional, covered))
     )
     unsupported = unsupported_response_mass(probabilities, covered)
     return CandidateValue(

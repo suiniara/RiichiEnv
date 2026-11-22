@@ -26,10 +26,10 @@
 | ruleset | `mahjong_soul_4p_red_half_v3_native_rules` | [contracts.py](../src/riichienv/kar/contracts.py) |
 | native rules | `riichienv_native_rules_v4_nagashi_mask`，产物显式绑定 `native_rules_version` | [core/lib.rs](../riichienv-core/src/lib.rs)、[versioning.py](../src/riichienv/kar/versioning.py) |
 | protocol identity | `protobuf_source_and_descriptor_v1`，同时绑定主 proto 源字节与完整描述符 | [mjsoul.py](../src/riichienv/kar/mjsoul.py) |
-| input pipeline | `semantic_public_clock_frozen_decisions_v7_native_rules` | [versioning.py](../src/riichienv/kar/versioning.py) |
+| input pipeline | `semantic_public_clock_frozen_decisions_v8_action_identity` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | native replay | `native_replay_context_v4` | [native_replay.py](../src/riichienv/kar/native_replay.py) |
 | settlement | `native_mjsoul_settlement_v2` | [settlement.py](../src/riichienv/kar/settlement.py) |
-| dataset / action labels | `kar_decision_sqlite_v1` / `explicit_and_unique_response_pass_v3` | [learning/export.py](../src/riichienv/kar/learning/export.py) |
+| dataset / action labels | `kar_decision_sqlite_v3_candidate_branches_stratified` / `explicit_and_unique_response_pass_v3` | [learning/export.py](../src/riichienv/kar/learning/export.py) |
 | response opportunity evidence | `frozen_response_opportunities_v1` | [response_supervision.py](../src/riichienv/kar/response_supervision.py) |
 | frozen model precision recipe | `fp32_ieee_single_prefix_v3`，绑定实际 IEEE FP32 后端合同 `frozen_fp32_backend_v1` | [learning/config.py](../src/riichienv/kar/learning/config.py) |
 | public clock | `public_semantic_clock_v1` | [event_semantics.py](../src/riichienv/kar/event_semantics.py) |
@@ -37,8 +37,8 @@
 | model computation identity | `kar_transformer_v3_semantic_inputs`，不改变参数形状 | [learning/config.py](../src/riichienv/kar/learning/config.py) |
 | feature semantics / stochastic mask | `visible_rule_features_v2_ryanmen_pairs` / `sample_mask_v1` | [versioning.py](../src/riichienv/kar/versioning.py) |
 | response mask | `public_rule_response_mask_v5_certain_nagashi`，保留四组面子容量约束，并在完整公开证据确定末巡流局满贯时排除普通荒牌 | [contracts.py](../src/riichienv/kar/contracts.py) |
-| calibration quality / branch quality | `preregistered_calibration_quality_v3_event_ovr` / `preregistered_response_branch_quality_v2_ovr` | [calibration_quality.py](../src/riichienv/kar/calibration_quality.py) |
-| event support | `train_independent_games_v2_branch_quality`（train 计数定义不变） | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
+| calibration quality / branch quality | `preregistered_calibration_quality_v3_event_ovr` / `preregistered_response_branch_quality_v3_candidate_gate` | [calibration_quality.py](../src/riichienv/kar/calibration_quality.py) |
+| event support | `train_event_and_candidate_action_support_v4_min_candidate_sources` | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
 | calibration | `heldout_temperatures_log_gate_v6_event_ovr` | [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
 | diagnostics report / merge state | `whole_game_cluster_statistics_v4_event_ovr` | [statistics.py](../src/riichienv/kar/statistics.py) |
 | live projection | `native_rule_event_projection_v6` | [live_events.py](../src/riichienv/kar/live_events.py) |
@@ -49,7 +49,7 @@
 | bounded diagnostic / production checkpoint | `kar_exact_resume_v2` / `kar_production_exact_resume_v1`，共用不可变代际与原子指针发布 | [learning/checkpoint.py](../src/riichienv/kar/learning/checkpoint.py) / [learning/production_checkpoint.py](../src/riichienv/kar/learning/production_checkpoint.py) |
 | validation tau selection / gain bound | `frozen_validation_tau_grid_v4` / `paired_rank_hoeffding_union_v1` | [selection_quality.py](../src/riichienv/kar/selection_quality.py) |
 | tau preregistration / evaluation plan | `preregistered_tau_selection_v2` / `registered_validation_tau_matches_v4` | [selection_quality.py](../src/riichienv/kar/selection_quality.py) / [learning/validation_policy.py](../src/riichienv/kar/learning/validation_policy.py) |
-| training plan / loss / decision bound | `budget_ladder_v1` / `sentinel_safe_v1_2_1` / `one_sided_v1_2_1` | [versioning.py](../src/riichienv/kar/versioning.py) / [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
+| training plan / loss / decision bound | `budget_ladder_v1` / `source_normalized_candidate_branch_v3_timeline_stratified_support` / `one_sided_v1_2_1` | [versioning.py](../src/riichienv/kar/versioning.py) / [runtime_contracts.py](../src/riichienv/kar/runtime_contracts.py) |
 | model tier basis | `N_train_half_games` | [versioning.py](../src/riichienv/kar/versioning.py) |
 
 完整宿主 kind、字段、139 字节 little-endian Token、944 Embedding 行及 62 状态槽已物化。`schema_hash` 对活动 [Schema JSON](../src/riichienv/kar/token_schema.riichienv.v1.json) 的规范化内容计算；`reference_overlay_sha256` 对历史 overlay 的原始文件字节计算，两者不可互换。不要求合并缺失的 Kanachan 父注册表，不把设计引用改写为活动 ID。
@@ -581,11 +581,11 @@ $
 7. 同一源决策展开成 K×R 行时，行为策略损失 L_A 每个源决策只计算一次；Response/Rank 分支损失按源决策归一化权重，使每个源决策的总辅助头权重固定，不因候选数量或 replicate 数量较多而被过度加权。对同一 (X,A) 的多次 replicate，保留计数并用经验分布/软标签训练 p(E|X,A)，并对每个真实事件估计 m(X,A,E)；不得只保留一次随机结果而丢失方差信息。
 8. 训练时可用重复 Prefix + 单 ACTION 的 dense batch 先验证数学正确性；后续如做共享 Prefix KV 的可微训练优化，必须与 dense reference 的输出和梯度对拍。现有 encode_prefix() 是 eval-only/no-grad，不能直接拿来训练，否则会切断 Prefix 梯度。
 9. 价值监督支持必须按 (源状态/上下文, 候选动作, continuation policy) 报告分布与覆盖，不能只用 21 类事件的 500-game 计数替代。低覆盖候选不得被解释为已可靠估值；没有候选分支支持时维持 prior-only，不做有限-τ 重排。
-10. 默认每局前 8 个本家自摸/出牌决策开启分支生成。必须报告每个决策候选数、分支完成率、每个候选 replicate 数、每局分支成本、标签方差、事件/名次覆盖和分支策略版本；扩展每局上限或增加 replicate 前，先核对这些统计与生成成本。
+10. 默认每局从整局时间轴的早、中、晚三个区段确定性分层哈希抽样最多 8 个本家自摸/出牌决策开启分支生成（与上文一致）。必须报告每个决策候选数、分支完成率、每个候选 replicate 数、每局分支成本、标签方差、事件/名次覆盖和分支策略版本；扩展每局上限或增加 replicate 前，先核对这些统计与生成成本。
 
 **损失合同**：L_A 仍使用每个原始状态唯一的专家 ACTION；L_E 和 L_V 改为只使用该源状态所有已完成、有效的候选分支行，按源状态归一化。旧 v1 value_valid 事实标签不能与新分支标签混在同一个未经区分的总体中。新数据必须提升 DATASET_VERSION、分支监督版本、训练 recipe 和模型/release binding；旧 checkpoint/calibration/support/tau-selection 不能通过改版本字段迁移。
 
-**推理合同**：仅当模型绑定了对应分支监督版本、continuation policy 目标、候选覆盖证据，且独立校准与策略验证通过时，才允许有限-τ 候选价值重排。否则 Response/Rank 只能作为事实动作的诊断输出，策略保持 τ=∞ 的行为先验。事件级校准通过不自动意味着候选级价值通过。当前 held-out calibration 尚未收集 candidate-action 条件分支指标，因此生产推理必须拒绝有限-τ 重排并回退 prior-only，直到 candidate_action_conditional_validation 独立通过。
+**推理合同**：仅当模型绑定了对应分支监督版本、continuation policy 目标、候选覆盖证据，且独立校准（含 held-out `cal_check` 候选动作条件验证 `candidate_action_conditional_validation` 通过）与策略验证通过时，才允许有限-τ 候选价值重排。否则 Response/Rank 只能作为事实动作的诊断输出，策略保持 τ=∞ 的行为先验。事件级校准通过不自动意味着候选级价值通过；仅当 `calibration_job` 收集并由 `evaluate_branch_quality` 判定 `candidate_action_conditional_validation == "passed"` 时，生产推理与验证选 `τ` 才会放行有限-τ 重排。
 
 **验收测试**：
 - 对同一冻结 Rust 状态，所有合法候选分支均从完全相同的源状态开始，原始环境不被任何分支修改。

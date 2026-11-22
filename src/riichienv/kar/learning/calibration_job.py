@@ -13,7 +13,13 @@ import torch
 
 from ..authorization import update_implementation_sha256
 from ..budget import BudgetLedger, BudgetPlan
-from ..calibration import CalibrationArtifact, CalibrationRow, calibrate_static_rows, calibration_split_from_manifest
+from ..calibration import (
+    CalibrationArtifact,
+    CalibrationRow,
+    CandidateBranchCalibrationRow,
+    calibrate_static_rows,
+    calibration_split_from_manifest,
+)
 from ..calibration_quality import CalibrationQualityPolicy
 from ..contracts import Response, content_hash
 from ..evaluation_authorization import require_evaluation_authorization
@@ -95,10 +101,13 @@ def dataset_event_support(dataset: DecisionDataset) -> EventSupport:
         branch_groups.setdefault(source_row_id, []).append((action, replicate, status, tokens, json.loads(payload)))
 
     rows = db.execute(
-        "SELECT s.row_id,s.game_id,s.candidates,s.response_applicable,s.response_observed,s.response_target "
+        "SELECT s.row_id,s.game_id,s.cutoff_event_id,s.observer,s.candidates,"
+        "s.response_applicable,s.response_observed,s.response_target "
         "FROM samples s JOIN games g ON s.game_id=g.game_id WHERE g.split='train' ORDER BY s.row_id"
     )
-    for row_id, game_id, candidate_blob, applicable, observed, target in rows:
+    scanned_complete_sources = 0
+    scanned_action_counts = [0] * 148
+    for row_id, game_id, cutoff_event_id, observer, candidate_blob, applicable, observed, target in rows:
         legal = tuple(value for value in struct.unpack("<32H", candidate_blob) if value != 546)
         branches = branch_groups.get(row_id, [])
         complete = False
@@ -125,6 +134,10 @@ def dataset_event_support(dataset: DecisionDataset) -> EventSupport:
                     and item[4].get("candidates") == list(legal)
                     and item[4].get("candidate_action_id") == item[0]
                     and item[4].get("source_decision_row_id") == row_id
+                    and item[4].get("source_game_id") == game_id
+                    and item[4].get("source_cutoff_event_id") == cutoff_event_id
+                    and item[4].get("observer") == observer
+                    and item[4].get("source_state_identity") == first.get("source_state_identity")
                     and item[4].get("split") == "train"
                     and item[4].get("branch_sha256")
                     == content_hash(
@@ -138,6 +151,9 @@ def dataset_event_support(dataset: DecisionDataset) -> EventSupport:
                 )
             )
         if complete:
+            scanned_complete_sources += 1
+            for action in actions:
+                scanned_action_counts[action] += 1
             for _, _, _, _, payload in branches:
                 event = payload.get("response_target")
                 if type(event) is not int or not 0 <= event < 21:
@@ -160,6 +176,8 @@ def dataset_event_support(dataset: DecisionDataset) -> EventSupport:
         if not 0 <= action < 148 or type(value) is not int or value < 0:
             raise ValueError("Candidate action support contains invalid identities/counts")
         action_counts[action] = value
+    if scanned_complete_sources != complete_sources or scanned_action_counts != action_counts:
+        raise ValueError("Candidate branch support manifest counts differ from scanned database rows")
     return EventSupport(
         dataset.manifest["manifest_sha256"],
         counts,
@@ -193,6 +211,77 @@ def calibration_job_plan(
     return {**record, "plan_sha256": content_hash(record)}
 
 
+def _collect_cal_check_branch_rows(
+    predictor: FrozenModelPredictor,
+    validation: Any,
+    check_games: set[str],
+    db: sqlite3.Connection,
+) -> list[CandidateBranchCalibrationRow]:
+    if not (
+        isinstance(validation, DecisionDataset)
+        and hasattr(validation, "_db")
+        and check_games
+        and validation.manifest.get("scope", {}).get("candidate_branch_generation", {}).get("enabled")
+    ):
+        return []
+    branch_source_ids = {
+        row[0]
+        for row in validation._db().execute(
+            "SELECT DISTINCT source_decision_row_id FROM branch_samples WHERE split='validation'"
+        )
+    }
+    if not branch_source_ids:
+        return []
+    collected: list[CandidateBranchCalibrationRow] = []
+    branch_dataset = DecisionDataset(
+        validation.directory, "validation", verify_hash=False, include_candidate_branches=True
+    )
+    try:
+        for index, (row_id, _) in enumerate(branch_dataset.indices):
+            if row_id not in branch_source_ids:
+                continue
+            source_row = branch_dataset[index]
+            if source_row["game_id"] not in check_games or not source_row["candidate_branches"]:
+                continue
+            scored = predictor.score_candidate_branch_rows(source_row, source_row["candidate_branches"])
+            for branch in source_row["candidate_branches"]:
+                action_id = int(branch["candidate_action_id"])
+                resp_logits, rank_logits = scored[action_id]
+                allowed = tuple(bool(value) for value in branch["response_allowed"])
+                collected.append(
+                    CandidateBranchCalibrationRow(
+                        game_id=source_row["game_id"],
+                        source_decision_row_id=source_row["decision_row_id"],
+                        candidate_action_id=action_id,
+                        replicate=int(branch["replicate"]),
+                        response_logits=resp_logits,
+                        rank_logits=rank_logits,
+                        response_allowed=allowed,
+                        response_target=int(branch["response_target"]),
+                        rank_target=int(branch["final_rank"]),
+                    )
+                )
+                db.execute(
+                    "INSERT INTO candidate_branch_logits VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        source_row["decision_row_id"],
+                        action_id,
+                        int(branch["replicate"]),
+                        source_row["game_id"],
+                        int(branch["response_target"]),
+                        int(branch["final_rank"]),
+                        np.asarray(resp_logits, dtype="<f4").tobytes(),
+                        np.asarray(rank_logits, dtype="<f4").tobytes(),
+                        bytes(allowed),
+                    ),
+                )
+        db.commit()
+    finally:
+        if branch_dataset._connection is not None:
+            branch_dataset._connection.close()
+    return collected
+
+
 def _archive_and_fit(
     predictor: FrozenModelPredictor,
     validation: DecisionDataset,
@@ -216,7 +305,16 @@ def _archive_and_fit(
             "CREATE TABLE logits(row_id TEXT PRIMARY KEY, partition TEXT, game_id TEXT,metadata TEXT,"
             "policy BLOB,response BLOB,rank BLOB,allowed BLOB)"
         )
+        db.execute(
+            "CREATE TABLE candidate_branch_logits("
+            "source_decision_row_id TEXT, candidate_action_id INTEGER, replicate INTEGER, "
+            "game_id TEXT, response_target INTEGER, rank_target INTEGER, "
+            "response BLOB, rank BLOB, allowed BLOB, "
+            "PRIMARY KEY(source_decision_row_id, candidate_action_id, replicate))"
+        )
         fit_games = set(split.fit_games)
+        check_games = set(getattr(split, "check_games", ()))
+        candidate_branch_check_rows: list[CandidateBranchCalibrationRow] = []
         for start in range(0, len(validation), microbatch):
             stop = min(start + microbatch, len(validation))
             ledger.reserve_next(
@@ -297,6 +395,7 @@ def _archive_and_fit(
                 )
             db.commit()
             ledger.settle_elapsed(f"validation_logits/{start}")
+        candidate_branch_check_rows = _collect_cal_check_branch_rows(predictor, validation, check_games, db)
     finally:
         db.close()
     if predictor._frozen_identity() != before:
@@ -314,6 +413,7 @@ def _archive_and_fit(
             diagnostic_fixture=False,
             quality_policy=quality_policy,
             inference_device_type=device.type,
+            candidate_branch_check_rows=tuple(candidate_branch_check_rows),
         )
     finally:
         fit.close()

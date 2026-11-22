@@ -77,6 +77,28 @@ def percentile(values: list[float], probability: float) -> float | None:
     return ordered[lower] * (1 - fraction) + ordered[min(lower + 1, len(ordered) - 1)] * fraction
 
 
+def quantile_ece(probabilities: Sequence[float], outcomes: Sequence[bool], *, bins: int = 10) -> float | None:
+    """Equal-mass adaptive quantile ECE suitable for rare-event calibration."""
+    if len(probabilities) != len(outcomes) or bins < 1:
+        raise ValueError("Quantile ECE requires equal-length probability/outcome vectors and positive bins")
+    n = len(probabilities)
+    if n == 0:
+        return None
+    paired = sorted(zip(probabilities, outcomes), key=lambda item: item[0])
+    total_error = 0.0
+    for index in range(bins):
+        start = (index * n) // bins
+        stop = ((index + 1) * n) // bins
+        if stop <= start:
+            continue
+        bucket = paired[start:stop]
+        size = stop - start
+        mean_p = math.fsum(p for p, _ in bucket) / size
+        mean_y = math.fsum(1.0 if y else 0.0 for _, y in bucket) / size
+        total_error += size * abs(mean_p - mean_y)
+    return total_error / n
+
+
 @dataclass
 class GameClusters:
     totals: dict[str, dict[str, list[float]]] = field(default_factory=dict)

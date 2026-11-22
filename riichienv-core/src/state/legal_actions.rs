@@ -3,6 +3,107 @@ use crate::rule::GameRule;
 use crate::state::GameState;
 use crate::types::{Conditions, Meld, MeldType, Wind, is_terminal_tile};
 
+fn can_form_standard_melds(counts: &mut [u8; 34], start: usize) -> bool {
+    let mut idx = start;
+    while idx < 34 && counts[idx] == 0 {
+        idx += 1;
+    }
+    if idx == 34 {
+        return true;
+    }
+    if counts[idx] >= 3 {
+        counts[idx] -= 3;
+        if can_form_standard_melds(counts, idx) {
+            counts[idx] += 3;
+            return true;
+        }
+        counts[idx] += 3;
+    }
+    if idx < 27 && idx % 9 <= 6 && counts[idx + 1] > 0 && counts[idx + 2] > 0 {
+        counts[idx] -= 1;
+        counts[idx + 1] -= 1;
+        counts[idx + 2] -= 1;
+        if can_form_standard_melds(counts, idx) {
+            counts[idx] += 1;
+            counts[idx + 1] += 1;
+            counts[idx + 2] += 1;
+            return true;
+        }
+        counts[idx] += 1;
+        counts[idx + 1] += 1;
+        counts[idx + 2] += 1;
+    }
+    false
+}
+
+fn is_standard_win_counts(counts: &[u8; 34]) -> bool {
+    for pair in 0..34 {
+        if counts[pair] >= 2 {
+            let mut rem = *counts;
+            rem[pair] -= 2;
+            if can_form_standard_melds(&mut rem, 0) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Returns true if declaring Ankan on `t34` after riichi alters any valid
+/// winning mentsu/jantou decomposition of `hand_pre + wait` (e.g., `t34` can
+/// participate in a sequence or serve as the pair for some wait).
+fn ankan_changes_mentsu_decomposition(hand_pre: &[u8], t34: u8, waits: &[u32]) -> bool {
+    let mut base = [0u8; 34];
+    for &tile in hand_pre {
+        let kind = (tile / 4) as usize;
+        if kind < 34 {
+            base[kind] += 1;
+        }
+    }
+    let t = t34 as usize;
+    if t >= 34 || base[t] < 3 {
+        return true;
+    }
+    for &wait in waits {
+        let w = wait as usize;
+        if w >= 34 {
+            continue;
+        }
+        let mut counts = base;
+        counts[w] += 1;
+        // Case 1: t34 can be used as the jantou (pair).
+        if counts[t] >= 2 {
+            let mut rem = counts;
+            rem[t] -= 2;
+            if can_form_standard_melds(&mut rem, 0) {
+                return true;
+            }
+        }
+        // Case 2: suited t34 can participate in any shuntsu (sequence).
+        if t < 27 {
+            let rank = t % 9;
+            let seqs: [(usize, usize, usize); 3] = [
+                (t.wrapping_sub(2), t.wrapping_sub(1), t),
+                (t.wrapping_sub(1), t, t + 1),
+                (t, t + 1, t + 2),
+            ];
+            let valid_seq = [rank >= 2, (1..=7).contains(&rank), rank <= 6];
+            for (ok, (a, b, c)) in valid_seq.into_iter().zip(seqs) {
+                if ok && counts[a] > 0 && counts[b] > 0 && counts[c] > 0 {
+                    let mut rem = counts;
+                    rem[a] -= 1;
+                    rem[b] -= 1;
+                    rem[c] -= 1;
+                    if is_standard_win_counts(&rem) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Filter already-permitted discards by the resulting hand's tenpai status.
 /// Both the legacy two-step API and complete riichi actions use this one rule.
 pub(crate) fn tenpai_discards<'a>(
@@ -243,7 +344,7 @@ impl GameStateLegalActions for GameState {
                                 hand_pre.remove(pos);
                             }
                             let calc_pre = crate::hand_evaluator::HandEvaluator::new(
-                                hand_pre,
+                                hand_pre.clone(),
                                 self.players[pid_us].melds.clone(),
                             );
                             let mut waits_pre = calc_pre.get_waits_with_rule(&self.rule);
@@ -265,7 +366,10 @@ impl GameStateLegalActions for GameState {
                             let mut waits_post = calc_post.get_waits_with_rule(&self.rule);
                             waits_post.sort();
 
-                            if waits_pre == waits_post && !waits_pre.is_empty() {
+                            if waits_pre == waits_post
+                                && !waits_pre.is_empty()
+                                && !ankan_changes_mentsu_decomposition(&hand_pre, t34, &waits_pre)
+                            {
                                 let consume = vec![lowest, lowest + 1, lowest + 2, lowest + 3];
                                 legals.push(Action::new(
                                     ActionType::Ankan,

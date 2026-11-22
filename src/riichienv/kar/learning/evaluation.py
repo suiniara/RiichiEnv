@@ -214,30 +214,58 @@ def cal_fit_loss_summary(
 
 
 def _factual_validation_view(
-    batch: TrainingBatch, outputs: ModelOutputs
-) -> tuple[TrainingBatch, ModelOutputs]:
-    mask = batch.labels.action_valid
-    if bool(mask.all()):
-        return batch, outputs
-    indices = mask.nonzero().flatten().tolist()
+    batch: TrainingBatch,
+    outputs: ModelOutputs,
+    rows: list[dict[str, Any]],
+    unmasked_fields: dict[str, torch.Tensor],
+) -> tuple[TrainingBatch, ModelOutputs, dict[str, torch.Tensor]]:
+    source_positions: list[int] = []
+    cursor = 0
+    for row in rows:
+        source_positions.append(cursor)
+        cursor += 1 + len(row.get("candidate_branches", ()))
+    if cursor != batch.inputs.size:
+        raise ValueError("Source rows do not match expanded validation batch size")
+    device = batch.labels.action_valid.device
+    idx = torch.tensor(source_positions, dtype=torch.int64, device=device)
+    has_branches = cursor != len(rows)
+    if not has_branches:
+        return batch, outputs, unmasked_fields
     inputs = replace(
         batch.inputs,
-        fields={key: value[mask] for key, value in batch.inputs.fields.items()},
-        candidates=batch.inputs.candidates[mask],
-        decide_index=batch.inputs.decide_index[mask],
-        action_index=batch.inputs.action_index[mask],
-        context_ids=tuple(batch.inputs.context_ids[index] for index in indices),
+        fields={key: value[idx] for key, value in batch.inputs.fields.items()},
+        candidates=batch.inputs.candidates[idx],
+        decide_index=batch.inputs.decide_index[idx],
+        action_index=batch.inputs.action_index[idx],
+        context_ids=tuple(batch.inputs.context_ids[index] for index in source_positions),
     )
-    labels = Labels(**{key: value[mask] for key, value in batch.labels.__dict__.items()})
-    games = tuple(batch.game_ids[index] for index in indices)
-    factual = TrainingBatch(inputs, labels, games, len(indices))
+    # Restore factual auxiliary validity cleared on branched source rows during
+    # loss collation so FullDiagnostics evaluates every factual validation row.
+    resp_app = torch.tensor([bool(row["response_applicable"]) for row in rows], dtype=torch.bool, device=device)
+    resp_obs = torch.tensor([bool(row["response_observed"]) for row in rows], dtype=torch.bool, device=device)
+    val_valid = torch.tensor([bool(row["value_valid"]) for row in rows], dtype=torch.bool, device=device)
+    labels = Labels(
+        batch.labels.action_target[idx],
+        batch.labels.action_valid[idx],
+        batch.labels.response_target[idx],
+        resp_app,
+        resp_obs,
+        batch.labels.final_rank_target[idx],
+        val_valid,
+        batch.labels.response_allowed[idx],
+        (resp_app & resp_obs).float(),
+        val_valid.float(),
+    )
+    games = tuple(batch.game_ids[index] for index in source_positions)
+    factual = TrainingBatch(inputs, labels, games, len(source_positions))
     selected = ModelOutputs(
-        outputs.policy_logits[mask],
-        outputs.response_logits[mask],
-        outputs.rank_logits[mask],
-        outputs.action_present[mask],
+        outputs.policy_logits[idx],
+        outputs.response_logits[idx],
+        outputs.rank_logits[idx],
+        outputs.action_present[idx],
     )
-    return factual, selected
+    public_fields = {key: value[idx] for key, value in unmasked_fields.items()}
+    return factual, selected, public_fields
 
 @torch.no_grad()
 def evaluate_complete(  # noqa: PLR0915
@@ -317,14 +345,16 @@ def evaluate_complete(  # noqa: PLR0915
                         factual_policy[source_index] if source_index is not None else outputs.policy_logits[index]
                     )
                 outputs = replace(outputs, policy_logits=torch.stack(policy_rows))
-            factual_batch, factual_outputs = _factual_validation_view(viewed, outputs)
+            factual_batch, factual_outputs, public_fields = _factual_validation_view(
+                viewed, outputs, rows, batch.inputs.fields
+            )
             add_diagnostics(
                 metrics,
                 factual_outputs,
                 factual_batch,
                 calibration=calibration,
                 support=support,
-                public_fields=factual_batch.inputs.fields,
+                public_fields=public_fields,
             )
             partial = cal_fit_loss_summary(outputs, viewed)
             full_partial = cal_fit_loss_summary(outputs, viewed, fit_only=False)

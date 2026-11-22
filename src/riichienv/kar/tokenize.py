@@ -738,6 +738,22 @@ def encode_prefix(  # noqa: PLR0915
     )
 
 
+def encode_action_token(prefix: TokenSequence, action_id: int) -> bytes:
+    """Encode only the 139-byte ACTION suffix token without copying the full prefix."""
+    if prefix.schema_id != ACTIVE_SCHEMA_ID or prefix.schema_hash != _active_hash():
+        raise ValueError("An ACTION suffix cannot mix schema versions")
+    if prefix.rows[-1]["kind"] != 9 or action_id not in prefix.candidates:
+        raise ValueError("An ACTION suffix requires a legal candidate and an unsuffixed DECIDE prefix")
+    row = _row(
+        10,
+        prefix.logical_position + 1,
+        3,
+        actor=1,
+        **dict(zip(ACTION_FACTOR_FIELDS, action_factor_ids(action_id))),
+    )
+    return _freeze_token(row, prefix.schema_hash).blob
+
+
 def append_action(prefix: TokenSequence, action_id: int) -> TokenSequence:
     if prefix.schema_id != ACTIVE_SCHEMA_ID or prefix.schema_hash != _active_hash():
         raise ValueError("An ACTION suffix cannot mix schema versions")

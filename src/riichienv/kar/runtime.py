@@ -56,6 +56,28 @@ class RuntimePolicy:
             if support is None:
                 raise ValueError("Calibrated inference requires bound event-support evidence")
             calibration.validate(self.binding, support, allow_diagnostic=allow_diagnostic_calibration)
+            self._quality_report: dict[str, Any] | None = calibration.quality_report
+            self._branch_report: dict[str, Any] | None = calibration.branch_quality_report
+            self._branch_states: tuple[str, ...] = tuple(
+                self._branch_report["branches"][str(event)]["status"] for event in range(21)
+            )
+            self._branch_summary: dict[str, Any] | None = {
+                "version": self._branch_report["version"],
+                "branch_quality_policy_sha256": self._branch_report["branch_quality_policy_sha256"],
+                "candidate_action_conditional_status": self._branch_report.get(
+                    "candidate_action_conditional_validation", {}
+                ).get("status"),
+                "value_branch_statuses": list(self._branch_states),
+            }
+            self._any_value_supported = any(support.value_supported(self._branch_states))
+            self._empirical_check_valid = calibration.gate_valid and self._quality_report["status"] == "passed"
+        else:
+            self._quality_report = None
+            self._branch_report = None
+            self._branch_states = ("unavailable",) * 21
+            self._branch_summary = None
+            self._any_value_supported = False
+            self._empirical_check_valid = False
 
     def decide(  # noqa: PLR0915
         self, snapshot: PublicSnapshot, candidates: Sequence[int], context: str, *, bounds: BoundEvidence | None = None
@@ -70,12 +92,7 @@ class RuntimePolicy:
         ):
             raise ValueError("A runtime decision requires a complete visible prefix and current semantic clock")
         artifact = self.calibration
-        branch_report = artifact.branch_quality_report if artifact is not None else None
-        branch_states = (
-            tuple(branch_report["branches"][str(event)]["status"] for event in range(21))
-            if branch_report
-            else ("unavailable",) * 21
-        )
+        branch_states = self._branch_states
         temperatures = artifact.temperatures if artifact is not None else (1.0, 1.0, 1.0)
         logits = self.predictor.policy(snapshot, ids, context)
         prior, logs = legal_prior(logits, ids, temperatures[0])
@@ -100,8 +117,10 @@ class RuntimePolicy:
             "tau": "infinity" if math.isinf(self.options.tau) else self.options.tau,
             "max_prior_amplification": self.options.max_prior_amplification,
             "diagnostic_argmax": self.options.diagnostic_argmax,
-            "calibration_quality_status": artifact.quality_report["status"] if artifact is not None else "unavailable",
-            "branch_quality_report": branch_report,
+            "calibration_quality_status": self._quality_report["status"]
+            if self._quality_report is not None
+            else "unavailable",
+            "branch_quality_summary": self._branch_summary,
             "candidate_forward_count": 0,
             "KL": 0.0,
             "model_gain": 0.0,
@@ -116,15 +135,15 @@ class RuntimePolicy:
             reason, status = "infinite_tau_baseline", "unfitted_prior_only" if artifact is None else "prior_only"
         elif artifact is None or not artifact.gate_valid:
             reason = "calibration_or_support_gate_unavailable"
-        elif not artifact.empirical_check_valid:
+        elif not self._empirical_check_valid:
             reason = (
                 "calibration_quality_failed"
-                if artifact.quality_report["status"] == "failed"
+                if self._quality_report is not None and self._quality_report["status"] == "failed"
                 else "independent_empirical_check_unavailable"
             )
         elif self.support is None:
             reason = "event_support_manifest_unavailable"
-        elif not any(self.support.value_supported(branch_states)):
+        elif not self._any_value_supported:
             reason = "no_quality_qualified_response_branches"
         elif len(selected) < 2 or mass == 0:
             reason = "fewer_than_two_supported_discards_or_zero_mass"
@@ -132,9 +151,10 @@ class RuntimePolicy:
             artifact.diagnostic_fixture and self.allow_diagnostic_calibration
         ):
             reason = "candidate_action_branch_supervision_unavailable"
-        elif artifact.branch_quality_report.get("candidate_action_conditional_validation", {}).get("status") != "passed" and not (
-            artifact.diagnostic_fixture and self.allow_diagnostic_calibration
-        ):
+        elif (
+            self._branch_summary is None
+            or self._branch_summary["candidate_action_conditional_status"] != "passed"
+        ) and not (artifact.diagnostic_fixture and self.allow_diagnostic_calibration):
             reason = "candidate_action_conditional_calibration_unavailable"
         elif self.options.mode == "certified" and bounds is None:
             reason = "error_bound_certificate_unavailable"

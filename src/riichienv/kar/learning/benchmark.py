@@ -9,7 +9,7 @@ from typing import Any
 import torch
 
 from ..schema import decode_token
-from ..tokenize import TokenSequence, append_action
+from ..tokenize import TokenSequence, encode_action_token
 from .batch import collate_inputs
 from .config import ModelConfig
 from .dataset import DecisionDataset
@@ -59,16 +59,26 @@ def benchmark_candidates(dataset_dir: Path, *, preset: str = "small", repetition
     torch.set_num_threads(2)
     torch.manual_seed(17)
     dataset = DecisionDataset(dataset_dir, "validation")
-    row = dataset[0]
+    row = None
+    discard_candidates: list[int] = []
+    for index in range(len(dataset)):
+        candidate_row = dataset[index]
+        discards = [action for action in candidate_row["candidates"] if 0 <= action < 148]
+        if discards:
+            row = candidate_row
+            discard_candidates = discards
+            break
+    if row is None:
+        raise ValueError("Validation dataset has no decision with legal discard candidates")
     count = row["decide_index"] + 1
     prefix_bytes = row["tokens"][: count * 139]
     tokens = tuple(decode_token(prefix_bytes[index : index + 139]) for index in range(0, len(prefix_bytes), 139))
     prefix = TokenSequence(tokens, tuple(row["candidates"]), count - 64, row["decide_index"], tokens[-1]["positions"])
     prefix_input = collate_inputs([{**row, "tokens": prefix_bytes, "action_index": -1}])
-    branches = []
-    for action in row["candidates"]:
-        sequence = append_action(prefix, action)
-        branches.append({**row, "tokens": sequence.to_bytes()[-139:], "decide_index": 0, "action_index": 0})
+    branches = [
+        {**row, "tokens": encode_action_token(prefix, action), "decide_index": 0, "action_index": 0}
+        for action in discard_candidates
+    ]
     action_input = collate_inputs(branches)
     model = KARTransformer(ModelConfig.from_preset(preset)).eval()
     cache = model.encode_prefix(prefix_input)

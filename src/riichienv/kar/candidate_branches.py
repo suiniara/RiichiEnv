@@ -64,7 +64,9 @@ def _dora_base(indicator136: int) -> int:
     if base < 27:
         suit, rank = divmod(base, 9)
         return suit * 9 + ((rank + 1) % 9)
-    return 27 + ((base - 27 + 1) % 7)
+    if base < 31:
+        return 27 + ((base - 27 + 1) % 4)
+    return 31 + ((base - 31 + 1) % 3)
 
 
 def _discard_efficiency_score(hand: list[int], discard_tile: int, dora_bases: set[int]) -> float:
@@ -97,11 +99,10 @@ def _discard_efficiency_score(hand: list[int], discard_tile: int, dora_bases: se
 
     isolated = 0
     if base < 27:
-        rank = base % 9
-        neighbours = sum(
+        neighbours = counts[base] + sum(
             counts[index]
             for index in (base - 2, base - 1, base + 1, base + 2)
-            if 0 <= index < 27 and abs(index // 9 - base // 9) == 0
+            if 0 <= index < 27 and index // 9 == base // 9
         )
         isolated = int(neighbours == 0)
     else:
@@ -109,7 +110,7 @@ def _discard_efficiency_score(hand: list[int], discard_tile: int, dora_bases: se
 
     dora_penalty = 4.0 if base in dora_bases else 0.0
     red_penalty = 1.25 if discard_tile in {16, 52, 88} else 0.0
-    return shape - dora_penalty - red_penalty - 0.6 * isolated
+    return shape - dora_penalty - red_penalty + 0.6 * isolated
 
 
 def _choose_own_candidate(
@@ -126,7 +127,7 @@ def _choose_own_candidate(
         scored = [
             (
                 _discard_efficiency_score(hand, int(candidate.actions[-1].tile), dora_bases)
-                + (0.35 if candidate.spec.riichi and observation.is_tenpai else 0.0),
+                + (0.35 if candidate.spec.riichi else 0.0),
                 candidate,
             )
             for candidate in discards
@@ -188,6 +189,7 @@ def _branch_one(
     replicate: int,
     max_decisions: int,
     prefix: Any,
+    resample_opponent_hands: bool = False,
 ) -> dict[str, Any]:
     action_id = candidate.global_id
     seed = _seed(master_seed, source_game_id, cutoff_event_id, action_id, replicate)
@@ -212,7 +214,11 @@ def _branch_one(
         "replicate": replicate,
         "seed": seed,
         "wall_seed": wall_seed,
-        "wall_conditioning": "native_unknown_tiles_sampled_once_per_source_replicate_shared_across_candidates",
+        "wall_conditioning": (
+            "native_observer_unknown_pool_and_non_riichi_opponent_hands_shared_across_candidates"
+            if resample_opponent_hands
+            else "native_unknown_tiles_sampled_once_per_source_replicate_shared_across_candidates"
+        ),
         "continuation_policy": CONTINUATION_POLICY_VERSION,
         "ruleset_hash": MJSOUL_RULESET.ruleset_hash,
         "source_candidates": list(opportunity.candidates),
@@ -239,7 +245,10 @@ def _branch_one(
     env = source_env.clone()
     before = len(env.rule_log)
     try:
-        env.prepare_replay_continuation_wall(wall_seed)
+        if resample_opponent_hands:
+            env.prepare_observer_continuation_wall(opportunity.snapshot.observer_player_id, wall_seed)
+        else:
+            env.prepare_replay_continuation_wall(wall_seed)
         execute_candidate(env, opportunity.snapshot.observer_player_id, candidate)
         after_action = list(env.rule_log)
         trigger_ids = [
@@ -300,6 +309,7 @@ def simulate_candidate_branches(
     master_seed: int,
     replicates: int = 1,
     max_decisions: int = 10000,
+    resample_opponent_hands: bool = False,
 ) -> list[dict[str, Any]]:
     """Enumerate legal discard candidates from one immutable native decision state.
 
@@ -348,6 +358,7 @@ def simulate_candidate_branches(
                 replicate=replicate,
                 max_decisions=max_decisions,
                 prefix=prefix,
+                resample_opponent_hands=resample_opponent_hands,
             )
             row["source_state_identity"] = source_identity
             row["expected_branch_action_ids"] = [action for action in opportunity.candidates if 0 <= action < 148]

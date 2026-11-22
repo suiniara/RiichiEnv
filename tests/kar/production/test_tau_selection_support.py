@@ -10,7 +10,13 @@ torch = pytest.importorskip("torch")
 
 from riichienv.kar.authorization import update_implementation_sha256
 from riichienv.kar.budget import BudgetLedger, BudgetPlan, CostForecast
-from riichienv.kar.calibration import CalibrationRow, calibrate_static_rows, calibration_split, choose_validation_tau
+from riichienv.kar.calibration import (
+    CalibrationRow,
+    CandidateBranchCalibrationRow,
+    calibrate_static_rows,
+    calibration_split,
+    choose_validation_tau,
+)
 from riichienv.kar.calibration_quality import BranchQualityCriterion, BranchQualityPolicy, CalibrationQualityPolicy
 from riichienv.kar.contracts import content_hash, game_split
 from riichienv.kar.learning import validation_policy
@@ -83,6 +89,19 @@ def prior_release(tmp_path):
                 value_valid=True,
             )
 
+        branch_check = [
+            CandidateBranchCalibrationRow(
+                split.check_games[0],
+                split.check_games[0] + "/decision",
+                4,
+                0,
+                (8.0,) + (0.0,) * 20,
+                ((8.0, 0.0, 0.0, 0.0),) * 21,
+                (True,) * 21,
+                0,
+                0,
+            )
+        ]
         calibration = calibrate_static_rows(
             [row(split.fit_games[0])],
             [row(split.check_games[0])],
@@ -93,6 +112,7 @@ def prior_release(tmp_path):
             quality_policy=quality,
             inference_device_type="cpu",
             source_reference="synthetic production-shaped arrays, not actual model calibration",
+            candidate_branch_check_rows=branch_check,
         )
         assert calibration.empirical_check_valid
         directory = tmp_path / state
