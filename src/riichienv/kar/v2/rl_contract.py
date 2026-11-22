@@ -15,6 +15,7 @@ Implements the three mandatory Stage-4 stability & anti-collapse mechanisms:
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import random
@@ -303,6 +304,9 @@ class HanchanTrajectoryInput:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> HanchanTrajectoryInput:
+        for key in ("steps", "round_start_potentials", "terminated"):
+            if key not in data or data[key] is None:
+                raise ValueError(f"HanchanTrajectoryInput missing required field {key!r}")
         raw_trunc = data.get("truncation")
         return cls(
             steps=[RoundBoundary.from_dict(s) for s in data["steps"]],
@@ -325,8 +329,27 @@ def _extract_trajectory_boundary_metadata(traj: HanchanTrajectoryInput) -> dict[
         boundary_type = "terminal"
         trunc_dict: dict[str, Any] | None = None
     elif traj.truncation is not None:
+        assert last_k is not None
         boundary_type = traj.truncation.kind
-        trunc_dict = traj.truncation.to_dict()
+        resolved_next_idx = last_k if traj.truncation.kind == "intra_round" else traj.truncation.next_round_index
+        resolved_next_phi = (
+            float(traj.round_start_potentials[last_k])
+            if traj.truncation.kind == "intra_round"
+            else traj.truncation.next_round_phi
+        )
+        resolved_boot_round = (
+            traj.truncation.bootstrap_round_index
+            if traj.truncation.bootstrap_round_index is not None
+            else resolved_next_idx
+        )
+        trunc_dict = RolloutTruncation(
+            kind=traj.truncation.kind,
+            bootstrap_v_shaped=float(traj.truncation.bootstrap_v_shaped),
+            next_round_index=resolved_next_idx,
+            next_round_phi=resolved_next_phi,
+            bootstrap_round_index=resolved_boot_round,
+            bootstrap_v_raw=traj.truncation.bootstrap_v_raw,
+        ).to_dict()
     else:
         assert traj.truncated_bootstrap_v_shaped is not None and last_k is not None
         boundary_type = "intra_round"
@@ -346,6 +369,37 @@ def _extract_trajectory_boundary_metadata(traj: HanchanTrajectoryInput) -> dict[
         "terminal_reward": (float(traj.terminal_reward) if traj.terminal_reward is not None else None),
         "truncation": trunc_dict,
     }
+
+
+def _validate_restored_boundary_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    required_keys = (
+        "num_steps",
+        "first_round_index",
+        "last_round_index",
+        "boundary_type",
+        "terminated",
+        "terminal_reward",
+        "truncation",
+    )
+    for key in required_keys:
+        if key not in entry:
+            raise ValueError(f"Serialized trajectory boundary missing required field {key!r}")
+    item = dict(entry)
+    btype = str(item["boundary_type"])
+    terminated = bool(item["terminated"])
+    if btype == "terminal":
+        if not terminated or item["terminal_reward"] is None or item["truncation"] is not None:
+            raise ValueError("Inconsistent terminal boundary metadata in serialized rollout batch")
+    elif btype in ("intra_round", "cross_round"):
+        if terminated or item["terminal_reward"] is not None or item["truncation"] is None:
+            raise ValueError(f"Inconsistent {btype!r} boundary metadata in serialized rollout batch")
+        trunc_obj = RolloutTruncation.from_dict(item["truncation"])
+        if trunc_obj.kind != btype:
+            raise ValueError(f"Boundary type {btype!r} disagrees with truncation.kind {trunc_obj.kind!r}")
+        item["truncation"] = trunc_obj.to_dict()
+    else:
+        raise ValueError(f"Unknown serialized boundary_type={btype!r}")
+    return item
 
 
 class FrozenGAERolloutBatch:
@@ -380,7 +434,9 @@ class FrozenGAERolloutBatch:
         self.rollout_v_shaped = rollout_v_shaped.detach().clone().float()
         self.gamma = float(gamma)
         self.gae_lambda = float(gae_lambda)
-        self.trajectory_boundaries: tuple[dict[str, Any], ...] = tuple(dict(b) for b in trajectory_boundaries)
+        self.trajectory_boundaries: tuple[dict[str, Any], ...] = tuple(
+            copy.deepcopy(dict(b)) for b in trajectory_boundaries
+        )
         self._target_sha256 = self._compute_target_digest()
 
     def _compute_target_digest(self) -> str:
@@ -424,28 +480,45 @@ class FrozenGAERolloutBatch:
             "rollout_v_shaped": self.rollout_v_shaped.detach().cpu().clone(),
             "gamma": float(self.gamma),
             "gae_lambda": float(self.gae_lambda),
-            "trajectory_boundaries": [dict(b) for b in self.trajectory_boundaries],
+            "trajectory_boundaries": [copy.deepcopy(b) for b in self.trajectory_boundaries],
             "target_sha256": self._target_sha256,
         }
 
     @classmethod
     def from_state_dict(cls, state: Mapping[str, Any]) -> FrozenGAERolloutBatch:
-        """Restore a serialized [`FrozenGAERolloutBatch`] and verify cryptographic integrity."""
+        """Restore a serialized [`FrozenGAERolloutBatch`] and verify schema & cryptographic integrity."""
+        required_top = (
+            "version_tag",
+            "step_rewards",
+            "advantages",
+            "shaped_returns",
+            "rollout_v_shaped",
+            "gamma",
+            "gae_lambda",
+            "trajectory_boundaries",
+            "target_sha256",
+        )
+        for key in required_top:
+            if key not in state or state[key] is None:
+                raise ValueError(f"FrozenGAERolloutBatch state_dict missing required field {key!r}")
+
         vt_raw = state["version_tag"]
+        if not isinstance(vt_raw, Mapping):
+            raise ValueError("FrozenGAERolloutBatch state_dict['version_tag'] must be a mapping")
+        for vt_key in ("policy_version", "critic_version", "grp_sha256", "ruleset_sha256"):
+            if vt_key not in vt_raw or vt_raw[vt_key] is None:
+                raise ValueError(f"FrozenGAERolloutBatch version_tag missing required field {vt_key!r}")
         tag = RolloutVersionTag(
             policy_version=int(vt_raw["policy_version"]),
             critic_version=int(vt_raw["critic_version"]),
             grp_sha256=str(vt_raw["grp_sha256"]),
             ruleset_sha256=str(vt_raw["ruleset_sha256"]),
         )
-        raw_boundaries = state.get("trajectory_boundaries", ())
-        normalized_boundaries: list[dict[str, Any]] = []
-        for entry in raw_boundaries:
-            item = dict(entry)
-            if item.get("truncation") is not None:
-                # Re-validate RolloutTruncation schema on restore
-                item["truncation"] = RolloutTruncation.from_dict(item["truncation"]).to_dict()
-            normalized_boundaries.append(item)
+
+        raw_boundaries = state["trajectory_boundaries"]
+        if not isinstance(raw_boundaries, Sequence) or isinstance(raw_boundaries, (str, bytes)):
+            raise ValueError("FrozenGAERolloutBatch state_dict['trajectory_boundaries'] must be a sequence")
+        normalized_boundaries = [_validate_restored_boundary_entry(entry) for entry in raw_boundaries]
 
         batch = cls(
             version_tag=tag,
@@ -457,6 +530,11 @@ class FrozenGAERolloutBatch:
             gae_lambda=float(state["gae_lambda"]),
             trajectory_boundaries=normalized_boundaries,
         )
+        if normalized_boundaries and sum(int(b["num_steps"]) for b in normalized_boundaries) != batch.num_steps:
+            raise ValueError(
+                "Serialized trajectory_boundaries total num_steps disagrees with rollout tensor length "
+                f"({sum(int(b['num_steps']) for b in normalized_boundaries)} != {batch.num_steps})"
+            )
         expected_sha = str(state["target_sha256"])
         if batch.target_sha256 != expected_sha:
             raise RuntimeError(
@@ -519,6 +597,7 @@ class FrozenGAERolloutBatch:
         current_policy_version: int,
         expected_grp_sha256: str,
         expected_ruleset_sha256: str,
+        expected_critic_version: int | None = None,
         max_staleness: int = 2,
     ) -> None:
         """Verify version provenance, detached state, and cryptographic immutability before each PPO epoch."""
@@ -526,6 +605,7 @@ class FrozenGAERolloutBatch:
             current_policy_version=current_policy_version,
             expected_grp_sha256=expected_grp_sha256,
             expected_ruleset_sha256=expected_ruleset_sha256,
+            expected_critic_version=expected_critic_version,
             max_staleness=max_staleness,
         )
         if (

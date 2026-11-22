@@ -225,10 +225,13 @@ class RoundBoundary:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> RoundBoundary:
+        for key in ("round_index", "phi_k", "v_raw"):
+            if key not in data or data[key] is None:
+                raise ValueError(f"RoundBoundary missing required field {key!r}")
         return cls(
             round_index=int(data["round_index"]),
-            phi_k=float(data["phi_k"]),
-            v_raw=float(data["v_raw"]),
+            phi_k=_require_finite(float(data["phi_k"]), "RoundBoundary.phi_k"),
+            v_raw=_require_finite(float(data["v_raw"]), "RoundBoundary.v_raw"),
         )
 
 
@@ -271,19 +274,35 @@ class RolloutTruncation:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> RolloutTruncation:
+        for key in ("kind", "bootstrap_v_shaped"):
+            if key not in data or data[key] is None:
+                raise ValueError(f"RolloutTruncation missing required field {key!r}")
         raw_kind = str(data["kind"])
         if raw_kind not in ("intra_round", "cross_round"):
             raise ValueError(f"Unknown truncation.kind={raw_kind!r}")
         kind: Literal["intra_round", "cross_round"] = "intra_round" if raw_kind == "intra_round" else "cross_round"
+        if kind == "cross_round":
+            if data.get("next_round_index") is None:
+                raise ValueError("RolloutTruncation(kind='cross_round') missing required field 'next_round_index'")
+            if data.get("next_round_phi") is None:
+                raise ValueError("RolloutTruncation(kind='cross_round') missing required field 'next_round_phi'")
         return cls(
             kind=kind,
-            bootstrap_v_shaped=float(data["bootstrap_v_shaped"]),
+            bootstrap_v_shaped=_require_finite(float(data["bootstrap_v_shaped"]), "bootstrap_v_shaped"),
             next_round_index=(int(data["next_round_index"]) if data.get("next_round_index") is not None else None),
-            next_round_phi=(float(data["next_round_phi"]) if data.get("next_round_phi") is not None else None),
+            next_round_phi=(
+                _require_finite(float(data["next_round_phi"]), "next_round_phi")
+                if data.get("next_round_phi") is not None
+                else None
+            ),
             bootstrap_round_index=(
                 int(data["bootstrap_round_index"]) if data.get("bootstrap_round_index") is not None else None
             ),
-            bootstrap_v_raw=(float(data["bootstrap_v_raw"]) if data.get("bootstrap_v_raw") is not None else None),
+            bootstrap_v_raw=(
+                _require_finite(float(data["bootstrap_v_raw"]), "bootstrap_v_raw")
+                if data.get("bootstrap_v_raw") is not None
+                else None
+            ),
         )
 
 
@@ -371,7 +390,10 @@ def _resolve_truncation_terminal_step(
     if truncation.kind == "cross_round":
         nxt_k = truncation.next_round_index
         if nxt_k is None or nxt_k <= last_k:
-            raise ValueError(f"cross_round truncation requires next_round_index > last_k ({last_k}), got {nxt_k}")
+            raise ValueError(
+                f"cross_round truncation requires next_round_index > last_k ({last_k}), got {nxt_k} "
+                "(round already entered in trajectory; refusing duplicate or regressive potential reward)"
+            )
         if truncation.next_round_phi is None:
             raise ValueError(
                 f"cross_round truncation at next_round_index={nxt_k} requires explicit `next_round_phi` "
@@ -394,7 +416,28 @@ def _resolve_truncation_terminal_step(
     raise ValueError(f"Unknown truncation.kind={truncation.kind!r}")
 
 
-def compute_hanchan_gae(  # noqa: PLR0912
+def _validate_steps_and_potentials(
+    steps: Sequence[RoundBoundary],
+    round_start_potentials: Sequence[float],
+) -> None:
+    n_potentials = len(round_start_potentials)
+    for idx, phi_val in enumerate(round_start_potentials):
+        _require_finite(phi_val, f"round_start_potentials[{idx}]")
+    for idx, step in enumerate(steps):
+        if not 0 <= step.round_index < n_potentials:
+            raise ValueError(
+                f"step.round_index={step.round_index} out of bounds for {n_potentials} round_start_potentials"
+            )
+        step_phi = _require_finite(step.phi_k, f"steps[{idx}].phi_k")
+        _require_finite(step.v_raw, f"steps[{idx}].v_raw")
+        if abs(step_phi - float(round_start_potentials[step.round_index])) > 1e-5:
+            raise ValueError(
+                f"step.phi_k={step_phi} disagrees with "
+                f"round_start_potentials[{step.round_index}]={round_start_potentials[step.round_index]}"
+            )
+
+
+def compute_hanchan_gae(
     steps: Sequence[RoundBoundary],
     round_start_potentials: Sequence[float],
     *,
@@ -427,25 +470,15 @@ def compute_hanchan_gae(  # noqa: PLR0912
     """
     gamma = _require_finite(gamma, "gamma")
     gae_lambda = _require_finite(gae_lambda, "gae_lambda")
+    if terminated and (truncation is not None or truncated_bootstrap_v_shaped is not None):
+        raise ValueError("truncation / truncated_bootstrap_v_shaped must not be supplied when terminated=True")
+    if not terminated and terminal_reward is not None:
+        raise ValueError("terminal_reward must not be supplied when terminated=False")
     n_steps = len(steps)
     if n_steps == 0:
         return [], [], []
 
-    n_potentials = len(round_start_potentials)
-    for idx, phi_val in enumerate(round_start_potentials):
-        _require_finite(phi_val, f"round_start_potentials[{idx}]")
-    for idx, step in enumerate(steps):
-        if not 0 <= step.round_index < n_potentials:
-            raise ValueError(
-                f"step.round_index={step.round_index} out of bounds for {n_potentials} round_start_potentials"
-            )
-        step_phi = _require_finite(step.phi_k, f"steps[{idx}].phi_k")
-        _require_finite(step.v_raw, f"steps[{idx}].v_raw")
-        if abs(step_phi - float(round_start_potentials[step.round_index])) > 1e-5:
-            raise ValueError(
-                f"step.phi_k={step_phi} disagrees with "
-                f"round_start_potentials[{step.round_index}]={round_start_potentials[step.round_index]}"
-            )
+    _validate_steps_and_potentials(steps, round_start_potentials)
 
     step_rewards = [0.0] * n_steps
     for t in range(n_steps - 1):

@@ -1478,17 +1478,168 @@ def test_rollout_boundary_serialization_checkpoint_resume_and_ppo_consistency() 
     # Verify exact rewards across all 3 boundary types after resume
     assert restored.step_rewards.tolist() == pytest.approx([0.0, 0.0, phis[2] - phis[0], 0.90 - phis[1]])
 
-    # 3. Resumed batch passes multi-epoch PPO readiness guard
+    # 3. Resumed batch passes multi-epoch PPO readiness guard (including critic_version check)
     for _ in range(3):
         restored.assert_ready_for_ppo_epoch(
             current_policy_version=10,
             expected_grp_sha256="grp_sha_resume",
             expected_ruleset_sha256="rule_sha_resume",
+            expected_critic_version=4,
+            max_staleness=2,
+        )
+    with pytest.raises(ValueError, match="critic_version"):
+        restored.assert_ready_for_ppo_epoch(
+            current_policy_version=10,
+            expected_grp_sha256="grp_sha_resume",
+            expected_ruleset_sha256="rule_sha_resume",
+            expected_critic_version=5,
             max_staleness=2,
         )
 
     # 4. Tampering serialized boundary metadata is caught by SHA-256 on restore!
     tampered_state = batch.state_dict()
     tampered_state["trajectory_boundaries"][1]["truncation"]["kind"] = "intra_round"
-    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+    with pytest.raises((RuntimeError, ValueError)):
         FrozenGAERolloutBatch.from_state_dict(tampered_state)
+    tampered_phi = batch.state_dict()
+    tampered_phi["trajectory_boundaries"][1]["truncation"]["next_round_phi"] = 0.999
+    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+        FrozenGAERolloutBatch.from_state_dict(tampered_phi)
+
+    # 5. Missing required fields MUST reject restore (no silent defaults!)
+    for missing_key in ("trajectory_boundaries", "target_sha256", "version_tag", "step_rewards"):
+        bad_state = batch.state_dict()
+        del bad_state[missing_key]
+        with pytest.raises(ValueError, match="missing required field"):
+            FrozenGAERolloutBatch.from_state_dict(bad_state)
+    bad_traj_dict = traj_cross.to_dict()
+    del bad_traj_dict["truncation"]["next_round_phi"]
+    with pytest.raises(ValueError, match="next_round_phi"):
+        HanchanTrajectoryInput.from_dict(bad_traj_dict)
+
+
+def test_hanchan_gae_leading_zero_decisions_duplicate_potential_and_full_6boundary_identity() -> None:
+    phis = [0.00, 0.14, -0.06, 0.22, 0.08, 0.35, 0.52, 0.68]
+
+    # Scenario 8: Consecutive zero-decision rounds starting from East 1
+    # (rounds 0 & 1 skipped, first decision in round 2).
+    steps_lead_skip = [
+        RoundBoundary(round_index=2, phi_k=phis[2], v_raw=0.01),
+        RoundBoundary(round_index=2, phi_k=phis[2], v_raw=0.05),
+        RoundBoundary(round_index=3, phi_k=phis[3], v_raw=0.28),
+    ]
+    r_term = 0.90
+    rew_lead, adv_lead, ret_lead = compute_hanchan_gae(
+        steps_lead_skip,
+        phis[:4],
+        terminated=True,
+        terminal_reward=r_term,
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    assert rew_lead == pytest.approx([0.0, phis[3] - phis[2], r_term - phis[3]])
+    # Origin potential shifts cleanly to first active round Phi_2: sum(r) == R_terminal - Phi_2!
+    assert sum(rew_lead) == pytest.approx(r_term - phis[2])
+    assert adv_lead[-1] == pytest.approx((r_term - phis[3]) - steps_lead_skip[-1].v_shaped)
+    assert ret_lead[-1] == pytest.approx(r_term - phis[3])
+
+    # Leading zero-decision rounds followed by cross-round truncation (round 2 -> round 3 start)
+    rew_lead_trunc, adv_lead_trunc, ret_lead_trunc = compute_hanchan_gae(
+        steps_lead_skip[:2],
+        phis[:4],
+        terminated=False,
+        truncation=RolloutTruncation(
+            kind="cross_round",
+            bootstrap_v_shaped=steps_lead_skip[2].v_shaped,
+            next_round_index=3,
+            next_round_phi=phis[3],
+            bootstrap_round_index=3,
+            bootstrap_v_raw=steps_lead_skip[2].v_raw,
+        ),
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    assert rew_lead_trunc == pytest.approx([0.0, phis[3] - phis[2]])
+    assert adv_lead_trunc[-1] == pytest.approx(steps_lead_skip[2].v_raw - steps_lead_skip[1].v_raw)
+    assert ret_lead_trunc[-1] == pytest.approx((phis[3] - phis[2]) + steps_lead_skip[2].v_shaped)
+
+    # Scenario 16: Reject duplicate cross-round potential issuance when round already entered in steps!
+    with pytest.raises(ValueError, match="duplicate or regressive potential"):
+        compute_hanchan_gae(
+            steps_lead_skip,  # already entered round 3!
+            phis[:4],
+            terminated=False,
+            truncation=RolloutTruncation(
+                kind="cross_round",
+                bootstrap_v_shaped=0.05,
+                next_round_index=3,  # tries to re-issue round 3!
+                next_round_phi=phis[3],
+            ),
+        )
+
+    # Scenario 20: Combined 6-boundary-type multi-chunk Hanchan full mathematical identity check:
+    # Chunk A: leading zero-decision round 0 skipped; steps in round 1 -> intra-round truncation
+    # Chunk B: resumes in round 1 -> normal cross-round to round 2 -> skips rounds 3,4 -> cross-round trunc into round 5
+    # Chunk C: resumes in round 5 -> skips round 6 -> normal step in round 7 -> Hanchan termination
+    s1a = RoundBoundary(round_index=1, phi_k=phis[1], v_raw=0.18)
+    s1b = RoundBoundary(round_index=1, phi_k=phis[1], v_raw=0.21)
+    s2a = RoundBoundary(round_index=2, phi_k=phis[2], v_raw=-0.02)
+    s5a = RoundBoundary(round_index=5, phi_k=phis[5], v_raw=0.41)
+    s7a = RoundBoundary(round_index=7, phi_k=phis[7], v_raw=0.75)
+
+    rew_a, adv_a, ret_a = compute_hanchan_gae(
+        [s1a],
+        phis[:2],
+        terminated=False,
+        truncation=RolloutTruncation(
+            kind="intra_round",
+            bootstrap_v_shaped=s1b.v_shaped,
+            next_round_index=1,
+            next_round_phi=phis[1],
+            bootstrap_round_index=1,
+            bootstrap_v_raw=s1b.v_raw,
+        ),
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    rew_b, adv_b, ret_b = compute_hanchan_gae(
+        [s1b, s2a],
+        phis[:6],
+        terminated=False,
+        truncation=RolloutTruncation(
+            kind="cross_round",
+            bootstrap_v_shaped=s5a.v_shaped,
+            next_round_index=5,
+            next_round_phi=phis[5],
+            bootstrap_round_index=5,
+            bootstrap_v_raw=s5a.v_raw,
+        ),
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+    rew_c, adv_c, ret_c = compute_hanchan_gae(
+        [s5a, s7a],
+        phis,
+        terminated=True,
+        terminal_reward=r_term,
+        gamma=1.0,
+        gae_lambda=0.95,
+    )
+
+    # Exact multi-chunk telescoping identity: sum(rew_A + rew_B + rew_C) == R_terminal - Phi_1
+    assert sum(rew_a) + sum(rew_b) + sum(rew_c) == pytest.approx(r_term - phis[1])
+    # Verify exact single-step Bellman & GAE equations across every chunk
+    assert adv_a[0] == pytest.approx(s1b.v_shaped - s1a.v_shaped)
+    assert ret_a[0] == pytest.approx(s1b.v_shaped)
+    delta_b1 = (phis[5] - phis[2]) + s5a.v_shaped - s2a.v_shaped
+    delta_b0 = (phis[2] - phis[1]) + s2a.v_shaped - s1b.v_shaped
+    assert adv_b[1] == pytest.approx(delta_b1)
+    assert adv_b[0] == pytest.approx(delta_b0 + 0.95 * delta_b1)
+    assert ret_b[0] == pytest.approx(adv_b[0] + s1b.v_shaped)
+    assert ret_b[1] == pytest.approx(adv_b[1] + s2a.v_shaped)
+    delta_c1 = (r_term - phis[7]) - s7a.v_shaped
+    delta_c0 = (phis[7] - phis[5]) + s7a.v_shaped - s5a.v_shaped
+    assert adv_c[1] == pytest.approx(delta_c1)
+    assert adv_c[0] == pytest.approx(delta_c0 + 0.95 * delta_c1)
+    assert ret_c[0] == pytest.approx(adv_c[0] + s5a.v_shaped)
+    assert ret_c[1] == pytest.approx(r_term - phis[7])

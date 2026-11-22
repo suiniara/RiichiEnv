@@ -365,7 +365,21 @@ flowchart TD
      | **半庄正常/提前终局**（第 $K-1$ 局结束：オーラス完局、飞人、和了止、西入结束，`env.done()==True`） | $R_{\text{terminal}}(i) - \Phi_{\text{last}}$ | **$0.0$**（唯一清零处） | **`True`** |
      | **Rollout 局内截断**（达 `T_rollout` 时仍处于小局 $k$ 内，`RolloutTruncation(kind="intra_round", bootstrap_v_shaped=...)`） | $0$ | **$V_\phi^{\text{shaped}}(z_{\text{trunc}})$**（于小局 $k$ 计算，严禁置 `0.0`） | `False` |
      | **Rollout 跨局/跳局截断**（小局 $k$ 及可选连续零决策跳局已结算，进入小局 $k_{\text{next}} > k$ 但尚未采样下一决策步，`RolloutTruncation(kind="cross_round", bootstrap_v_shaped=..., next_round_index=k_next, next_round_phi=Φ_{k_next})`） | **$\Phi_{k_{\text{next}}} - \Phi_k$**（自动合并跳局势差、禁止重复发放；若缺失跨局势函数或 `round_start_potentials` 已含更新局而未显式传入 `RolloutTruncation` 则强制抛出 `ValueError`，严禁静默填零） | **$V_\phi^{\text{shaped}}(z_{\text{trunc}})$**（于小局 $k_{\text{next}}$ 或下一有效决策步计算，满足 $\delta_t = V^{\text{raw}}(z_{\text{trunc}}) - V^{\text{raw}}(z_t)$ 精确抵消与多分段伸缩守恒） | `False` |
-   - **矛盾边界强校验（Fail-Closed）**：`terminated=True` 与 `truncation`/`truncated_bootstrap_v_shaped` 同时传入、`terminated=False` 与 `terminal_reward` 同时传入、`terminated=False` 缺失 Bootstrap、`cross_round` 缺失显式 `next_round_index` 或 `next_round_phi`、非法或倒退局索引、非有限浮点数（`NaN`/`±Inf`），以及 `bootstrap_round_index` / `bootstrap_v_raw` 与声明边界所属局势函数不一致（例如跨局后误用上一局 $\Phi_k$ 计算 Bootstrap）一律抛出 `ValueError`，严禁静默猜测、填零或自动降级。
+   - **显式 `RolloutTruncation` 数据合同（`src/riichienv/kar/v2/grp.py`）**：
+     ```python
+     @dataclass(frozen=True)
+     class RolloutTruncation:
+         kind: Literal["intra_round", "cross_round"]
+         bootstrap_v_shaped: float
+         next_round_index: int | None = None
+         next_round_phi: float | None = None
+         bootstrap_round_index: int | None = None
+         bootstrap_v_raw: float | None = None
+     ```
+     - `kind` 严格二分为 `"intra_round"`（局内步长截断）与 `"cross_round"`（小局/跳局结算后截断），禁止仅由 `terminated` 或 `round_index` 猜测截断类型；
+     - `cross_round` 必须显式携带 `next_round_index > last_k` 与 `next_round_phi`，且下一局 Bootstrap 必须基于 `next_round_phi` 计算（可通过 `bootstrap_round_index` 与 `bootstrap_v_raw` 进行强校验）；
+     - `RoundBoundary`、`RolloutTruncation` 与 `HanchanTrajectoryInput` 均提供 `to_dict()` / `from_dict()`，缺失必要字段或非有限浮点一律抛出 `ValueError`。
+   - **矛盾边界强校验（Fail-Closed）**：`terminated=True` 与 `truncation`/`truncated_bootstrap_v_shaped` 同时传入、`terminated=False` 与 `terminal_reward` 同时传入、`terminated=False` 缺失 Bootstrap、`cross_round` 缺失显式 `next_round_index` 或 `next_round_phi`、跨局截断试图对轨迹中已进入的小局重复发放势差、非法或倒退局索引、非有限浮点数（`NaN`/`±Inf`），以及 `bootstrap_round_index` / `bootstrap_v_raw` 与声明边界所属局势函数不一致（例如跨局后误用上一局 $\Phi_k$ 计算 Bootstrap）一律抛出 `ValueError`，严禁静默猜测、填零或自动降级。
    - **GAE 与目标回报**：
      $$\delta_t = r_t + (1 - \text{terminated}_t)\,\gamma\,V_{\text{next},t} - V_\phi^{\text{shaped}}(z_t)$$
      $$\hat{A}_t^{\text{GAE}} = \delta_t + (1 - \text{terminated}_t)\,\gamma\,\lambda\,\hat{A}_{t+1}^{\text{GAE}}, \qquad \hat{G}_t^{\text{GAE,shaped}} = \hat{A}_t^{\text{GAE}} + V_\phi^{\text{shaped}}(z_t)$$
@@ -424,7 +438,8 @@ flowchart TD
    - 历史快照池按 AlphaStar 风格难度权重 $p_j \propto (1 - w_j + \varepsilon)^p$（默认 $p=2.0, \varepsilon=0.05$，$w_j \in [0,1]$ 为 Learner 对阵对手 $j$ 的 EMA 归一化顺位分）自动集中算力攻克当前弱项对手。
 3. **`FrozenGAERolloutBatch`（冻结 GAE Target 单次计算 + SHA-256 不可变守卫）**：
    - 通过 `FrozenGAERolloutBatch.from_hanchan_trajectories(..., version_tag=RolloutVersionTag)` 在采样结束时基于冻结采样期 Critic 预测一次性计算全半庄 `step_rewards`、`advantages` 与 `shaped_returns`；
-   - 所有存储张量（`step_rewards`、`advantages`、`shaped_returns`、`rollout_v_shaped`）强制 `requires_grad == False`，连同版本标签与完整 `trajectory_boundaries`（含 `RolloutTruncation` 元数据）共同计入 `SHA-256` 摘要，并通过 `state_dict()` / `from_state_dict()`（以及 `HanchanTrajectoryInput.to_dict()/from_dict()`）支持无损序列化与断点恢复；每轮 PPO mini-batch epoch 前强制调用 `assert_ready_for_ppo_epoch(...)` 同时校验 `policy_version` 滞后上界、`grp_sha256`、`ruleset_sha256` 及 GAE Target 比特级未篡改性。
+   - 所有存储张量（`step_rewards`、`advantages`、`shaped_returns`、`rollout_v_shaped`）强制 `detach().clone()` 且 `requires_grad == False`，连同版本标签（`policy_version`、`critic_version`、`grp_sha256`、`ruleset_sha256`）、`gamma`/`gae_lambda` 与完整 `trajectory_boundaries`（含每个截断的 `kind`、`next_round_index`、`next_round_phi`、`bootstrap_v_shaped`、`bootstrap_round_index`、`terminated`、`terminal_reward`）共同计入 `SHA-256` 摘要；
+   - 提供 `FrozenGAERolloutBatch.state_dict()` / `from_state_dict()` 与 `HanchanTrajectoryInput.to_dict()` / `from_dict()`：恢复时校验全部必要字段与 `SHA-256` 一致性（缺失字段抛出 `ValueError`，篡改 Target 或边界元数据抛出 `RuntimeError`，绝不重算或静默修正 Target）；每轮 PPO mini-batch epoch 前强制调用 `assert_ready_for_ppo_epoch(current_policy_version=..., expected_grp_sha256=..., expected_ruleset_sha256=..., expected_critic_version=..., max_staleness=...)` 校验全部版本与比特级不可变性。
 
 ---
 
@@ -472,22 +487,26 @@ Stage 1 交叉校验仅对语义严格等价的通道要求零误差；语义不
 3. **物理牌守恒与王牌偏移测试**：覆盖吃/碰/大明杠/加杠（河牌交集回溯）/暗杠/孤立 `called_tile` 拒绝、真实对局每步 $H_t + V_t + U_t = 4$ 守恒，以及开杠后岭上摸牌引发的王牌区索引偏移（`shift = rinshan_draw_count`）与 `BeliefTargets` 无役/振听真值精确性。
 4. **观察者事件流回环与上界测试**：全量观察者可见事件回环还原零差异 + 10,000 局极端状态机压力测试验证 $1 \le L_{\text{ev}} \le 214 < 256$（超 `256` 触发硬错误）。
 5. **546 动作可逆、`MAX_CANDIDATES = 32` 极值、NULL 槽位与掩码数值安全测试**：覆盖 4 阶段极值合法候选数测试 + 全部 546 个动作（含 111 个 `DAIMINKAN` 双向无歧义恢复、`TSUMO/RON/PASS/KYUSHU` 空槽位 `NULL_TILE`/`NULL_SOURCE` 无越界访问）以及 $K=1$（立直强制摸切）与 $K=32$ 边界，断言 `log_softmax`、`KL`、`Entropy`、PPO 梯度无 `NaN/Inf`，且 $K=1$ 对 Actor 梯度严格为 `0`。
-6. **Critic、GRP 校准、Belief 损失与 Stage-4 RL 防崩塌测试**：验证 $\sum_{k=0}^{K-1} r_k = R_{\text{terminal}} - \Phi_0$ 伸缩恒等式、跨局跳局合并、`truncated=True` 非零 Bootstrap、`oracle_critic_loss` 强制 `stopgrad` 精确梯度校验、`evaluate_grp_calibration` 校准门控、`belief_auxiliary_loss` 非听牌掩码、`CriticWarmupGate`、`PFSPOpponentPool` 与 `FrozenGAERolloutBatch` SHA-256 不可变守卫。
+6. **Critic、GRP 校准、Belief 损失与 Stage-4 RL 防崩塌测试（含 20 项强制 GAE 测试矩阵）**：
+   - 覆盖 `evaluate_grp_calibration` 校准门控、`belief_auxiliary_loss` 非听牌掩码、`oracle_critic_loss` 强制 `stopgrad` 精确梯度校验、`CriticWarmupGate`、`PFSPOpponentPool` 与 `FrozenGAERolloutBatch`；
+   - **20 项强制 GAE 测试矩阵**（`tests/kar/v2/test_v2_contract.py`，逐项断言具体 `step_rewards`、Bootstrap、`advantages` 与 `shaped_returns`）：
+     1. 普通局内连续步；2. 局内 Rollout 截断；3. 小局结束处 Rollout 截断；4. 正常跨局；5. 跨局后下一局有决策；6. 跨局后下一局无决策；7. 连续跳过多个小局；8. 东一局起连续零决策（起点势顺移至首个有效局）；9. 半庄正常终局（8 局）；10. 半庄提前终局（飞人）；11. 跨局截断缺 `next_round_phi`/`next_round_index`；12. 截断缺 Bootstrap；13. 终局与截断同时声明（及 `terminated=False` 传入 `terminal_reward`）；14. Bootstrap 使用错误局或旧局势函数；15. 非有限浮点（`NaN`/`±Inf`）；16. 轨迹已进入该局后截断对象重复发放势函数；17. Rollout/Batch 序列化、断点恢复与缺失字段拒收；18. Target 与边界元数据篡改 SHA-256 拦截；19. PPO 多轮真实 Critic 参数更新下 Target 不变性与 `critic_version` 校验；20. 六类边界混合组合下的完整贝尔曼与 PBRS 伸缩恒等式。
 
 ### 6.2 Stage 1 本地实测结果与待云端实测清单
 
-#### A. Stage 1 已实测指标（Release 编译 Wheel，本地 CPU 单核实测，`python -m riichienv.kar.v2.benchmark`，2,000 真实决策步）
+#### A. Stage 1 已实测指标（Release 编译 Wheel，本地 CPU 实测，`python -m riichienv.kar.v2.benchmark --rust-steps 2000 --iters 3 --warmup 1 --batch-size 4 --seq-len 64`）
 | 实测项 | 均值延迟 | P95 延迟 | 单核吞吐 | 说明 |
 | :--- | :---: | :---: | :---: | :--- |
-| Rust `v2_encode_env_step`（**纯 Actor 推理路径**，含实时 `events` + `HanchanTracker`） | **42.07 μs/step** | 57.10 μs | **23,771 steps/s** | `include_oracle=False, include_belief=False` |
-| Rust `v2_encode_env_step`（**Stage-3 BC + Opponent Belief 提取**） | **44.19 μs/step** | 61.50 μs | **22,632 steps/s** | `include_oracle=False, include_belief=True`（Belief 仅增 `+2.1 μs`） |
-| Rust `v2_encode_env_step`（**Stage-4 RL Actor + Oracle 采样**） | **49.99 μs/step** | 68.20 μs | **20,002 steps/s** | `include_oracle=True, include_belief=False`（Oracle 仅增 `+7.9 μs`） |
+| Rust `v2_encode_env_step`（**纯 Actor 推理路径**，含实时 `events` + `HanchanTracker`） | **52.73 μs/step** | 93.00 μs | **18,964 steps/s** | `include_oracle=False, include_belief=False` |
+| Rust `v2_encode_env_step`（**Stage-3 BC + Opponent Belief 提取**） | **52.87 μs/step** | 95.60 μs | **18,914 steps/s** | `include_oracle=False, include_belief=True` |
+| Rust `v2_encode_env_step`（**Stage-4 RL Actor + Oracle 采样**） | **61.58 μs/step** | 111.50 μs | **16,240 steps/s** | `include_oracle=True, include_belief=False` |
 
 - **可复现验证命令与运行环境（v2.5）**：
   - 环境：Windows (`win_amd64`), CPython `3.14.9`, PyTorch (`fp32` CPU), `rustc 1.95.0`, Release Wheel `riichienv 0.4.11`（`maturin develop --uv --release --manifest-path riichienv-python/Cargo.toml`）。
-  - Rust 全量验证：`cargo test --manifest-path riichienv-core/Cargo.toml --no-default-features`（127 库单测 + 全量规则集成测试）及 `cargo test --manifest-path riichienv-core/Cargo.toml --features python v2_features`（18/18 通过）。
-  - Python 合同与回归验证：`pytest tests/test_v2_visible_tile_counts.py tests/kar/v2 tests/kar/core tests/kar/test_kan_preview.py tests/kar/test_native_furiten_export.py tests/kar/test_protocol_dependencies.py tests/kar/test_response_supervision.py`（**179 passed**）+ `ruff check` + `ty check`（均 0 错误）。
+  - Rust 全量验证：`cargo test --manifest-path riichienv-core/Cargo.toml --no-default-features`（370 passed）、`cargo test --manifest-path riichienv-core/Cargo.toml --features python v2_features`（19 passed）、`cargo test --all-targets --all-features`（408 passed）、`cargo fmt --all -- --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo check -p riichienv-wasm --target wasm32-unknown-unknown`（全部退出码 `0`）。
+  - Python 合同与全仓回归验证：`pytest tests/test_v2_visible_tile_counts.py tests/kar/v2`（29 passed）、P3 定向套件（186 passed）、`pytest tests/ml`（18 passed）、全仓 `pytest`（3,278 passed, 23 skipped, 0 failed）、`ruff check .`、`ruff format --check .`、`ty check`（全部退出码 `0`）。
   - Benchmark 复现命令：`python -m riichienv.kar.v2.benchmark --rust-steps 2000 --iters 3 --warmup 1 --batch-size 4 --seq-len 64`。
+  - 未验证项说明：远程 GitHub Actions 全部 8 个 Job 当前因账户计费锁定（`"The job was not started because your account is locked due to a billing issue."`）无法调度 Runner；本机未安装 `node` / `npm` / `wasm-pack`，`vitest` / `biome` / `wasm-pack build` 待远程 CI 解除计费锁定后完成验证。
 
 #### B. 必须由云端 GPU 与实验回答的待实测清单（绝不预设承诺）
 以下指标仍标记为 **待云端实测（TBD）**：
@@ -500,7 +519,7 @@ Stage 1 交叉校验仅对语义严格等价的通道要求零误差；语义不
 | 阶段 | 交付内容 | 状态 | 进入下一阶段硬门控 |
 | :--- | :--- | :---: | :--- |
 | **Stage 0** | 冻结工程合同（v2.4 / v2.4.1） | **已完成** | 全部 P0/P1 审查修订闭环 |
-| **Stage 1** | Rust V2 特征引擎 + `GameState` 零偏差内置事件/跨局追踪 + `calc_with_rule` + `BeliefTargets` + `PureStateGRP` 校准 + Stage-4 RL 合同原语 + 全部自动化测试 + 本地 CPU 实测 Benchmark | **已完成（待复审）** | 全部 Rust/Python/ruff/ty CI 100% 通过；进入 Stage 2 前于云端 GPU 运行一次 `python -m riichienv.kar.v2.benchmark` 补齐 GPU 吞吐与显存基线 |
+| **Stage 1** | Rust V2 特征引擎 + `GameState` 零偏差内置事件/跨局追踪 + `calc_with_rule` + `BeliefTargets` + `PureStateGRP` 校准 + 六类边界 GAE (`RolloutTruncation`) & `FrozenGAERolloutBatch` 序列化/不可变守卫 + 全部自动化测试 + 本地 CPU 实测 Benchmark | **BLOCKED（待解除 GitHub Billing 锁定并跑通全 8 项远程 CI）** | 全部 8 项远程 GitHub Actions CI（含 UI `vitest`/`biome` 与 `wasm-pack build`）100% 实际执行通过；进入 Stage 2 前于云端 GPU 运行一次 `python -m riichienv.kar.v2.benchmark` 补齐 GPU 吞吐与显存基线 |
 | **Stage 2** | 开展实验 A & C（小规模同数据同预算 B/C1/C1-Flat 对照） | 待启动 | 证实 `C1` 在综合 NLL、关键分项指标、实测吞吐与同预算平均顺位上稳赢 `B` 与 `C1-Flat` |
 | **Stage 3** | 开展 BC + Opponent Belief + 独立 Oracle Critic 消融（含实验 B 前半段） | 待启动 | 证实信念辅助头提升 BC 对弈表现 / 降放铳率；独立 Oracle Critic 显著优于纯观察 Critic |
 | **Stage 4** | 非对称 Oracle PPO / IMPALA + `CriticWarmupGate` + `PFSPOpponentPool`（冻结 `bc_anchor`）+ `FrozenGAERolloutBatch` | 待启动 | 小规模 RL 稳定超越 BC 基线、无策略崩溃且无指标退化后，才解锁高预算放量（优先充分训练 `C1`，达预算上限与收益门槛后再评估 `C2`） |
