@@ -129,8 +129,17 @@ impl FuritenState {
         }
     }
 
-    /// Evaluate whether a post-discard (or post-meld-discard) tenpai wait set is
-    /// in furiten, carrying forward active `temporary` and `riichi` furiten.
+    /// Evaluate whether a post-discard (or post-meld-discard / PASS) tenpai wait
+    /// set is in furiten:
+    /// - `discarded_base34 == None` (e.g. `PASS` in `DISCARD_RESP`): `temporary`
+    ///   (same-turn/doujun) furiten remains active alongside `riichi` furiten and
+    ///   river furiten `W(h) ∩ R_self != ∅`.
+    /// - `discarded_base34 == Some(a)` (post-discard state after executing discard `a`
+    ///   or call + follow-up discard `a`): executing own discard clears `temporary`
+    ///   furiten (matching `GameState::populate_discard_claims` & `tests/temporary_furiten.rs`),
+    ///   while `riichi` furiten persists and permanent furiten is recomputed strictly
+    ///   over the new wait set against the updated river:
+    ///   `F_post(a) = riichi || (W(h \ {a}) ∩ (R_self ∪ {a}) != ∅)`.
     #[inline]
     pub fn is_post_discard_furiten(
         self,
@@ -141,7 +150,10 @@ impl FuritenState {
         if waits_base34.is_empty() {
             return false;
         }
-        if self.temporary || self.riichi {
+        if self.riichi {
+            return true;
+        }
+        if discarded_base34.is_none() && self.temporary {
             return true;
         }
         waits_base34.iter().any(|&w| {

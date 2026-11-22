@@ -165,25 +165,77 @@ fn furiten_state_covers_permanent_temporary_and_riichi() {
     assert!(!f_perm.riichi);
     assert!(f_perm.any());
 
-    // Now clear own river, test temporary furiten persisting across CHI/PON into post-discard!
+    // Clear own river, test temporary furiten:
+    // - persists when NOT discarding (`PASS`, discarded_base34 == None)
+    // - CLEARS after executing own discard (`DISCARD(a)`, discarded_base34 == Some(a)),
+    //   matching `GameState::populate_discard_claims` and `tests/temporary_furiten.rs`.
     obs.discards[0].clear();
     let f_temp = FuritenState::from_observation(&obs, true, false, &rule);
     assert!(!f_temp.permanent);
     assert!(f_temp.temporary);
     assert!(f_temp.non_river_active());
     let own_disc = [false; TILE_MAX];
-    // Even though wait 1m(0) was never discarded, temporary furiten marks post-discard as furiten!
-    assert!(f_temp.is_post_discard_furiten(&[0, 3], &own_disc, Some(10)));
+    assert!(f_temp.is_post_discard_furiten(&[0, 3], &own_disc, None));
+    assert!(!f_temp.is_post_discard_furiten(&[0, 3], &own_disc, Some(10)));
+    // Self-discarding one of the new waits (`3`) makes post-discard permanently river-furiten
+    assert!(f_temp.is_post_discard_furiten(&[0, 3], &own_disc, Some(3)));
 
-    // Riichi furiten stays active permanently
+    // Riichi furiten stays active permanently even across own discard
     let f_riichi = FuritenState::from_observation(&obs, false, true, &rule);
     assert!(f_riichi.riichi);
     assert!(f_riichi.is_post_discard_furiten(&[0], &own_disc, None));
+    assert!(f_riichi.is_post_discard_furiten(&[0], &own_disc, Some(10)));
+
+    // Per-candidate permanent furiten recomputation on `tile_feats[b, 61]` and `cand_dyn[slot, 5]`:
+    // 14-tile hand: 235m 234p 567p 789s EE with own river = [1m(0)].
+    // - Discard 5m(base34=4) -> waits {1m, 4m} hits 1m in river -> post_is_furiten == 1.0
+    // - Discard 2m(base34=1) -> waits {4m} misses river [1m]    -> post_is_furiten == 0.0
+    let mut obs_switch = empty_obs(0);
+    obs_switch.hands[0] = vec![4, 8, 17, 40, 44, 48, 53, 56, 60, 96, 100, 104, 108, 109];
+    obs_switch.discards[0] = vec![0]; // 1m in own river
+    obs_switch.dora_indicators = vec![1];
+    obs_switch._legal_actions = vec![
+        Action::new(ActionType::Discard, Some(17), vec![], Some(0)), // 5m (base34=4)
+        Action::new(ActionType::Discard, Some(4), vec![], Some(0)),  // 2m (base34=1)
+    ];
+    let vis_sw = VisibleTileCounts::from_observation(&obs_switch).unwrap();
+    let fur_sw = FuritenState::from_observation(&obs_switch, false, false, &rule);
+    let tf_sw = encode_tile_feats(
+        &obs_switch,
+        &vis_sw,
+        fur_sw,
+        &rule,
+        DecisionPhase::OwnAct,
+        &V2FeatureConfig::default(),
+    )
+    .unwrap();
+    assert_eq!(tf_sw[4 * TILE_FEATS_DIM + 60], 1.0); // 5m discard is tenpai
+    assert_eq!(tf_sw[4 * TILE_FEATS_DIM + 61], 1.0); // 5m discard -> waits {1m,4m} -> FURITEN
+    assert_eq!(tf_sw[1 * TILE_FEATS_DIM + 60], 1.0); // 2m discard is tenpai
+    assert_eq!(tf_sw[1 * TILE_FEATS_DIM + 61], 0.0); // 2m discard -> waits {4m} -> NOT furiten
 
     // Verify global_feats[19] reflects temporary || riichi
     let tracker = HanchanTracker::default();
     let rc = RuleContract::default_tenhou_houou();
     let ctx = RoundGlobalContext::default();
+    let cands_sw = encode_candidates(
+        &obs_switch,
+        &vis_sw,
+        fur_sw,
+        &tracker,
+        &rc,
+        &ctx,
+        &WinEvalContext::default(),
+    )
+    .unwrap();
+    for slot in 0..cands_sw.num_valid {
+        let e = entry(cands_sw.cand_ids[slot] as u16).unwrap();
+        if e.target_base34 == 4 {
+            assert_eq!(cands_sw.cand_dyn[slot][5], 1.0);
+        } else if e.target_base34 == 1 {
+            assert_eq!(cands_sw.cand_dyn[slot][5], 0.0);
+        }
+    }
     let (g_temp, _) = encode_global_player(&obs, f_temp, &tracker, &rc, &ctx).unwrap();
     let (g_none, _) =
         encode_global_player(&obs, FuritenState::default(), &tracker, &rc, &ctx).unwrap();

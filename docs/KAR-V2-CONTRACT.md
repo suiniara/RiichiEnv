@@ -110,7 +110,7 @@
 | `58` | `discard_post_ukeire_log` | 基于 `VisibleTileCounts.unseen_base34` 扣除全部可见牌后的真实进张 $\ln(1 + u_i) / \ln(61)$ |
 | `59` | `discard_post_ukeire_ratio` | $u_i / \max(1, \max_{j \in \mathcal{D}_{\text{legal}}} u_j)$ |
 | `60` | `discard_post_is_tenpai` | 切 `i` 后是否听牌（严格遵循 `GameRule::allow_fifth_copy_tenpai`） |
-| `61` | `discard_post_is_furiten` | 由 Rust 完整 `FuritenState { permanent, temporary, riichi }` 计算：切 `i` 后听牌且满足（待牌命中己方河牌 `permanent` **或** `furiten.temporary` **或** `furiten.riichi`）；绝不仅凭河牌推断 |
+| `61` | `discard_post_is_furiten` | **逐候选弃牌 $a$ 重算新待牌集合**：$F_{\text{post}}(a) = \text{riichi\_furiten} \lor \mathbb{1}\big[W(h \setminus \{a\}) \cap (R_{\text{self}} \cup \{a\}) \neq \varnothing\big]$（严禁直接复用弃牌前 `FuritenState.permanent`；且按日麻规则及 `riichienv-core` 引擎语义，执行己方弃牌 $a$ 会解除 `temporary` 同巡振听，仅保留 `riichi` 振听；弃牌前当前态的 `temporary \| riichi` 另由 `global_feats[19]` 与 `PASS` 的 `cand_dyn[5]` 精确表达） |
 | `62` | `resp_is_cur_wait_tile` | 响应阶段当前手牌是否听牌且 `i` 为合法待牌之一 |
 | `63` | `resp_is_cur_effective_tile` | 响应阶段摸入 `i` 是否严格降低当前手牌向听数 |
 
@@ -208,13 +208,13 @@
 | `RON` | `543..545` (3) | `NULL` | `NULL, NULL` | `1..3` | `[0,0,0,1]` | 显式保存放铳来源 `1..3`；荣和牌由事件流末条触发事件与 `mode=5 (WIN_EVAL)` 唯一确定 |
 
 #### D. 7 模式 `cand_mode` + `cand_dyn`（含完整 `FuritenState`、抢杠状态转移与单边荣和假设）
-- `cand_mode: uint8[B, 32] ∈ {0..6}`（独立 `Emb(7, d_mode)`）+ `cand_dyn: fp16[B, 32, 8]`；所有振听位（`d5`）强制由 Rust **`FuritenState { permanent, temporary, riichi }`** 产出（放弃荣和后的 `temporary` 振听在吃/碰进入弃牌阶段后依然保持，直到己方下次摸牌才解除）：
+- `cand_mode: uint8[B, 32] ∈ {0..6}`（独立 `Emb(7, d_mode)`）+ `cand_dyn: fp16[B, 32, 8]`；所有振听位（`d5`）强制由 Rust **`FuritenState { permanent, temporary, riichi }`** 产出，并精确区分动作后状态转移：`PASS` 未切牌保持 `temporary | riichi | (W(h) ∩ R_self ≠ ∅)`；执行 `DISCARD(a)` 或 `CHI/PON + 后续弃牌 b` 后 `temporary` 振听按规则解除，仅保留 `riichi` 振听并针对候选新待牌逐一重算 $F_{\text{permanent}}(a) = \mathbb{1}[W(h \setminus \{a\}) \cap (R_{\text{self}} \cup \{a\}) \neq \varnothing]$（鸣牌后、切牌前的 `OWN_ACT` 中 `global_feats[19]` 仍准确反映当前 `temporary | riichi` 振听）：
 
 | `cand_mode` | 适用动作 | `cand_dyn[0..7]` 精确语义（全部由 Rust 原生计算） |
 | :--- | :--- | :--- |
 | `0: PAD` | 无效填充槽 | 全 `0.0` |
-| `1: POST_DISCARD_EXACT` | `DISCARD`（含立直切） | 唯一 $3k+1$ 切后态：`post_shanten/8`、`(post_shanten-min_shanten)/4`、`ln(1+visible_ukeire)/ln(61)`、`ukeire_ratio`、`post_is_tenpai`、`post_is_furiten`（含 `permanent \| temporary \| riichi`）、`post_hand_dora/8`（区分切赤 5 与普 5）、`0` |
-| `2: PRE_DISCARD_MELD_ENVELOPE` | `CHI`, `PON` | 在满足 `kuikae_forbidden` 的**全部合法后续弃牌集合 $\mathcal{D}_{\text{legal}}(h')$ 上计算包络统计**（执行后进入新 `OWN_ACT` 再做二阶段弃牌决策）：① 最小可达向听 $s^*_{\text{call}}/8$；② 相对 `PASS` 的向听改善 $(s^*_{\text{call}}-s_{\text{cur}})/4$；③ 最优向听弃牌中的最大可见扣除进张 $\ln(1+\max_{\mathcal{D}^*} u)/\ln(61)$；④ 最优向听合法弃牌数 $|\mathcal{D}^*|/14$；⑤ 是否可达听牌 $\mathbb{I}[s^*_{\text{call}}=0]$；⑥ 所有听牌出口是否均振听（含继承 `temporary` 振听）；⑦ 副露后已知宝牌数 `/8`；⑧ 被食替禁切的手牌比例 |
+| `1: POST_DISCARD_EXACT` | `DISCARD`（含立直切） | 唯一 $3k+1$ 切后态：`post_shanten/8`、`(post_shanten-min_shanten)/4`、`ln(1+visible_ukeire)/ln(61)`、`ukeire_ratio`、`post_is_tenpai`、`post_is_furiten`（逐候选重算 $\text{riichi} \lor \mathbb{1}[W(h \setminus a) \cap (R_{\text{self}} \cup \{a\}) \neq \varnothing]$）、`post_hand_dora/8`（区分切赤 5 与普 5）、`0` |
+| `2: PRE_DISCARD_MELD_ENVELOPE` | `CHI`, `PON` | 在满足 `kuikae_forbidden` 的**全部合法后续弃牌集合 $\mathcal{D}_{\text{legal}}(h')$ 上计算包络统计**（执行后进入新 `OWN_ACT` 再做二阶段弃牌决策）：① 最小可达向听 $s^*_{\text{call}}/8$；② 相对 `PASS` 的向听改善 $(s^*_{\text{call}}-s_{\text{cur}})/4$；③ 最优向听弃牌中的最大可见扣除进张 $\ln(1+\max_{\mathcal{D}^*} u)/\ln(61)$；④ 最优向听合法弃牌数 $|\mathcal{D}^*|/14$；⑤ 是否可达听牌 $\mathbb{I}[s^*_{\text{call}}=0]$；⑥ 所有听牌出口经逐候选重算 $W(h' \setminus b) \cap (R_{\text{self}} \cup \{b\})$ 后是否均振听；⑦ 副露后已知宝牌数 `/8`；⑧ 被食替禁切的手牌比例 |
 | `3: PENDING_RINSHAN_KAN` | `ANKAN`, `KAKAN`, `DAIMINKAN` | **明确抢杠风险与状态转移（P1-3）**：`KAKAN`（必经 `KAKAN_RESP`）与 `ANKAN`（当 `rule.allows_ron_on_ankan_for_kokushi_musou == true` 时必经 `ANKAN_RESP`）均存在被他家抢杠荣和从而立即终局的风险，**不将杠后岭上摸牌视作必然发生**，严禁编造岭上后进张：`cur_shanten/8`、`0`、`0`、`0`、`cur_is_tenpai`、`chankan_window_possible`（`KAKAN` 为 `1`，`ANKAN` 等于 `rule.allows_ron_on_ankan_for_kokushi_musou`，`DAIMINKAN` 为 `0`）、`post_kan_known_dora/8`、`(total_kans+1)/4` |
 | `4: PASS_CURRENT_STATE` | `PASS` | 当前 $3k+1$ 手牌基线：`cur_shanten/8`、`0`、`ln(1+visible_cur_ukeire)/ln(61)`、`1.0`、`cur_is_tenpai`、`cur_is_furiten`（完整 `FuritenState.any()`）、`cur_known_dora/8`、`0` |
 | `5: WIN_EVAL` | `TSUMO`, `RON` | **明确单边荣和本地假设（P1-4，零未来并发响应泄漏）**：调用规则感知 **`HandEvaluator::calc_with_rule(..., ura_indicators=&[], rule)`**（不含里宝），**严格按“仅己方单独和牌”的单边假设**计算（不预测亦不依赖他家是否同时触发双响/三家和流局）：① `known_han/13`；② `known_fu/110`；③ `ln(1+known_pts)/ln(64001)`（含本场棒 $+300\times\text{honba}$、单边全额供托 $+1000\times\text{kyoutaku}$ 及基于已公开副露确定的包牌责任 `rule.yakuman_pao_is_liability_only`）；④ `is_yakuman`；⑤ 单边结算后的预测顺位 `(rank-1)/3`；⑥ 单边结算后按当前 `RuleContract`（`has_tobi_end` / `has_agari_yame` / `extension_dealer_repeat_priority` / `is_tonpuusen`）是否直接结束半庄；⑦ `is_riichi_uradora_pending`；⑧ `0` |
@@ -295,7 +295,7 @@ flowchart TD
 
 ### 3.1 纯状态势函数 GRP（解决 P1-3）
 
-彻底取代现有 `riichienv-ml/src/riichienv_ml/models/grp_model.py` 中混入 `delta_score` 的实现与 `_ppo_worker.py` 的小局清零逻辑：
+> **实现路径明确界定**：KAR V2 的纯状态 GRP、全半庄连续 GAE 与 Stage-4 RL 合同原语全部实现于 **`src/riichienv/kar/v2/grp.py`** 与 **`src/riichienv/kar/v2/rl_contract.py`**；旧独立包 `riichienv-ml/src/riichienv_ml/models/grp_model.py`（含 `delta_score`）与 `riichienv-ml/src/riichienv_ml/rl/_ppo_worker.py`（含小局 `next_value=0.0`）属于历史遗留模块，**KAR V2 训练与推理严禁导入或使用 `riichienv-ml` 旧实现**。
 
 - **输入规范化（玩家置换等变）**：对任意目标玩家 $i \in \{0,1,2,3\}$，将局初公开状态 $s$ 按相对席位 `[i, (i+1)%4, (i+2)%4, (i+3)%4]` 与相对庄家 `oya_rel = (oya + 4 - i) % 4` 规范化输入，**严禁输入上局分数或局内分差**。
 - **数学定义（统一使用 $\Phi_k$ 表示第 $k$ 局局初势函数，消除 $s_T$ 歧义）**：
@@ -481,10 +481,11 @@ Stage 1 交叉校验仅对语义严格等价的通道要求零误差；语义不
 | Rust `v2_encode_env_step`（**Stage-3 BC + Opponent Belief 提取**） | **44.19 μs/step** | 61.50 μs | **22,632 steps/s** | `include_oracle=False, include_belief=True`（Belief 仅增 `+2.1 μs`） |
 | Rust `v2_encode_env_step`（**Stage-4 RL Actor + Oracle 采样**） | **49.99 μs/step** | 68.20 μs | **20,002 steps/s** | `include_oracle=True, include_belief=False`（Oracle 仅增 `+7.9 μs`） |
 
-- **当前自动化 CI 实测通过情况（v2.5）**：
-  - `riichienv-core` 全量 Rust 单测（`--no-default-features` 127 个库单测 + 全量规则集成测试；`--features python` 18/18 V2 专项测试）：**100% 通过**；
-  - `riichienv-python` Clippy + Release Wheel 构建（`maturin develop --uv --release`）：**0 错误 0 新增警告**；
-  - Python 自动化测试（`tests/test_v2_visible_tile_counts.py` + `tests/kar/v2/test_v2_contract.py` 19 项 + `tests/kar/core` 115 项，共 **137 passed**）+ `ruff check` + `ty check`：**100% 通过**。
+- **可复现验证命令与运行环境（v2.5）**：
+  - 环境：Windows (`win_amd64`), CPython `3.14.9`, PyTorch (`fp32` CPU), `rustc 1.95.0`, Release Wheel `riichienv 0.4.11`（`maturin develop --uv --release --manifest-path riichienv-python/Cargo.toml`）。
+  - Rust 全量验证：`cargo test --manifest-path riichienv-core/Cargo.toml --no-default-features`（127 库单测 + 全量规则集成测试）及 `cargo test --manifest-path riichienv-core/Cargo.toml --features python v2_features`（18/18 通过）。
+  - Python 合同与回归验证：`pytest tests/test_v2_visible_tile_counts.py tests/kar/v2 tests/kar/core tests/kar/test_kan_preview.py tests/kar/test_native_furiten_export.py tests/kar/test_protocol_dependencies.py tests/kar/test_response_supervision.py`（**179 passed**）+ `ruff check` + `ty check`（均 0 错误）。
+  - Benchmark 复现命令：`python -m riichienv.kar.v2.benchmark --rust-steps 2000 --iters 3 --warmup 1 --batch-size 4 --seq-len 64`。
 
 #### B. 必须由云端 GPU 与实验回答的待实测清单（绝不预设承诺）
 以下指标仍标记为 **待云端实测（TBD）**：
