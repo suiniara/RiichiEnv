@@ -1,19 +1,12 @@
-import sqlite3
-from types import SimpleNamespace
-
 from riichienv import Phase
-
-from riichienv.kar.candidate_branches import simulate_candidate_branches
+from riichienv.kar.candidate_branches import _discard_efficiency_score, simulate_candidate_branches
 from riichienv.kar.contracts import MJSOUL_RULESET
 from riichienv.kar.decision import ReplayOpportunity
 from riichienv.kar.observation import ObserverLedger
-from riichienv.kar.learning.export import GameWriter
 from riichienv.kar.tokenize import append_action, encode_prefix
 
 
 def test_baseline_discard_score_preserves_connected_tiles_and_dora():
-    from riichienv.kar.candidate_branches import _discard_efficiency_score
-
     hand = [0, 1, 2, 4, 5, 6, 8, 9, 10, 108, 112, 116, 120, 124]
     isolated_honor = _discard_efficiency_score(hand, 108, set())
     connected_tile = _discard_efficiency_score(hand, 4, set())
@@ -59,7 +52,8 @@ def test_candidate_probe_branches_every_unambiguous_legal_discard_without_mutati
         assert row["action_index"] == row["decide_index"] + 1
     assert all(row["source_state_identity"] for row in rows)
     assert len({row["wall_seed"] for row in rows}) == 1
-    assert all(row["wall_conditioning"] == "native_unknown_tiles_sampled_once_per_source_replicate_shared_across_candidates" for row in rows)
+    expected_wall_cond = "native_unknown_tiles_sampled_once_per_source_replicate_shared_across_candidates"
+    assert all(row["wall_conditioning"] == expected_wall_cond for row in rows)
     assert all(row["continuation_policy"] == "native_riichi_baseline_v2" for row in rows)
     assert all(row["status"] in {"BLOCKED", "INCOMPLETE", "PASS"} for row in rows)
     assert tuple(env.rule_log) == before_log
@@ -85,21 +79,3 @@ def test_candidate_probe_seed_and_source_identity_are_reproducible():
         (row["candidate_action_id"], row["seed"], row["source_state_identity"], row["status"])
         for row in second
     ]
-
-
-
-def test_candidate_branch_selection_covers_all_game_timeline_strata():
-    game = SimpleNamespace(game_id="stratified-game", events=[{"type": "noop"} for _ in range(90)])
-    writer = GameWriter(sqlite3.connect(":memory:"), game, branch_probe_decisions=6, branch_seed=23)
-    class Cloneable:
-        def clone(self):
-            return Cloneable()
-    opportunity = SimpleNamespace(snapshot=SimpleNamespace(decision_phase="own_act", observer_player_id=0), candidates=(0, 1))
-    for index in range(30):
-        writer.on_opportunity(Cloneable(), opportunity, game.game_id, index * 3)
-        writer.ordinals[-1, 0] += 1
-    selected = writer._selected_branch_opportunities()
-    strata = [(3 * item[3]) // len(game.events) for item in selected]
-    assert len(selected) == 6
-    assert all(strata.count(index) >= 2 for index in range(3))
-    assert writer.branch_opportunities_seen == 30

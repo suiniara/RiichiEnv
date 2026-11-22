@@ -5,17 +5,8 @@ import sys
 
 COMMANDS = {
     "accept-data": ("riichienv.kar.acceptance", ()),
-    "export-data": ("riichienv.kar.learning.export", ()),
-    "train": ("riichienv.kar.learning.trainer", ()),
-    "m1": ("riichienv.kar.learning.orchestration", ("M1",)),
-    "m2": ("riichienv.kar.learning.orchestration", ("M2",)),
-    "m3": ("riichienv.kar.learning.jobs_cli", ("m3",)),
+    "benchmark-v2": ("riichienv.kar.v2.benchmark", ()),
     "plan-benchmark": ("riichienv.kar.planning", ("benchmark",)),
-    "plan-m3": ("riichienv.kar.planning", ("m3",)),
-    "benchmark": ("riichienv.kar.learning.jobs_cli", ("benchmark",)),
-    "calibrate": ("riichienv.kar.learning.jobs_cli", ("calibrate",)),
-    "select-tau": ("riichienv.kar.learning.jobs_cli", ("select-tau",)),
-    "release": ("riichienv.kar.learning.jobs_cli", ("release",)),
     "stamp-build": ("riichienv.kar.release", ()),
 }
 

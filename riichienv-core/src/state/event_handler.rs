@@ -60,8 +60,8 @@ impl GameStateEventHandler for GameState {
                     MjaiEvent::Kan { actor, .. } => Some((*actor as u8, ActionType::Daiminkan)),
                     _ => None,
                 };
-                let retired = std::mem::take(&mut self.current_claims);
-                self.v2_record_passes_from_claims(&retired, winning);
+                let claims_snapshot = self.current_claims.clone();
+                self.v2_record_passes_from_claims(&claims_snapshot, winning);
             }
         }
         match event {

@@ -1,15 +1,10 @@
 """Replay the no-yaku miss from a native 136-tile wall through full-game export."""
 
-import json
-import sqlite3
-
 import pytest
 
 from riichienv import Phase
 from riichienv.kar.actions import legal_candidates
-from riichienv.kar.audit import replay_game
 from riichienv.kar.contracts import MJSOUL_RULESET, content_hash
-from riichienv.kar.learning.export import SQL_SCHEMA, GameWriter
 from riichienv.kar.mjsoul import DecodedGame, normalize_records
 from riichienv.kar.native_replay import NativeReplayBridge, NativeReplayInterfaceError
 from riichienv.kar.observation import ObserverLedger
@@ -17,7 +12,6 @@ from tests.kar.test_decision_time_parity import _Episode, _server_records
 from tests.kar.test_input_semantics import record
 
 SEAT, PASS, RON_FROM_3 = 1, 221, 544
-INFERRED = "inferred_unique_next_draw_pass"
 
 
 def _state(env, observations=None):
@@ -128,41 +122,6 @@ def test_no_yaku_same_turn_furiten_matches_native_legal_sets(episode, bridge_ena
                 ledger.apply_event(event)
         if index in states:
             assert _state(env) == states[index], event
-
-
-def test_completed_game_export_drops_false_pass_and_keeps_genuine_decline(episode, record_property):
-    game, _, blocked, offered = episode
-    decisions = []
-    with sqlite3.connect(":memory:") as db:
-        db.executescript(SQL_SCHEMA)
-        writer = GameWriter(db, game)
-
-        def collect(decision):
-            decisions.append(decision)
-            writer(decision)
-
-        report = replay_game(game, on_decision=collect)
-        assert report["status"] == report["completion"]["status"] == "PASS", report
-        assert report["independent_settlement"]["status"] == "PASS"
-        exported = writer.finish(report, "train")
-        assert exported["examples"] == len(decisions) and exported["value_valid"] > 0
-        assert db.execute("SELECT count(*) FROM games").fetchone() == (1,)
-        passes = db.execute(
-            "SELECT trigger_event_id,action_target,provenance FROM samples "
-            "WHERE observer=? AND trigger_event_id IN (?,?) ORDER BY trigger_event_id",
-            (SEAT, blocked, offered),
-        ).fetchall()
-    latest = next(decision for decision in reversed(decisions) if decision.snapshot.observer_player_id == SEAT)
-    marker_ids = {
-        row["trigger_event_id"] for data in latest.snapshot.events if (row := json.loads(data))["type"] == "self_pass"
-    }
-    observed_markers = sorted(marker_ids & {blocked, offered})
-    record_property("completed_rounds", report["completion"]["round_count"])
-    record_property("exported_rows", exported["examples"])
-    record_property("blocked_discard", blocked)
-    record_property("pass_rows", json.dumps(passes))
-    record_property("self_pass_triggers", json.dumps(observed_markers))
-    assert (passes, observed_markers) == ([(offered, PASS, INFERRED)], [offered])
 
 
 def test_kar_replay_fails_closed_with_pre_furiten_extension():

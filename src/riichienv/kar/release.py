@@ -10,11 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import content_hash
-from .runtime_contracts import runtime_contract
-from .versioning import validate_artifact_contract
 
 BUILD_IDENTITY_VERSION = "packaged_source_identity_v1"
-RELEASE_VERSION = "complete_kar_release_v1"
 
 
 def source_files(root: Path) -> dict[str, str]:
@@ -99,65 +96,6 @@ def implementation_release_identity() -> dict[str, Any]:
         "python_implementation": sys.implementation.name,
         "platform": platform.platform(),
     }
-
-
-def complete_release_contract(
-    *,
-    training: dict[str, Any],
-    data_manifest: dict[str, Any],
-    budget: dict[str, Any],
-    calibration: dict[str, Any] | None = None,
-    support: dict[str, Any] | None = None,
-    policy: dict[str, Any] | None = None,
-    paired_seed_manifest: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    from .learning.training_config import ProductionTrainConfig  # noqa: PLC0415
-
-    validate_artifact_contract(data_manifest["scope"], context="release dataset")
-    config = ProductionTrainConfig.from_record(training)
-    if (
-        training["N_train_half_games"] != data_manifest.get("N_train_half_games")
-        or training["N_eligible_half_games"] != data_manifest.get("N_eligible_half_games")
-        or config.budget.to_record() != budget
-        or config.budget.forecast.recipe_sha256 != config.recipe_sha256
-    ):
-        raise ValueError("Release training/data/forecast scale or recipe differs")
-    record = {
-        "release_version": RELEASE_VERSION,
-        **runtime_contract(),
-        "implementation": implementation_release_identity(),
-        "initial_seat_order": [0, 1, 2, 3],
-        "rank_tiebreak": "initial_seat_order_east_south_west_north",
-        "rule_feature_mask_probability": training["feature_mask_probability"],
-        "use_rule_features": training["use_rule_features"],
-        "training": training,
-        **{
-            key: training[key]
-            for key in (
-                "model_tier",
-                "N_train_half_games",
-                "N_eligible_half_games",
-                "planned_epochs",
-                "effective_batch_size",
-            )
-        },
-        "data_manifest_sha256": data_manifest["manifest_sha256"],
-        "split_salt": data_manifest["scope"]["split_salt"],
-        "rho_E": data_manifest["rho_E"],
-        "rho_V": data_manifest["rho_V"],
-        "lambda_E": 0.25,
-        "lambda_V": 0.1,
-        "weight_decay_parameter_groups": {"value_head.weight": 0.05, "other_matrices": 0.01, "bias_norm": 0.0},
-        "budget": budget,
-        "paired_seed_manifest": paired_seed_manifest,
-        "calibration": calibration,
-        "event_support": support,
-        "policy": policy,
-        "calibration_status": "heldout_artifact" if calibration is not None else "unfitted",
-        "evidence_status": (policy or {}).get("evidence_status", "certificate_unavailable"),
-        "feature_ablation_mode": "feature_on" if training["use_rule_features"] else "feature_off",
-    }
-    return {**record, "release_contract_sha256": content_hash(record)}
 
 
 def main() -> int:

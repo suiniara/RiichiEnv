@@ -2,7 +2,7 @@
 
 > **文档状态**：Stage 1 实施完成与二次独立审查基线（v2.5：完成 Stage 1 全部 Rust 特征引擎、PyO3 零拷贝接口、PyTorch V2 模型/GRP/Belief/Stage-4 RL 合同原语、在线 vs MJAI 回放零 Train-Serve Skew 实证及本地 CPU 实测 Benchmark）  
 > **适用范围**：`riichienv-core`（Rust 特征与规则引擎）、`riichienv-python`（PyO3 零拷贝绑定）、`src/riichienv/kar/v2`（V2 模型、GRP 校准、Belief 损失与 Stage-4 RL 合同原语）  
-> **实施原则**：保留 KAR V1（`src/riichienv/kar/learning/model.py`）作为对照组 A；不以理论估算替代实测 Benchmark；严禁在通过前置门控（及云端 GPU 吞吐实测）前投入大规模训练预算。
+> **实施原则**：旧 KAR V1 模型/训练代码与历史文档已从活动分支 `kar/v2-stage1` 清理移除（保留共用的动作映射/规则特征/回放基础模块；如需回溯 V1 基线可从 Git 历史检出）；不以理论估算替代实测 Benchmark；严禁在通过前置门控（及云端 GPU 吞吐实测）前投入大规模训练预算。
 
 ---
 
@@ -281,14 +281,13 @@ flowchart TD
 
 | 对照组 | 模型 | `d` / `H` | Spatial 层 | Event 层 | Fusion 层 | 候选头类型 | 实测总参数量（纯推理） | 预算定位与说明 |
 | :--- | :--- | :---: | :---: | :---: | :---: | :--- | :---: | :--- |
-| **A** | **KAR V1 Baseline** | 512 / 8 | 0 | 8 (整半庄) | 0 | V1 原生 | 现有基线 | 保留 `src/riichienv/kar/learning/model.py` |
 | **B** | **V2 Spatial-Only** | 256 / 8 | 12 | **0** | 1 (Core Self) | Factorized | **18.41M** (18.01M) | 测量 34 牌空间卷积 + Rust 特征的独立收益 |
 | **C1** | **V2-Base Hybrid** | 256 / 8 | 6 | 4 | 2 | Factorized | **15.01M** (14.62M) | **\$100–\$1,000 预算推荐主力档位**（BC + Belief + 充分 PPO 自博弈） |
 | **C1-Flat** | **V2-Base Flat-546** | 256 / 8 | 6 | 4 | 2 | 平面 546 分类头 | **13.82M** (13.43M) | 实验 C：专门消融 Factorized Head vs 平面 546 头 |
 | **C2** | **V2-Large Hybrid** | 384 / 8 | 8 | 6 | 2 | Factorized | **43.00M** (42.11M) | 仅在接近 \$1,000 预算且 `C1` Stage 2–4 闭环验证后才解锁 |
 | **Critic** | **OracleCriticV2** | 192 / 6 | 4 | 2 | 1 | 独立价值头 | **4.60M** (仅训练期) | 完全独立于 Actor 参数与中间表示，纯推理完全剥离 |
 
-*(注：上述参数量为 `KARV2Actor` / `OracleCriticV2` 实际构造后的精确统计；云端 GPU 前反向吞吐与峰值显存待云端实测后补录，不作理论推测。)*
+*(注：旧 KAR V1 已从活动分支移除，Stage 2 直接以 `B (Spatial-Only)` / `C1 (V2-Base Hybrid)` / `C1-Flat` 开展同数据同预算对照消融；上述参数量为 `KARV2Actor` / `OracleCriticV2` 实际构造后的精确统计，云端 GPU 前反向吞吐与峰值显存待云端实测后补录，不作理论推测。)*
 
 ---
 
@@ -490,7 +489,7 @@ Stage 1 交叉校验仅对语义严格等价的通道要求零误差；语义不
 #### B. 必须由云端 GPU 与实验回答的待实测清单（绝不预设承诺）
 以下指标仍标记为 **待云端实测（TBD）**：
 - **待云端实测工程指标**：目标训练 GPU（如 L40S / RTX 4090 / A100 BF16）下各档位真实前反向吞吐（`samples/sec`）、单卡显存峰值、真实压缩牌谱分片磁盘占用（GB / 100 万局），及由此反推的 \$100 / \$1,000 预算精确切分表。
-- **实验 A（空间与时序归纳偏置）**：同数据同算力对比 `A (KAR V1)` vs `B (V2 Spatial-Only)` vs `C1 (V2-Base Hybrid)` 的测试集 NLL、放铳率、副露准确率与对弈平均顺位（含 `enable_early_shape_hint` 开关消融）。
+- **实验 A（空间与时序归纳偏置）**：同数据同算力对比 `B (V2 Spatial-Only)` vs `C1 (V2-Base Hybrid)` 的测试集 NLL、放铳率、副露准确率与对弈平均顺位（含 `enable_early_shape_hint` 开关消融）。
 - **实验 B（Oracle Critic、GRP 与 TD/MC 损失收益）**：对比 `纯观察 Critic` vs `独立 Oracle Critic` vs `独立 Oracle Critic + GRP`（及 `gae_mse` vs `mc_mse`）的价值 Brier/CE 误差、GAE 方差与 PPO 策略最终顺位收益。
 - **实验 C（结构化动作头收益）**：对比 `C1 (Factorized Candidate Head)` vs `C1-Flat (平面 546 分类头)` 在低频动作（CHI / PON / KAN）上的 NLL 与整体棋力。
 
@@ -499,7 +498,7 @@ Stage 1 交叉校验仅对语义严格等价的通道要求零误差；语义不
 | :--- | :--- | :---: | :--- |
 | **Stage 0** | 冻结工程合同（v2.4 / v2.4.1） | **已完成** | 全部 P0/P1 审查修订闭环 |
 | **Stage 1** | Rust V2 特征引擎 + `GameState` 零偏差内置事件/跨局追踪 + `calc_with_rule` + `BeliefTargets` + `PureStateGRP` 校准 + Stage-4 RL 合同原语 + 全部自动化测试 + 本地 CPU 实测 Benchmark | **已完成（待复审）** | 全部 Rust/Python/ruff/ty CI 100% 通过；进入 Stage 2 前于云端 GPU 运行一次 `python -m riichienv.kar.v2.benchmark` 补齐 GPU 吞吐与显存基线 |
-| **Stage 2** | 开展实验 A & C（小规模同数据同预算 A/B/C1/C1-Flat 对照） | 待启动 | 证实 `C1` 在综合 NLL、关键分项指标、实测吞吐与同预算平均顺位上稳赢 `A (V1)` |
+| **Stage 2** | 开展实验 A & C（小规模同数据同预算 B/C1/C1-Flat 对照） | 待启动 | 证实 `C1` 在综合 NLL、关键分项指标、实测吞吐与同预算平均顺位上稳赢 `B` 与 `C1-Flat` |
 | **Stage 3** | 开展 BC + Opponent Belief + 独立 Oracle Critic 消融（含实验 B 前半段） | 待启动 | 证实信念辅助头提升 BC 对弈表现 / 降放铳率；独立 Oracle Critic 显著优于纯观察 Critic |
 | **Stage 4** | 非对称 Oracle PPO / IMPALA + `CriticWarmupGate` + `PFSPOpponentPool`（冻结 `bc_anchor`）+ `FrozenGAERolloutBatch` | 待启动 | 小规模 RL 稳定超越 BC 基线、无策略崩溃且无指标退化后，才解锁高预算放量（优先充分训练 `C1`，达预算上限与收益门槛后再评估 `C2`） |
 | **Stage 5** | 固定版本 Mortal 严格配对评测（同牌山 + 4 座轮换 + 统计显著局数） | 待启动 | 输出平均顺位、一至四位率、和牌率、放铳率、副露率及 95% 置信区间 |

@@ -8,7 +8,6 @@ from test_mjsoul import _message, _new_round, _result
 
 from riichienv.kar import acceptance, corpus_audit, golden
 from riichienv.kar.contracts import content_hash, game_split
-from riichienv.kar.learning.export import export_dataset, learning_contract
 from riichienv.kar.mjsoul import decode_record_bytes, load_protocol
 
 SALT = "protocol-dependency-regression"
@@ -148,50 +147,6 @@ def test_public_merge_rejects_same_top_level_proto_with_different_imports(multif
     with pytest.raises(ValueError, match="incompatible.*protocol"):
         acceptance.consolidate_shards([(before, multifile[3]), (after, multifile[3])], [], tmp_path / "merged")
     assert not (tmp_path / "merged").exists()
-
-
-def _accepted_selection(multifile, directory):
-    _, _, protocol, manifest, ids = multifile
-    directory.mkdir()
-    scope = {**learning_contract(), **protocol.identity_record(), "split_salt": SALT}
-    source = manifest.parent / f"{ids[0]}.bin"
-    row = {
-        "game_id": ids[0],
-        "source": str(source),
-        "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-        **protocol.identity_record(),
-    }
-    accepted = {
-        "status": "PASS",
-        "training_allowed": True,
-        "source_scope": scope,
-        "golden_game_ids_reserved": [],
-        "split_counts": {"train": 1, "validation": 0, "test": 0},
-    }
-    _save(directory / "audit.json", {**accepted, "acceptance_sha256": content_hash(accepted)})
-    for split in ("train", "validation", "test"):
-        games = [row] if split == "train" else []
-        _save(
-            directory / f"{split}.manifest.json",
-            {"scope": scope, "games": games, "manifest_sha256": content_hash(games)},
-        )
-
-
-@pytest.mark.parametrize("resume", [False, True])
-def test_export_rejects_schema_that_differs_from_accepted_inputs_before_writes(multifile, tmp_path, resume):
-    accepted, output = tmp_path / "accepted", tmp_path / "export"
-    _accepted_selection(multifile, accepted)
-    sentinel = b"previously exported state must not be opened or replaced"
-    if resume:
-        output.mkdir()
-        (output / "decisions.sqlite3").write_bytes(sentinel)
-    _change_dependency(multifile[1])
-    with pytest.raises(ValueError, match="imported descriptors differ from accepted inputs"):
-        export_dataset(accepted, multifile[0], output, resume=resume)
-    if resume:
-        assert (output / "decisions.sqlite3").read_bytes() == sentinel
-    else:
-        assert not output.exists()
 
 
 def test_golden_recompiles_imports_before_replaying_saved_evidence(multifile, monkeypatch):

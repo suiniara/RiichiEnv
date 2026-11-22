@@ -91,42 +91,6 @@ def test_p0_3_resolve_discard_response_accepts_raw_rust_draw_reasons():
         assert result.response_observed and result.response_target == int(expected)
 
 
-def test_p0_5_loss_sums_rejects_empty_or_excluded_response_masks():
-    torch = pytest.importorskip("torch")
-    from riichienv.kar.learning.losses import Labels, loss_sums
-    from riichienv.kar.learning.model import ModelOutputs
-
-    outputs = ModelOutputs(
-        policy_logits=torch.zeros((1, 546)),
-        response_logits=torch.zeros((1, 21)),
-        rank_logits=torch.zeros((1, 21, 4)),
-        action_present=torch.tensor([True]),
-    )
-    legal = torch.zeros((1, 546), dtype=torch.bool)
-    legal[0, 0] = True
-    # Empty response_allowed with response_weight=0.0 must still raise ValueError, not NaN.
-    empty_allowed = Labels(
-        action_target=torch.tensor([0]),
-        action_valid=torch.tensor([True]),
-        response_target=torch.tensor([0]),
-        response_applicable=torch.tensor([True]),
-        response_observed=torch.tensor([True]),
-        final_rank_target=torch.tensor([0]),
-        value_valid=torch.tensor([True]),
-        response_allowed=torch.zeros((1, 21), dtype=torch.bool),
-        response_weight=torch.tensor([0.0]),
-        value_weight=torch.tensor([0.0]),
-    )
-    with pytest.raises(ValueError, match="empty rule/legal mask"):
-        loss_sums(outputs, empty_allowed, legal)
-
-    excluded_mask = torch.ones((1, 21), dtype=torch.bool)
-    excluded_mask[0, 5] = False
-    excluded_target = replace(empty_allowed, response_target=torch.tensor([5]), response_allowed=excluded_mask)
-    with pytest.raises(ValueError, match="excluded by the public/legal mask"):
-        loss_sums(outputs, excluded_target, legal)
-
-
 def test_p1_1_baseline_dora_wrap_isolated_bonus_and_riichi_preference():
     # Wind wrap: N(30) -> E(27); Dragon wrap: C(33) -> P(31)
     assert _dora_base(30 * 4) == 27
@@ -179,94 +143,6 @@ def test_p1_2_functional_match_hash_is_deterministic():
     assert first["status"] == "PASS"
     assert first["match_sha256"] == second["match_sha256"]
     assert [row["seat"] for row in first["decisions"]] == [row["seat"] for row in second["decisions"]]
-
-
-def test_p1_3_evaluation_preserves_current_rank_when_rule_features_disabled():
-    torch = pytest.importorskip("torch")
-    from riichienv.kar.learning.config import ModelConfig
-    from riichienv.kar.learning.distributed import DistributedContext
-    from riichienv.kar.learning.evaluation import evaluate_complete
-    from riichienv.kar.learning.model import KARTransformer
-    from riichienv.kar.response_mask import public_rule_response_mask
-
-    env = MJSOUL_RULESET.create_env(seed=17)
-    ledger = ObserverLedger(0, (0, 1, 2, 3))
-    for event in env.mjai_log:
-        ledger.apply_event(event)
-    obs = env.get_observations([0])[0]
-    ids = tuple(action.global_id for action in legal_candidates(obs, drawn_tile=env.drawn_tile))
-    snapshot = ledger.snapshot()
-    prefix = encode_prefix(snapshot, ids)
-    target = ids[0]
-    full = append_action(prefix, target)
-    allowed = public_rule_response_mask(snapshot, target)
-    row = {
-        "decision_row_id": "eval-feature-off-0",
-        "game_id": "synthetic-eval-game",
-        "tokens": full.to_bytes()[108:],
-        "candidates": ids,
-        "decide_index": prefix.decide_index,
-        "action_index": len(full.rows) - 1,
-        "action_target": target,
-        "action_valid": True,
-        "response_target": 0,
-        "response_applicable": True,
-        "response_observed": True,
-        "final_rank": 0,
-        "value_valid": True,
-        "response_allowed": list(allowed),
-        "candidate_branches": [
-            {
-                "decision_row_id": "eval-feature-off-0",
-                "game_id": "synthetic-eval-game",
-                "tokens": full.to_bytes()[108:],
-                "candidates": ids,
-                "decide_index": prefix.decide_index,
-                "action_index": len(full.rows) - 1,
-                "action_target": -1,
-                "action_valid": False,
-                "response_target": 0,
-                "response_applicable": True,
-                "response_observed": True,
-                "final_rank": 0,
-                "value_valid": True,
-                "response_allowed": list(allowed),
-                "candidate_action_id": target,
-                "replicate": 0,
-            }
-        ],
-    }
-
-    class _MiniVal:
-        split = "validation"
-        manifest = {"manifest_sha256": "a" * 64, "rho_E": 1.0, "rho_V": 1.0}
-
-        def __len__(self):
-            return 1
-
-        def __getitem__(self, idx):
-            return row
-
-    torch.manual_seed(7)
-    model = KARTransformer(ModelConfig(layers=1, width=16, heads=2, feedforward=32, preset="mini-eval"))
-    context = DistributedContext.open("cpu")
-    try:
-        report = evaluate_complete(
-            model,
-            _MiniVal(),
-            context,
-            microbatch=1,
-            use_rule_features=False,
-            bootstrap_replicates=5,
-        )
-    finally:
-        context.close()
-    slices = report["diagnostics"]["by_slice"]
-    assert "current_rank/unknown" not in slices
-    assert any(key.startswith("current_rank/") and key[-1] in "1234" for key in slices)
-    # Factual response/rank diagnostics must still be recorded even with candidate_branches attached!
-    assert report["diagnostics"]["heads"]["response"]["count"] == 1
-    assert report["diagnostics"]["heads"]["rank"]["count"] == 1
 
 
 def test_p2_neutral_fallback_continuous_temp_and_action_token(public_view):

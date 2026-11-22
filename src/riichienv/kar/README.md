@@ -1,11 +1,11 @@
-# KAR 源码导航
+# KAR V2 源码导航
 
-本包以 RiichiEnv 为宿主。**逐模块 README 已集中到 [docs/kar-modules/README.md](../../../docs/kar-modules/README.md)**，按源码命名空间一一对应，包含职责、接口、数据合同、调用关系、使用方式、异常和测试位置。
+本包以 RiichiEnv 为宿主，旧 KAR V1 模型/训练实现与 V1 历史文档已从活动分支移除（保留共用动作映射 `actions.py`、规则特征 `rule_features.py`、回放与核心校验模块）。
 
-- [唯一活动主设计](../../../docs/KAR-v1.2.2-DESIGN.md)
-- [当前语义/规则/分支质量修复与验证](../../../docs/kar-semantic-branch-repair.md)
-- [learning 子包](../../../docs/kar-modules/learning/README.md)
-- [完整生产链说明](../../../docs/kar-production-code.md)
-- [58项实现覆盖对照](../../../docs/kar-implementation-coverage.md)
-
-这些文档不授予训练/评测许可，不代表当前代码已经运行验收通过。原始数据、协议和既有报告仍按只读来源处理。
+- **唯一活动工程合同**：[docs/KAR-V2-CONTRACT.md](../../../docs/KAR-V2-CONTRACT.md)（v2.5）
+- **KAR V2 核心实现**：`src/riichienv/kar/v2/`
+  - `model.py`：`KARV2Actor`（4 档配置）、独立 `OracleCriticV2`、`fp32` 掩码 PPO/KL/熵与 `belief_auxiliary_loss`
+  - `grp.py`：`PureStateGRP`、`FrozenGRP`、全半庄连续 GAE 与 `evaluate_grp_calibration`
+  - `rl_contract.py`：`CriticWarmupGate`、`PFSPOpponentPool`、`FrozenGAERolloutBatch`
+  - `benchmark.py`：端到端 Rust 编码与 PyTorch 实测 Benchmark（`python -m riichienv.kar.v2.benchmark`）
+- **Rust 原生特征引擎**：`riichienv-core/src/v2_features/` 与 `riichienv-python/src/v2_features.rs`
