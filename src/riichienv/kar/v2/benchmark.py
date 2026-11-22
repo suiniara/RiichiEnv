@@ -51,6 +51,7 @@ def benchmark_rust_encoding(num_steps: int = 2000) -> dict[str, float]:
     obs_map = env.reset()
 
     actor_times: list[float] = []
+    bc_belief_times: list[float] = []
     full_times: list[float] = []
     steps_done = 0
 
@@ -59,20 +60,16 @@ def benchmark_rust_encoding(num_steps: int = 2000) -> dict[str, float]:
             obs_map = env.reset()
         actions = {}
         for pid, obs in obs_map.items():
-            is_resp = env.phase == riichienv.Phase.WaitResponse
-            phase_id = 1 if is_resp else 0
-            trigger_rel = ((env.current_player + 4 - pid) % 4) if is_resp else None
-            if trigger_rel == 0:
-                trigger_rel = 1
             t0 = time.perf_counter()
-            _ = native.v2_encode_actor_obs(
-                obs, phase_id, trigger_rel, 50, False, False, False, "tenhou", False
-            )
+            _ = native.v2_encode_env_step(env, pid, "tenhou", False, False, False)
             t1 = time.perf_counter()
-            _ = native.v2_encode_env_step(env, pid, "tenhou", False)
+            _ = native.v2_encode_env_step(env, pid, "tenhou", False, False, True)
             t2 = time.perf_counter()
+            _ = native.v2_encode_env_step(env, pid, "tenhou", False, True, False)
+            t3 = time.perf_counter()
             actor_times.append((t1 - t0) * 1e6)
-            full_times.append((t2 - t1) * 1e6)
+            bc_belief_times.append((t2 - t1) * 1e6)
+            full_times.append((t3 - t2) * 1e6)
             steps_done += 1
 
             legal = obs.legal_actions()
@@ -88,6 +85,7 @@ def benchmark_rust_encoding(num_steps: int = 2000) -> dict[str, float]:
         obs_map = env.step(actions)
 
     actor_times.sort()
+    bc_belief_times.sort()
     full_times.sort()
     n = len(actor_times)
     return {
@@ -95,6 +93,9 @@ def benchmark_rust_encoding(num_steps: int = 2000) -> dict[str, float]:
         "actor_only_mean_us": sum(actor_times) / n,
         "actor_only_p95_us": actor_times[int(0.95 * (n - 1))],
         "actor_only_steps_per_sec_1core": 1e6 / (sum(actor_times) / n),
+        "actor_plus_belief_mean_us": sum(bc_belief_times) / n,
+        "actor_plus_belief_p95_us": bc_belief_times[int(0.95 * (n - 1))],
+        "actor_plus_belief_steps_per_sec_1core": 1e6 / (sum(bc_belief_times) / n),
         "actor_plus_oracle_mean_us": sum(full_times) / n,
         "actor_plus_oracle_p95_us": full_times[int(0.95 * (n - 1))],
         "actor_plus_oracle_steps_per_sec_1core": 1e6 / (sum(full_times) / n),

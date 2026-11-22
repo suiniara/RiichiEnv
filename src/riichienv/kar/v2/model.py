@@ -1007,3 +1007,91 @@ def oracle_critic_loss(
     mse_loss = F.mse_loss(v_shaped.float(), detached_target)
     total = ce_loss + alpha_td * mse_loss
     return {"loss": total, "ce_loss": ce_loss, "mse_loss": mse_loss}
+
+
+def belief_auxiliary_loss(
+    *,
+    belief_out: dict[str, torch.Tensor],
+    opp_tenpai: torch.Tensor,
+    opp_waits: torch.Tensor,
+    exact_dealin_now: torch.Tensor,
+    opp_hand_counts: torch.Tensor,
+    valid_mask: torch.Tensor | None = None,
+    w_tenpai: float = 0.25,
+    w_waits: float = 0.25,
+    w_dealin: float = 0.40,
+    w_hand_cnt: float = 0.15,
+    wait_pos_weight: float = 8.0,
+    dealin_pos_weight: float = 8.0,
+) -> dict[str, torch.Tensor]:
+    """Contract v2.5 Stage-3 Opponent Belief multi-task supervision loss (strictly `fp32`).
+
+    Supervision targets come strictly from Rust `&GameState` (`v2_encode_belief_targets_env`)
+    and are NEVER exposed to Actor inputs:
+    - `tenpai_logits` `[B, 3]` vs `opp_tenpai` `[B, 3]` (0/1)
+    - `wait_logits` `[B, 3, 34]` vs `opp_waits` `[B, 3, 34]` (0/1), masked ONLY to `opp_tenpai == 1`
+    - `dealin_logits` `[B, 34]` vs `exact_dealin_now` `[B, 34]` (0/1)
+    - `hand_cnt_logits` `[B, 3, 34, 5]` vs `opp_hand_counts` `[B, 3, 34]` (0..4)
+    """
+    tenpai_logits = belief_out["tenpai_logits"].float()
+    wait_logits = belief_out["wait_logits"].float()
+    dealin_logits = belief_out["dealin_logits"].float()
+    hand_cnt_logits = belief_out["hand_cnt_logits"].float()
+
+    bsz = tenpai_logits.shape[0]
+    device = tenpai_logits.device
+    if valid_mask is None:
+        sample_valid = torch.ones((bsz,), dtype=torch.bool, device=device)
+    else:
+        sample_valid = valid_mask.to(device=device, dtype=torch.bool)
+    sample_valid_f = sample_valid.float()
+    sample_denom = sample_valid_f.sum().clamp(min=1.0)
+
+    # 1. Opponent tenpai probability [B, 3]
+    tenpai_tgt = opp_tenpai.to(device=device, dtype=torch.float32)
+    tenpai_bce = F.binary_cross_entropy_with_logits(tenpai_logits, tenpai_tgt, reduction="none")
+    tenpai_loss = (tenpai_bce.mean(dim=-1) * sample_valid_f).sum() / sample_denom
+
+    # 2. Opponent wait distribution [B, 3, 34] (strictly masked to tenpai opponents!)
+    wait_tgt = opp_waits.to(device=device, dtype=torch.float32)
+    wpw = torch.tensor(float(wait_pos_weight), dtype=torch.float32, device=device)
+    wait_bce = F.binary_cross_entropy_with_logits(
+        wait_logits, wait_tgt, pos_weight=wpw, reduction="none"
+    ).mean(dim=-1)  # [B, 3]
+    tenpai_active = (tenpai_tgt > 0.5) & sample_valid[:, None]
+    tenpai_active_f = tenpai_active.float()
+    tenpai_active_cnt = tenpai_active_f.sum()
+    # Multiply by 0 when count == 0 while keeping wait_logits in autograd graph (DDP-safe).
+    wait_loss = (wait_bce * tenpai_active_f).sum() / tenpai_active_cnt.clamp(min=1.0)
+
+    # 3. Exact 1-step deal-in risk [B, 34]
+    dealin_tgt = exact_dealin_now.to(device=device, dtype=torch.float32)
+    dpw = torch.tensor(float(dealin_pos_weight), dtype=torch.float32, device=device)
+    dealin_bce = F.binary_cross_entropy_with_logits(
+        dealin_logits, dealin_tgt, pos_weight=dpw, reduction="none"
+    )
+    dealin_loss = (dealin_bce.mean(dim=-1) * sample_valid_f).sum() / sample_denom
+
+    # 4. Opponent closed-hand copy counts [B, 3, 34, 5]
+    cnt_tgt = opp_hand_counts.to(device=device, dtype=torch.long).clamp(0, 4)
+    cnt_ce = F.cross_entropy(
+        hand_cnt_logits.reshape(-1, 5),
+        cnt_tgt.reshape(-1),
+        reduction="none",
+    ).view(bsz, 3, TILE_DIM)
+    hand_cnt_loss = (cnt_ce.mean(dim=(1, 2)) * sample_valid_f).sum() / sample_denom
+
+    total = (
+        w_tenpai * tenpai_loss
+        + w_waits * wait_loss
+        + w_dealin * dealin_loss
+        + w_hand_cnt * hand_cnt_loss
+    )
+    return {
+        "loss": total,
+        "tenpai_loss": tenpai_loss,
+        "wait_loss": wait_loss,
+        "dealin_loss": dealin_loss,
+        "hand_cnt_loss": hand_cnt_loss,
+        "tenpai_active_count": tenpai_active_cnt,
+    }

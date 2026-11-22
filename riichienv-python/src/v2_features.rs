@@ -4,7 +4,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
-use riichienv_core::action::{Action, Phase};
+use riichienv_core::action::Action;
 use riichienv_core::game_variant::GameStateVariant;
 use riichienv_core::hand_evaluator::HandEvaluator;
 use riichienv_core::observation::Observation;
@@ -14,7 +14,7 @@ use riichienv_core::v2_features::action_manifest::{decode_global_id_to_native, m
 use riichienv_core::v2_features::candidates::{WinEvalContext, encode_candidates};
 use riichienv_core::v2_features::furiten::FuritenState;
 use riichienv_core::v2_features::global_player::{RoundGlobalContext, encode_global_player};
-use riichienv_core::v2_features::oracle::encode_oracle;
+use riichienv_core::v2_features::oracle::{encode_belief_targets, encode_oracle};
 use riichienv_core::v2_features::tile_feats::encode_tile_feats;
 use riichienv_core::v2_features::visible::VisibleTileCounts;
 use riichienv_core::v2_features::{
@@ -212,16 +212,52 @@ fn v2_encode_oracle_env<'py>(
     Ok(d)
 }
 
-/// Encode full Actor + Oracle step directly from a live 4-player [`RiichiEnv`]
-/// (used for RL rollouts & Stage-1 end-to-end throughput benchmarks).
+/// Encode exact Stage-3 Opponent Belief supervision targets strictly from a
+/// live 4-player [`RiichiEnv`] (`&GameState`-isolated; NEVER exposed to Actor inputs).
 #[pyfunction]
-#[pyo3(signature = (env, observer, rule_profile="tenhou", enable_early_shape_hint=false))]
+fn v2_encode_belief_targets_env<'py>(
+    py: Python<'py>,
+    env: &RiichiEnv,
+    observer: u8,
+) -> PyResult<Bound<'py, PyDict>> {
+    let GameStateVariant::FourPlayer(ref state) = env.variant else {
+        return Err(PyValueError::new_err(
+            "KAR V2 Belief target encoder only supports 4-player RiichiEnv",
+        ));
+    };
+    let targets = encode_belief_targets(state, observer).map_err(PyValueError::new_err)?;
+    let waits_flat: Vec<u8> = targets.opp_waits.iter().flatten().copied().collect();
+    let counts_flat: Vec<u8> = targets.opp_hand_counts.iter().flatten().copied().collect();
+    let d = PyDict::new(py);
+    d.set_item("opp_tenpai", slice_to_pybytes(py, &targets.opp_tenpai))?;
+    d.set_item("opp_waits", slice_to_pybytes(py, &waits_flat))?;
+    d.set_item(
+        "exact_dealin_now",
+        slice_to_pybytes(py, &targets.exact_dealin_now),
+    )?;
+    d.set_item("opp_hand_counts", slice_to_pybytes(py, &counts_flat))?;
+    Ok(d)
+}
+
+/// Encode full Actor (+ live lossless `events` + real `HanchanTracker`) and optional
+/// Oracle / Belief supervision tensors directly from a live or replayed 4-player [`RiichiEnv`].
+#[pyfunction]
+#[pyo3(signature = (
+    env,
+    observer,
+    rule_profile="tenhou",
+    enable_early_shape_hint=false,
+    include_oracle=true,
+    include_belief=false
+))]
 fn v2_encode_env_step<'py>(
     py: Python<'py>,
     env: &mut RiichiEnv,
     observer: u8,
     rule_profile: &str,
     enable_early_shape_hint: bool,
+    include_oracle: bool,
+    include_belief: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let GameStateVariant::FourPlayer(ref mut state) = env.variant else {
         return Err(PyValueError::new_err(
@@ -233,33 +269,8 @@ fn v2_encode_env_step<'py>(
     let vis = VisibleTileCounts::from_observation(&obs).map_err(PyValueError::new_err)?;
     let fur = FuritenState::from_game_state(state, observer);
     let rc = rule_contract_from_profile(rule_profile, state.rule);
-    let tracker = HanchanTracker::default();
-
-    let (phase, trigger_rel) = if state.phase == Phase::WaitAct {
-        (DecisionPhase::OwnAct, None)
-    } else if let Some((kp, ref kact)) = state.pending_kan {
-        let p = if kact.action_type == riichienv_core::action::ActionType::Ankan {
-            DecisionPhase::AnkanResp
-        } else {
-            DecisionPhase::KakanResp
-        };
-        (p, Some((kp + 4 - observer) % 4))
-    } else {
-        let src = state.last_discard.map(|(dp, _)| (dp + 4 - observer) % 4);
-        (DecisionPhase::DiscardResp, src)
-    };
-
-    let ctx = RoundGlobalContext {
-        phase,
-        trigger_actor_rel: trigger_rel,
-        live_wall_left: state.wall.drawable_count,
-        is_first_uninterrupted_turn: state.is_first_turn,
-        double_riichi_declared: std::array::from_fn(|i| state.players[i].double_riichi_declared),
-        ippatsu_active: std::array::from_fn(|i| state.players[i].ippatsu_cycle),
-        riichi_turn_index: std::array::from_fn(|i| {
-            state.players[i].riichi_declaration_index.map(|x| x as u8)
-        }),
-    };
+    let ctx = state.v2_round_global_context(observer);
+    let phase = ctx.phase;
     let cfg = V2FeatureConfig {
         enable_early_shape_hint,
     };
@@ -267,12 +278,13 @@ fn v2_encode_env_step<'py>(
     let tile_feats = encode_tile_feats(&obs, &vis, fur, &state.rule, phase, &cfg)
         .map_err(PyValueError::new_err)?;
     let (global_feats, player_feats) =
-        encode_global_player(&obs, fur, &tracker, &rc, &ctx).map_err(PyValueError::new_err)?;
+        encode_global_player(&obs, fur, &state.v2_hanchan_tracker, &rc, &ctx)
+            .map_err(PyValueError::new_err)?;
     let cands = encode_candidates(
         &obs,
         &vis,
         fur,
-        &tracker,
+        &state.v2_hanchan_tracker,
         &rc,
         &ctx,
         &WinEvalContext {
@@ -284,13 +296,14 @@ fn v2_encode_env_step<'py>(
         },
     )
     .map_err(PyValueError::new_err)?;
-    let (oracle_tile, oracle_player) =
-        encode_oracle(state, observer).map_err(PyValueError::new_err)?;
+    let events = state
+        .v2_encode_round_events(observer)
+        .map_err(PyValueError::new_err)?;
+    let events_flat: Vec<u8> = events.iter().flatten().copied().collect();
 
     let player_flat: Vec<f32> = player_feats.iter().flatten().copied().collect();
     let cand_mask_u8: [u8; 32] = cands.cand_mask.map(|m| if m { 1 } else { 0 });
     let cand_dyn_flat: Vec<f32> = cands.cand_dyn.iter().flatten().copied().collect();
-    let op_flat: Vec<f32> = oracle_player.iter().flatten().copied().collect();
 
     let d = PyDict::new(py);
     d.set_item("tile_feats", slice_to_pybytes(py, &tile_feats))?;
@@ -301,8 +314,30 @@ fn v2_encode_env_step<'py>(
     d.set_item("cand_mode", slice_to_pybytes(py, &cands.cand_mode))?;
     d.set_item("cand_dyn", slice_to_pybytes(py, &cand_dyn_flat))?;
     d.set_item("num_valid", cands.num_valid)?;
-    d.set_item("oracle_tile", slice_to_pybytes(py, &oracle_tile))?;
-    d.set_item("oracle_player", slice_to_pybytes(py, &op_flat))?;
+    d.set_item("events", slice_to_pybytes(py, &events_flat))?;
+    d.set_item("event_len", events.len())?;
+    d.set_item("rounds_completed", state.v2_hanchan_tracker.rounds_completed)?;
+    d.set_item("ruleset_sha256", rc.ruleset_sha256())?;
+
+    if include_oracle {
+        let (oracle_tile, oracle_player) =
+            encode_oracle(state, observer).map_err(PyValueError::new_err)?;
+        let op_flat: Vec<f32> = oracle_player.iter().flatten().copied().collect();
+        d.set_item("oracle_tile", slice_to_pybytes(py, &oracle_tile))?;
+        d.set_item("oracle_player", slice_to_pybytes(py, &op_flat))?;
+    }
+    if include_belief {
+        let targets = encode_belief_targets(state, observer).map_err(PyValueError::new_err)?;
+        let waits_flat: Vec<u8> = targets.opp_waits.iter().flatten().copied().collect();
+        let counts_flat: Vec<u8> = targets.opp_hand_counts.iter().flatten().copied().collect();
+        d.set_item("opp_tenpai", slice_to_pybytes(py, &targets.opp_tenpai))?;
+        d.set_item("opp_waits", slice_to_pybytes(py, &waits_flat))?;
+        d.set_item(
+            "exact_dealin_now",
+            slice_to_pybytes(py, &targets.exact_dealin_now),
+        )?;
+        d.set_item("opp_hand_counts", slice_to_pybytes(py, &counts_flat))?;
+    }
     Ok(d)
 }
 
@@ -322,6 +357,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(v2_calc_with_rule, m)?)?;
     m.add_function(wrap_pyfunction!(v2_encode_actor_obs, m)?)?;
     m.add_function(wrap_pyfunction!(v2_encode_oracle_env, m)?)?;
+    m.add_function(wrap_pyfunction!(v2_encode_belief_targets_env, m)?)?;
     m.add_function(wrap_pyfunction!(v2_encode_env_step, m)?)?;
     m.add_function(wrap_pyfunction!(v2_decode_global_id, m)?)?;
     Ok(())

@@ -972,3 +972,329 @@ fn tile_feats_public_channels_zero_error_parity_with_legacy_encode_base() {
     }
 }
 
+// =========================================================================
+// 10. Zero Train-Serve Skew Parity Test: Live `GameState::step` vs MJAI Replay
+// =========================================================================
+#[test]
+fn live_vs_mjai_replay_zero_train_serve_skew_parity() {
+    use std::collections::HashMap;
+    use super::{CAND_DYN_DIM, EVENT_BYTES, GLOBAL_FEATS_DIM, PLAYER_FEATS_DIM, TILE_DIM};
+    use crate::replay::MjaiEvent;
+
+    struct Snapshot {
+        mjai_len: usize,
+        observer: u8,
+        tile_feats: [f32; TILE_DIM * TILE_FEATS_DIM],
+        global_feats: [f32; GLOBAL_FEATS_DIM],
+        player_feats: [[f32; PLAYER_FEATS_DIM]; 4],
+        cand_ids: [i16; MAX_CANDIDATES],
+        cand_mask: [bool; MAX_CANDIDATES],
+        cand_mode: [u8; MAX_CANDIDATES],
+        cand_dyn: [[f32; CAND_DYN_DIM]; MAX_CANDIDATES],
+        events: Vec<[u8; EVENT_BYTES]>,
+        tracker: HanchanTracker,
+    }
+
+    let rc = RuleContract::default_tenhou_houou();
+    let cfg = V2FeatureConfig::default();
+
+    let encode_snapshot = |state: &mut GameState, observer: u8| -> Snapshot {
+        let obs = state.get_observation(observer);
+        let vis = VisibleTileCounts::from_observation(&obs).unwrap();
+        let fur = FuritenState::from_game_state(state, observer);
+        let ctx = state.v2_round_global_context(observer);
+        let tf = encode_tile_feats(&obs, &vis, fur, &state.rule, ctx.phase, &cfg).unwrap();
+        let (gf, pf) =
+            encode_global_player(&obs, fur, &state.v2_hanchan_tracker, &rc, &ctx).unwrap();
+        let cand = encode_candidates(
+            &obs,
+            &vis,
+            fur,
+            &state.v2_hanchan_tracker,
+            &rc,
+            &ctx,
+            &WinEvalContext {
+                is_rinshan: state.is_rinshan_flag,
+                is_chankan: matches!(
+                    ctx.phase,
+                    DecisionPhase::KakanResp | DecisionPhase::AnkanResp
+                ),
+                is_haitei_or_houtei: state.wall.drawable_count == 0,
+                is_tsumo_first_turn: state.is_first_turn,
+                pao_payer: state.players[observer as usize].pao.values().next().copied(),
+            },
+        )
+        .unwrap();
+        let events = state.v2_encode_round_events(observer).unwrap();
+        Snapshot {
+            mjai_len: state.mjai_log.len(),
+            observer,
+            tile_feats: tf,
+            global_feats: gf,
+            player_feats: pf,
+            cand_ids: cand.cand_ids,
+            cand_mask: cand.cand_mask,
+            cand_mode: cand.cand_mode,
+            cand_dyn: cand.cand_dyn,
+            events,
+            tracker: state.v2_hanchan_tracker.clone(),
+        }
+    };
+
+    // Play a live 4P Hanchan game with MJAI logging enabled across >= 2 rounds,
+    // exercising Riichi, Pon/Chi, Pass, Tsumo/Ron, and cross-round HanchanTracker updates.
+    let mut live = GameState::new(2, false, Some(20261122), 0, GameRule::default_tenhou());
+    let mut snapshots: Vec<Snapshot> = Vec::new();
+    let mut saw_call = false;
+    let mut saw_riichi = false;
+    let mut saw_pass = false;
+    let mut steps = 0usize;
+
+    while !live.is_done && steps < 450 {
+        if live.v2_hanchan_tracker.rounds_completed >= 2 && steps > 120 {
+            break;
+        }
+        let active = live.active_players.clone();
+        if active.is_empty() {
+            break;
+        }
+        let mut chosen_map = HashMap::new();
+        for &pid in &active {
+            snapshots.push(encode_snapshot(&mut live, pid));
+            let obs = live.get_observation(pid);
+            let legal = obs.legal_actions_method();
+            // Deterministic policy exercising Tsumo/Ron > Riichi > occasional Pon/Chi > Pass > Discard
+            let act = legal
+                .iter()
+                .find(|a| matches!(a.action_type, ActionType::Tsumo | ActionType::Ron))
+                .or_else(|| {
+                    legal.iter().find(|a| {
+                        if a.action_type == ActionType::Riichi {
+                            saw_riichi = true;
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                })
+                .or_else(|| {
+                    if !saw_call && steps.is_multiple_of(3) {
+                        legal.iter().find(|a| {
+                            if matches!(a.action_type, ActionType::Pon | ActionType::Chi) {
+                                saw_call = true;
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    legal.iter().find(|a| {
+                        if a.action_type == ActionType::Pass {
+                            saw_pass = true;
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                })
+                .or_else(|| legal.iter().find(|a| a.action_type == ActionType::Discard))
+                .unwrap_or(&legal[0])
+                .clone();
+            chosen_map.insert(pid, act);
+        }
+        live.step(&chosen_map);
+        steps += 1;
+    }
+
+    assert!(
+        live.v2_hanchan_tracker.rounds_completed >= 1,
+        "expected >= 1 completed round to verify HanchanTracker parity"
+    );
+    assert!(
+        !snapshots.is_empty() && saw_pass,
+        "expected multi-step snapshots with WaitResponse passes"
+    );
+    let _ = (saw_call, saw_riichi);
+
+    // Replay the exact MJAI log into a fresh GameState and verify ZERO train-serve skew
+    // at EVERY single captured decision snapshot!
+    let mut replay = GameState::new(2, true, Some(99999), 0, GameRule::default_tenhou());
+    let mut snap_idx = 0usize;
+    for (ev_i, raw_json) in live.mjai_log.iter().enumerate() {
+        let ev: MjaiEvent = serde_json::from_str(raw_json)
+            .unwrap_or_else(|e| panic!("failed to parse mjai_log[{ev_i}]={raw_json}: {e}"));
+        replay.apply_mjai_event(ev);
+        assert!(
+            replay.last_error.is_none(),
+            "replay error at mjai_log[{ev_i}]={raw_json}: {:?}",
+            replay.last_error
+        );
+        let cur_len = ev_i + 1;
+        while snap_idx < snapshots.len() && snapshots[snap_idx].mjai_len == cur_len {
+            let expected = &snapshots[snap_idx];
+            let actual = encode_snapshot(&mut replay, expected.observer);
+
+            assert_eq!(
+                actual.tracker, expected.tracker,
+                "HanchanTracker skew at snap #{snap_idx} (mjai_len={cur_len}, obs={})",
+                expected.observer
+            );
+            assert_eq!(
+                actual.events, expected.events,
+                "v2_round_events skew at snap #{snap_idx} (mjai_len={cur_len}, obs={})",
+                expected.observer
+            );
+            assert_eq!(
+                actual.tile_feats, expected.tile_feats,
+                "tile_feats skew at snap #{snap_idx} (mjai_len={cur_len}, obs={})",
+                expected.observer
+            );
+            assert_eq!(
+                actual.global_feats, expected.global_feats,
+                "global_feats skew at snap #{snap_idx} (mjai_len={cur_len}, obs={})",
+                expected.observer
+            );
+            assert_eq!(
+                actual.player_feats, expected.player_feats,
+                "player_feats skew at snap #{snap_idx} (mjai_len={cur_len}, obs={})",
+                expected.observer
+            );
+            assert_eq!(
+                actual.cand_ids, expected.cand_ids,
+                "cand_ids skew at snap #{snap_idx} (mjai_len={cur_len}, obs={})",
+                expected.observer
+            );
+            assert_eq!(
+                actual.cand_mask, expected.cand_mask,
+                "cand_mask skew at snap #{snap_idx} (mjai_len={cur_len}, obs={})",
+                expected.observer
+            );
+            assert_eq!(
+                actual.cand_mode, expected.cand_mode,
+                "cand_mode skew at snap #{snap_idx} (mjai_len={cur_len}, obs={})",
+                expected.observer
+            );
+            assert_eq!(
+                actual.cand_dyn, expected.cand_dyn,
+                "cand_dyn skew at snap #{snap_idx} (mjai_len={cur_len}, obs={})",
+                expected.observer
+            );
+            snap_idx += 1;
+        }
+    }
+    assert_eq!(
+        snap_idx,
+        snapshots.len(),
+        "every single live snapshot must have been verified during MJAI replay"
+    );
+}
+
+// =========================================================================
+// 11. Post-Kan Dead-Wall Index Shift & Stage-3 BeliefTargets Exactness
+// =========================================================================
+#[test]
+fn oracle_post_kan_dead_wall_shift_and_belief_targets_exactness() {
+    use super::ORACLE_TILE_DIM;
+    use super::oracle::encode_belief_targets;
+
+    let mut state = GameState::new(0, true, Some(42), 0, GameRule::default_tenhou());
+    // Simulate 1 rinshan draw (`wall.tiles.remove(0)`):
+    // Dead wall now occupies indices 0..13:
+    //   0..3 = remaining 3 rinshan tiles
+    //   3, 5 = omote dora indicators 0 and 1 (`(4 + 2*i) - 1`)
+    //   4, 6 = ura dora indicators 0 and 1 (`(5 + 2*i) - 1`)
+    //   13.. = live wall
+    state.wall.rinshan_draw_count = 1;
+    let mut custom_wall = vec![0u8; 30];
+    // Remaining rinshan tiles (indices 0..3): three copies of East (base34=27 -> 108,109,110)
+    custom_wall[0] = 108;
+    custom_wall[1] = 109;
+    custom_wall[2] = 110;
+    // Dora indicators at 3 and 5: 1m (0) and 2m (4)
+    custom_wall[3] = 0;
+    custom_wall[5] = 4;
+    // Uradora indicators at 4 and 6: 9s (base34=26 -> dora=1s=18) and White (base34=31 -> dora=Green=32)
+    custom_wall[4] = 26 * 4;
+    custom_wall[6] = 31 * 4;
+    // Live wall (13..30): put two copies of Red dragon (base34=33 -> 132,133) + red 5m (16)
+    for slot in &mut custom_wall[13..30] {
+        *slot = 8 * 4; // 9m filler
+    }
+    custom_wall[13] = 132;
+    custom_wall[14] = 133;
+    custom_wall[15] = 16; // red 5m
+    state.wall.tiles = custom_wall;
+    state.wall.dora_indicators = vec![0, 4];
+
+    // Configure opponent 1 (rel=1 from observer 0):
+    // Closed tenpai hand: 222m 456m 678m 23p 55s -> waits on 1p (9, NO yaku: 222m breaks Pinfu)
+    // and 4p (12, Tanyao!).
+    state.players[1].hand = vec![
+        4,
+        5,
+        6,
+        3 * 4 + 1,
+        4 * 4 + 1,
+        5 * 4,
+        5 * 4 + 1,
+        6 * 4,
+        7 * 4,
+        10 * 4,
+        11 * 4,
+        22 * 4 + 1,
+        22 * 4 + 2,
+    ];
+    state.players[1].melds.clear();
+    state.players[1].discards.clear();
+    state.players[1].riichi_declared = false;
+
+    // Configure opponent 2 (rel=2): tenpai on 4p (12) & 1p (9) too, BUT furiten (discarded 1p)!
+    state.players[2].hand = state.players[1].hand.clone();
+    state.players[2].melds.clear();
+    state.players[2].discards = vec![9 * 4]; // discarded 1p -> permanent furiten!
+    state.players[2].riichi_declared = false;
+
+    // Configure opponent 3 (rel=3): non-tenpai hand
+    state.players[3].hand = vec![0, 12, 24, 36, 48, 60, 72, 84, 96, 108, 112, 116, 120];
+    state.players[3].melds.clear();
+    state.players[3].discards.clear();
+
+    let (ot1, _) = encode_oracle(&state, 0).unwrap();
+    // Uradora hits: 1s (base34=18) and Green (base34=32) each have count 1 -> 0.25
+    assert!((ot1[18 * ORACLE_TILE_DIM + 20] - 0.25).abs() < 1e-6);
+    assert!((ot1[32 * ORACLE_TILE_DIM + 20] - 0.25).abs() < 1e-6);
+    // Remaining 3 rinshan tiles: East (base34=27) has count 3 -> 0.75
+    assert!((ot1[27 * ORACLE_TILE_DIM + 21] - 0.75).abs() < 1e-6);
+    // Live wall: Red dragon (base34=33) has 2 copies -> ch15=1, ch16=1, ch17=0; red 5m -> ch19=1 on base34=4
+    assert_eq!(ot1[33 * ORACLE_TILE_DIM + 15], 1.0);
+    assert_eq!(ot1[33 * ORACLE_TILE_DIM + 16], 1.0);
+    assert_eq!(ot1[33 * ORACLE_TILE_DIM + 17], 0.0);
+    assert_eq!(ot1[4 * ORACLE_TILE_DIM + 19], 1.0);
+
+    // Shuffling live wall `[13..]` must produce bit-identical oracle_tile!
+    let mut state2 = state.clone();
+    state2.wall.tiles[13..].reverse();
+    let (ot2, _) = encode_oracle(&state2, 0).unwrap();
+    assert_eq!(ot1, ot2);
+
+    // Stage-3 BeliefTargets exactness:
+    let bt = encode_belief_targets(&state, 0).unwrap();
+    assert_eq!(bt.opp_tenpai, [1, 1, 0]);
+    // Opp 1 waits on 1p (9) and 4p (12)
+    assert_eq!(bt.opp_waits[0][9], 1);
+    assert_eq!(bt.opp_waits[0][12], 1);
+    // 4p deals into Opp 1 (Tanyao), while 1p has NO yaku (Opp 1 not riichi, Opp 2 is furiten) -> 0!
+    assert_eq!(bt.exact_dealin_now[12], 1);
+    assert_eq!(bt.exact_dealin_now[9], 0);
+    // Hand count sums match 13 per opponent
+    for rel in 0..3 {
+        let sum: u32 = bt.opp_hand_counts[rel].iter().map(|&c| u32::from(c)).sum();
+        assert_eq!(sum, 13);
+    }
+}
+
+

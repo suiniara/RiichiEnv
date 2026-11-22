@@ -1019,6 +1019,7 @@ __all__ = [
     "v2_calc_with_rule",
     "v2_encode_actor_obs",
     "v2_encode_oracle_env",
+    "v2_encode_belief_targets_env",
     "v2_encode_env_step",
     "v2_decode_global_id",
 ]
@@ -1076,11 +1077,14 @@ def v2_encode_actor_obs(
     enable_early_shape_hint: bool = False,
 ) -> dict[str, Any]: ...
 def v2_encode_oracle_env(env: RiichiEnv, observer: int) -> dict[str, Any]: ...
+def v2_encode_belief_targets_env(env: RiichiEnv, observer: int) -> dict[str, Any]: ...
 def v2_encode_env_step(
     env: RiichiEnv,
     observer: int,
     rule_profile: str = "tenhou",
     enable_early_shape_hint: bool = False,
+    include_oracle: bool = True,
+    include_belief: bool = False,
 ) -> dict[str, Any]: ...
 def v2_decode_global_id(
     global_id: int,

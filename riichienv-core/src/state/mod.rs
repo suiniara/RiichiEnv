@@ -96,6 +96,19 @@ pub struct GameState {
 
     pub riichi_sutehais: [Option<u8>; NP], // Tile discarded when declaring riichi
     pub last_tedashis: [Option<u8>; NP],   // Last hand discard (not tsumogiri)
+
+    /// KAR V2 lossless observer-visible single-round event stream (auto-maintained in live & replay).
+    pub v2_round_events: crate::v2_features::events::RoundEventLog,
+    /// KAR V2 cross-round Hanchan behavioral statistics (auto-maintained in live & replay).
+    pub v2_hanchan_tracker: crate::v2_features::HanchanTracker,
+    pub(crate) v2_round_start_scores: [i32; NP],
+    pub(crate) v2_round_won: [bool; NP],
+    pub(crate) v2_round_dealt_in: [bool; NP],
+    pub(crate) v2_round_settled: bool,
+    pub(crate) v2_discard_seq: u8,
+    pub(crate) v2_replay_end_scores: Option<[i32; NP]>,
+    pub(crate) v2_replay_accum_deltas: [i32; NP],
+    pub(crate) v2_replay_has_deltas: bool,
 }
 
 impl GameState {
@@ -344,7 +357,8 @@ impl GameState {
         rule: GameRule,
     ) -> Self {
         let mode = GameModeConfig::from_game_mode(game_mode, rule);
-        let players = [(); 4].map(|_| PlayerState::new(mode.starting_score()));
+        let starting_score = mode.starting_score();
+        let players = [(); 4].map(|_| PlayerState::new(starting_score));
 
         let wall = WallState::new(seed);
 
@@ -397,6 +411,16 @@ impl GameState {
             is_after_kan: false,
             riichi_sutehais: [None; NP],
             last_tedashis: [None; NP],
+            v2_round_events: crate::v2_features::events::RoundEventLog::default(),
+            v2_hanchan_tracker: crate::v2_features::HanchanTracker::default(),
+            v2_round_start_scores: [starting_score; NP],
+            v2_round_won: [false; NP],
+            v2_round_dealt_in: [false; NP],
+            v2_round_settled: true,
+            v2_discard_seq: 0,
+            v2_replay_end_scores: None,
+            v2_replay_accum_deltas: [0; NP],
+            v2_replay_has_deltas: false,
         };
 
         if !state.skip_mjai_logging {
@@ -420,6 +444,16 @@ impl GameState {
         self.mjai_log_per_player = Default::default();
         self.player_event_counts = [0; NP];
         self.kyoku_start_event_counts = [0; NP];
+        self.v2_round_events = crate::v2_features::events::RoundEventLog::default();
+        self.v2_hanchan_tracker = crate::v2_features::HanchanTracker::default();
+        self.v2_round_start_scores = [self.mode.starting_score(); NP];
+        self.v2_round_won = [false; NP];
+        self.v2_round_dealt_in = [false; NP];
+        self.v2_round_settled = true;
+        self.v2_discard_seq = 0;
+        self.v2_replay_end_scores = None;
+        self.v2_replay_accum_deltas = [0; NP];
+        self.v2_replay_has_deltas = false;
         #[cfg(feature = "python")]
         {
             Arc::make_mut(&mut self.round_seq_progression).clear();
@@ -809,6 +843,19 @@ impl GameState {
                         // every Ron opportunity has gone unused.
 
                         // Log Kakan immediately (before Chankan check)
+                        let kakan_meld_idx = self.players[pid as usize]
+                            .melds
+                            .iter()
+                            .position(|m| m.meld_type == MeldType::Pon && m.tiles[0] / 4 == tile / 4)
+                            .unwrap_or(0) as u8;
+                        self.v2_round_events.push(
+                            crate::v2_features::events::RoundEvent::Kakan {
+                                actor: pid,
+                                tile37: crate::v2_features::tile136_to_tile37(tile),
+                                turn_idx: self.v2_discard_seq,
+                                meld_idx: kakan_meld_idx,
+                            },
+                        );
                         if !self.skip_mjai_logging {
                             let mut ev = serde_json::Map::new();
                             ev.insert("type".to_string(), Value::String("kakan".to_string()));
@@ -1014,6 +1061,7 @@ impl GameState {
                                 }
                             }
                             self.win_results.insert(pid, val);
+                            self.v2_round_won[pid as usize] = true;
 
                             if !self.skip_mjai_logging {
                                 let mut ev = serde_json::Map::new();
@@ -1113,7 +1161,7 @@ impl GameState {
 
             // Retire this response's offers after recording missed wins and
             // selecting claims, before a call can open a new response window.
-            self.current_claims.clear();
+            let retired_claims = std::mem::take(&mut self.current_claims);
 
             if !ron_claims.is_empty() {
                 // Sanchaho: all non-discarders ron → abortive draw
@@ -1230,6 +1278,10 @@ impl GameState {
                 }
                 for paid in payments.winners {
                     let w_pid = paid.player_id;
+                    self.v2_round_won[w_pid as usize] = true;
+                    if target_pid != w_pid {
+                        self.v2_round_dealt_in[target_pid as usize] = true;
+                    }
                     if let Some(result) = self.win_results.get_mut(&w_pid) {
                         let scoring_han = if result.yakuman {
                             result.han
@@ -1293,6 +1345,10 @@ impl GameState {
                 self._initialize_next_round(oya_won, false);
             } else if let Some((claimer, action)) = call_claim {
                 self._accept_riichi();
+                self.v2_record_passes_from_claims(
+                    &retired_claims,
+                    Some((claimer, action.action_type)),
+                );
                 self.is_rinshan_flag = false;
                 self.is_first_turn = false;
 
@@ -1339,6 +1395,47 @@ impl GameState {
                     from_who: discarder as i8,
                     called_tile: Some(tile),
                 });
+                let meld_idx = (self.players[claimer as usize].melds.len() - 1) as u8;
+                let c0 = action
+                    .consume_tiles
+                    .first()
+                    .copied()
+                    .map(crate::v2_features::tile136_to_tile37)
+                    .unwrap_or(crate::v2_features::events::TILE37_NONE);
+                let c1 = action
+                    .consume_tiles
+                    .get(1)
+                    .copied()
+                    .map(crate::v2_features::tile136_to_tile37)
+                    .unwrap_or(crate::v2_features::events::TILE37_NONE);
+                let claimed_t37 = crate::v2_features::tile136_to_tile37(tile);
+                match action.action_type {
+                    ActionType::Chi => {
+                        self.v2_round_events
+                            .push(crate::v2_features::events::RoundEvent::Chi {
+                                actor: claimer,
+                                source: discarder,
+                                claimed_tile37: claimed_t37,
+                                consumed0_37: c0,
+                                consumed1_37: c1,
+                                turn_idx: self.v2_discard_seq,
+                                meld_idx,
+                            });
+                    }
+                    ActionType::Pon => {
+                        self.v2_round_events
+                            .push(crate::v2_features::events::RoundEvent::Pon {
+                                actor: claimer,
+                                source: discarder,
+                                claimed_tile37: claimed_t37,
+                                consumed0_37: c0,
+                                consumed1_37: c1,
+                                turn_idx: self.v2_discard_seq,
+                                meld_idx,
+                            });
+                    }
+                    _ => {}
+                }
 
                 if !self.skip_mjai_logging {
                     let type_str = match action.action_type {
@@ -1449,9 +1546,11 @@ impl GameState {
                 self.active_players.clear();
 
                 if let Some((pk_pid, pk_act)) = self.pending_kan.take() {
+                    self.v2_record_passes_from_claims(&retired_claims, None);
                     self._resolve_kan(pk_pid, pk_act);
                 } else {
                     self._accept_riichi();
+                    self.v2_record_passes_from_claims(&retired_claims, None);
                     if self.check_abortive_draw() {
                         return;
                     }
@@ -1520,6 +1619,19 @@ impl GameState {
             self.wall.pending_kan_dora_count -= 1;
             self._reveal_kan_dora();
         }
+
+        let river_idx = (self.players[pid as usize].discards.len().saturating_sub(1)) as u8;
+        self.v2_round_events
+            .push(crate::v2_features::events::RoundEvent::Dahai {
+                actor: pid,
+                tile37: crate::v2_features::tile136_to_tile37(tile),
+                tsumogiri,
+                is_riichi_declare: riichi_stage,
+                is_double_riichi: riichi_stage && self.players[pid as usize].double_riichi_declared,
+                turn_idx: self.v2_discard_seq,
+                river_idx,
+            });
+        self.v2_discard_seq = self.v2_discard_seq.saturating_add(1);
 
         if !self.skip_mjai_logging {
             let mut ev = serde_json::Map::new();
@@ -1662,6 +1774,48 @@ impl GameState {
             self.wall.rinshan_draw_count += 1;
             self.is_rinshan_flag = true;
 
+            match action.action_type {
+                ActionType::Ankan => {
+                    let tile37 = action
+                        .consume_tiles
+                        .iter()
+                        .map(|&x| crate::v2_features::tile136_to_tile37(x))
+                        .min()
+                        .unwrap_or_else(|| {
+                            crate::v2_features::tile136_to_tile37(action.tile.unwrap_or(0))
+                        });
+                    let involves_red5 = action
+                        .consume_tiles
+                        .iter()
+                        .any(|&x| crate::v2_features::is_red5_tile136(x));
+                    let meld_idx = (self.players[p_idx].melds.len().saturating_sub(1)) as u8;
+                    self.v2_round_events.push(
+                        crate::v2_features::events::RoundEvent::Ankan {
+                            actor: pid,
+                            tile37,
+                            involves_red5,
+                            turn_idx: self.v2_discard_seq,
+                            meld_idx,
+                        },
+                    );
+                }
+                ActionType::Daiminkan => {
+                    if let Some((target, tile)) = self.last_discard {
+                        let meld_idx = (self.players[p_idx].melds.len().saturating_sub(1)) as u8;
+                        self.v2_round_events.push(
+                            crate::v2_features::events::RoundEvent::Daiminkan {
+                                actor: pid,
+                                source: target,
+                                claimed_tile37: crate::v2_features::tile136_to_tile37(tile),
+                                turn_idx: self.v2_discard_seq,
+                                meld_idx,
+                            },
+                        );
+                    }
+                }
+                _ => {}
+            }
+
             if !self.skip_mjai_logging {
                 let m_type = match action.action_type {
                     ActionType::Ankan => Some("ankan"),
@@ -1709,6 +1863,15 @@ impl GameState {
                 self.wall.pending_kan_dora_count += 1;
             }
 
+            self.v2_round_events.push(
+                crate::v2_features::events::RoundEvent::TsumoPrivate {
+                    actor: pid,
+                    tile37: crate::v2_features::tile136_to_tile37(t),
+                    is_rinshan: true,
+                    turn_idx: self.v2_discard_seq,
+                },
+            );
+
             if !self.skip_mjai_logging {
                 // Rinshan tsumo logging should apply to Kakan as well
                 let mut t_ev = serde_json::Map::new();
@@ -1729,6 +1892,12 @@ impl GameState {
             self.riichi_sticks += 1;
             self.players[p as usize].riichi_declared = true;
             self.players[p as usize].ippatsu_cycle = true;
+            self.v2_round_events.push(
+                crate::v2_features::events::RoundEvent::ReachAccepted {
+                    actor: p,
+                    turn_idx: self.v2_discard_seq,
+                },
+            );
             if !self.skip_mjai_logging {
                 let mut ev = serde_json::Map::new();
                 ev.insert(
@@ -1756,6 +1925,14 @@ impl GameState {
             self.needs_tsumo = false;
             self.phase = Phase::WaitAct;
             self.active_players = vec![pid];
+            self.v2_round_events.push(
+                crate::v2_features::events::RoundEvent::TsumoPrivate {
+                    actor: pid,
+                    tile37: crate::v2_features::tile136_to_tile37(t),
+                    is_rinshan: false,
+                    turn_idx: self.v2_discard_seq,
+                },
+            );
 
             if !self.skip_mjai_logging {
                 let mut ev = serde_json::Map::new();
@@ -1776,6 +1953,7 @@ impl GameState {
         if self.is_done {
             return;
         }
+        self.v2_record_round_end_if_needed(None);
 
         let end = if is_abortive_draw {
             RoundEnd::AbortiveDraw
@@ -1923,6 +2101,10 @@ impl GameState {
             Arc::make_mut(&mut self.round_seq_progression).clear();
             self.round_seq_prog_pending_reach = None;
         }
+        let round_start_scores = self.players.each_ref().map(|p| p.score);
+        if let Some(&dora0) = self.wall.dora_indicators.first() {
+            self.v2_init_round_tracking(dora0, round_start_scores);
+        }
 
         if !self.skip_mjai_logging {
             let wind_str = match round_wind % 4 {
@@ -1971,6 +2153,14 @@ impl GameState {
             self.players[self.oya as usize].hand.push(t);
             self.drawn_tile = Some(t);
             self.needs_tsumo = false;
+            self.v2_round_events.push(
+                crate::v2_features::events::RoundEvent::TsumoPrivate {
+                    actor: self.oya,
+                    tile37: crate::v2_features::tile136_to_tile37(t),
+                    is_rinshan: false,
+                    turn_idx: self.v2_discard_seq,
+                },
+            );
 
             if !self.skip_mjai_logging {
                 let mut ev = serde_json::Map::new();
@@ -2177,7 +2367,14 @@ impl GameState {
             // Since we use remove(0) for Rinshan draws, the indices shift down.
             let base_idx = (4 + 2 * count).saturating_sub(self.wall.rinshan_draw_count as usize);
             if base_idx < self.wall.tiles.len() {
-                self.wall.dora_indicators.push(self.wall.tiles[base_idx]);
+                let dora_tile = self.wall.tiles[base_idx];
+                self.wall.dora_indicators.push(dora_tile);
+                self.v2_round_events
+                    .push(crate::v2_features::events::RoundEvent::Dora {
+                        indicator_tile37: crate::v2_features::tile136_to_tile37(dora_tile),
+                        dora_idx: (self.wall.dora_indicators.len() - 1) as u8,
+                        turn_idx: self.v2_discard_seq,
+                    });
                 if !self.skip_mjai_logging {
                     let mut ev = serde_json::Map::new();
                     ev.insert("type".to_string(), Value::String("dora".to_string()));
@@ -2401,6 +2598,156 @@ impl GameState {
                 )
         {
             Arc::make_mut(&mut self.round_seq_progression).push(entry);
+        }
+    }
+}
+
+impl GameState {
+    pub(crate) fn v2_init_round_tracking(&mut self, dora0_tile136: u8, start_scores: [i32; NP]) {
+        let dora0_t37 = crate::v2_features::tile136_to_tile37(dora0_tile136);
+        self.v2_round_events = crate::v2_features::events::RoundEventLog::new(dora0_t37)
+            .unwrap_or_default();
+        self.v2_round_start_scores = start_scores;
+        self.v2_round_won = [false; NP];
+        self.v2_round_dealt_in = [false; NP];
+        self.v2_round_settled = false;
+        self.v2_discard_seq = 0;
+        self.v2_replay_end_scores = None;
+        self.v2_replay_accum_deltas = [0; NP];
+        self.v2_replay_has_deltas = false;
+    }
+
+    pub(crate) fn v2_record_round_end_if_needed(&mut self, fallback_next_scores: Option<[i32; NP]>) {
+        if self.v2_round_settled {
+            return;
+        }
+        let score_deltas: [i32; NP] = if let Some(end_scores) = self.v2_replay_end_scores {
+            std::array::from_fn(|i| end_scores[i] - self.v2_round_start_scores[i])
+        } else if self.v2_replay_has_deltas {
+            std::array::from_fn(|i| {
+                (self.players[i].score + self.v2_replay_accum_deltas[i])
+                    - self.v2_round_start_scores[i]
+            })
+        } else if let Some(next_scores) = fallback_next_scores {
+            std::array::from_fn(|i| next_scores[i] - self.v2_round_start_scores[i])
+        } else {
+            std::array::from_fn(|i| self.players[i].score - self.v2_round_start_scores[i])
+        };
+
+        let summary = crate::v2_features::RoundOutcomeSummary {
+            score_deltas,
+            won: self.v2_round_won,
+            dealt_in: self.v2_round_dealt_in,
+            declared_riichi: self.players.each_ref().map(|p| p.riichi_declared),
+            opened_meld: self
+                .players
+                .each_ref()
+                .map(|p| p.melds.iter().any(|m| m.opened)),
+        };
+        self.v2_hanchan_tracker.record_round_end(&summary);
+        self.v2_round_settled = true;
+    }
+
+    pub(crate) fn v2_record_passes_from_claims(
+        &mut self,
+        claims: &HashMap<u8, Vec<Action>>,
+        winning_claim: Option<(u8, ActionType)>,
+    ) {
+        if claims.is_empty() {
+            return;
+        }
+        let (source, tile) = self.last_discard.unwrap_or((self.current_player, 0));
+        let tile37 = crate::v2_features::tile136_to_tile37(tile);
+        let win_prio: u8 = match winning_claim {
+            None => 0,
+            Some((_, ActionType::Chi)) => 1,
+            Some((_, ActionType::Pon | ActionType::Daiminkan)) => 2,
+            Some((_, ActionType::Ron)) => 3,
+            Some(_) => 0,
+        };
+        for seat in 0..NP as u8 {
+            let Some(offers) = claims.get(&seat) else {
+                continue;
+            };
+            let is_winner = winning_claim.is_some_and(|(claimer, _)| claimer == seat);
+            let mut pass_mask = 0u8;
+            if is_winner {
+                if win_prio < 3 && offers.iter().any(|a| a.action_type == ActionType::Ron) {
+                    pass_mask |= crate::v2_features::events::PASS_RON;
+                }
+            } else {
+                if win_prio == 0 && offers.iter().any(|a| a.action_type == ActionType::Chi) {
+                    pass_mask |= crate::v2_features::events::PASS_CHI;
+                }
+                if win_prio <= 1 && offers.iter().any(|a| a.action_type == ActionType::Pon) {
+                    pass_mask |= crate::v2_features::events::PASS_PON;
+                }
+                if win_prio <= 1
+                    && offers
+                        .iter()
+                        .any(|a| a.action_type == ActionType::Daiminkan)
+                {
+                    pass_mask |= crate::v2_features::events::PASS_KAN;
+                }
+                if win_prio <= 2 && offers.iter().any(|a| a.action_type == ActionType::Ron) {
+                    pass_mask |= crate::v2_features::events::PASS_RON;
+                }
+            }
+            if pass_mask != 0 {
+                self.v2_round_events.push(
+                    crate::v2_features::events::RoundEvent::SelfPassPrivate {
+                        actor: seat,
+                        source,
+                        tile37,
+                        pass_mask,
+                        turn_idx: self.v2_discard_seq,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Encode the current round's lossless 10-byte observer-visible event sequence.
+    pub fn v2_encode_round_events(
+        &self,
+        observer: u8,
+    ) -> Result<Vec<[u8; crate::v2_features::EVENT_BYTES]>, String> {
+        crate::v2_features::events::encode_events(&self.v2_round_events, observer)
+    }
+
+    /// Build a train-serve-skew-free [`RoundGlobalContext`] for `observer`.
+    pub fn v2_round_global_context(
+        &self,
+        observer: u8,
+    ) -> crate::v2_features::global_player::RoundGlobalContext {
+        let (phase, trigger_rel) = if self.phase == Phase::WaitAct {
+            (crate::v2_features::DecisionPhase::OwnAct, None)
+        } else if let Some((kp, ref kact)) = self.pending_kan {
+            let p = if kact.action_type == ActionType::Ankan {
+                crate::v2_features::DecisionPhase::AnkanResp
+            } else {
+                crate::v2_features::DecisionPhase::KakanResp
+            };
+            (p, Some((kp + 4 - observer) % 4))
+        } else {
+            let src = self.last_discard.map(|(dp, _)| (dp + 4 - observer) % 4);
+            (crate::v2_features::DecisionPhase::DiscardResp, src)
+        };
+        let total_discards: usize = self.players.iter().map(|p| p.discards.len()).sum();
+        crate::v2_features::global_player::RoundGlobalContext {
+            phase,
+            trigger_actor_rel: trigger_rel,
+            live_wall_left: self.wall.drawable_count,
+            is_first_uninterrupted_turn: self.is_first_turn && total_discards < NP,
+            double_riichi_declared: std::array::from_fn(|i| {
+                self.players[i].double_riichi_declared
+                    || (self.players[i].riichi_declared
+                        && self.replay_context.pending_double[i].unwrap_or(false))
+            }),
+            ippatsu_active: std::array::from_fn(|i| self.players[i].ippatsu_cycle),
+            riichi_turn_index: std::array::from_fn(|i| {
+                self.players[i].riichi_declaration_index.map(|x| x as u8)
+            }),
         }
     }
 }

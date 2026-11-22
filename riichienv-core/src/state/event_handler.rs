@@ -53,6 +53,16 @@ impl GameStateEventHandler for GameState {
                 | MjaiEvent::Kan { .. }
         ) {
             self.record_mjai_discard_ron_declines();
+            if self.phase == Phase::WaitResponse {
+                let winning = match &event {
+                    MjaiEvent::Pon { actor, .. } => Some((*actor as u8, ActionType::Pon)),
+                    MjaiEvent::Chi { actor, .. } => Some((*actor as u8, ActionType::Chi)),
+                    MjaiEvent::Kan { actor, .. } => Some((*actor as u8, ActionType::Daiminkan)),
+                    _ => None,
+                };
+                let retired = std::mem::take(&mut self.current_claims);
+                self.v2_record_passes_from_claims(&retired, winning);
+            }
         }
         match event {
             MjaiEvent::StartGame { .. } => {
@@ -60,6 +70,16 @@ impl GameStateEventHandler for GameState {
                 // get_observation() does not return stale legal actions.
                 self.current_player = u8::MAX;
                 self.active_players.clear();
+                self.v2_round_events = crate::v2_features::events::RoundEventLog::default();
+                self.v2_hanchan_tracker = crate::v2_features::HanchanTracker::default();
+                self.v2_round_start_scores = [self.mode.starting_score(); 4];
+                self.v2_round_won = [false; 4];
+                self.v2_round_dealt_in = [false; 4];
+                self.v2_round_settled = true;
+                self.v2_discard_seq = 0;
+                self.v2_replay_end_scores = None;
+                self.v2_replay_accum_deltas = [0; 4];
+                self.v2_replay_has_deltas = false;
             }
             MjaiEvent::StartKyoku {
                 bakaze,
@@ -72,6 +92,13 @@ impl GameStateEventHandler for GameState {
                 oya,
                 ..
             } => {
+                let start_scores: [i32; 4] = [
+                    scores.first().copied().unwrap_or(25_000),
+                    scores.get(1).copied().unwrap_or(25_000),
+                    scores.get(2).copied().unwrap_or(25_000),
+                    scores.get(3).copied().unwrap_or(25_000),
+                ];
+                self.v2_record_round_end_if_needed(Some(start_scores));
                 // Replay starts before the dealer's opening draw.
                 // Keep a placeholder wall sized to that pre-tsumo state.
                 self.honba = honba;
@@ -136,8 +163,10 @@ impl GameStateEventHandler for GameState {
                 // canonical base IDs for first copies while the indicator stays disjoint.
                 let dora_tid = self.allocate_replay_tile(&dora_marker);
                 self.wall.dora_indicators = vec![dora_tid];
+                self.v2_init_round_tracking(dora_tid, start_scores);
             }
             MjaiEvent::Tsumo { actor, pai } => {
+                let is_known_tile = crate::parser::mjai_to_tid(&pai).is_some();
                 let tile = self.allocate_replay_tile(&pai);
                 self.current_player = actor as u8;
                 self.drawn_tile = Some(tile);
@@ -151,6 +180,16 @@ impl GameStateEventHandler for GameState {
                 self.phase = Phase::WaitAct;
                 self.active_players = vec![actor as u8];
                 self.needs_tsumo = false;
+                if is_known_tile {
+                    self.v2_round_events.push(
+                        crate::v2_features::events::RoundEvent::TsumoPrivate {
+                            actor: actor as u8,
+                            tile37: crate::v2_features::tile136_to_tile37(tile),
+                            is_rinshan: self.is_rinshan_flag,
+                            turn_idx: self.v2_discard_seq,
+                        },
+                    );
+                }
             }
             MjaiEvent::Dahai {
                 actor,
@@ -159,6 +198,8 @@ impl GameStateEventHandler for GameState {
             } => {
                 let tile = self.take_replay_hand_tile(actor, &pai, tsumogiri);
                 let is_riichi = self.players[actor].riichi_stage;
+                let is_double_riichi = is_riichi
+                    && self.replay_context.pending_double[actor].unwrap_or(false);
                 self.current_player = actor as u8;
                 self.players[actor].discards.push(tile);
                 self.players[actor].discard_from_hand.push(!tsumogiri);
@@ -183,6 +224,19 @@ impl GameStateEventHandler for GameState {
                     self.players[actor].riichi_declared = true;
                     self.players[actor].riichi_stage = false;
                 }
+
+                let river_idx = (self.players[actor].discards.len().saturating_sub(1)) as u8;
+                self.v2_round_events
+                    .push(crate::v2_features::events::RoundEvent::Dahai {
+                        actor: actor as u8,
+                        tile37: crate::v2_features::tile136_to_tile37(tile),
+                        tsumogiri,
+                        is_riichi_declare: is_riichi,
+                        is_double_riichi,
+                        turn_idx: self.v2_discard_seq,
+                        river_idx,
+                    });
+                self.v2_discard_seq = self.v2_discard_seq.saturating_add(1);
 
                 self.players[actor].ippatsu_cycle = false;
                 self.is_rinshan_flag = false;
@@ -215,6 +269,17 @@ impl GameStateEventHandler for GameState {
                     from_who: target as i8,
                     called_tile: Some(tile),
                 });
+                let meld_idx = (self.players[actor].melds.len().saturating_sub(1)) as u8;
+                self.v2_round_events
+                    .push(crate::v2_features::events::RoundEvent::Pon {
+                        actor: actor as u8,
+                        source: target as u8,
+                        claimed_tile37: crate::v2_features::tile136_to_tile37(tile),
+                        consumed0_37: crate::v2_features::tile136_to_tile37(c1),
+                        consumed1_37: crate::v2_features::tile136_to_tile37(c2),
+                        turn_idx: self.v2_discard_seq,
+                        meld_idx,
+                    });
                 self.record_replay_pao(actor, target, tile);
                 self.drawn_tile = None;
                 self.phase = Phase::WaitAct;
@@ -246,6 +311,17 @@ impl GameStateEventHandler for GameState {
                     from_who: target as i8,
                     called_tile: Some(tile),
                 });
+                let meld_idx = (self.players[actor].melds.len().saturating_sub(1)) as u8;
+                self.v2_round_events
+                    .push(crate::v2_features::events::RoundEvent::Chi {
+                        actor: actor as u8,
+                        source: target as u8,
+                        claimed_tile37: crate::v2_features::tile136_to_tile37(tile),
+                        consumed0_37: crate::v2_features::tile136_to_tile37(c1),
+                        consumed1_37: crate::v2_features::tile136_to_tile37(c2),
+                        turn_idx: self.v2_discard_seq,
+                        meld_idx,
+                    });
                 self.drawn_tile = None;
                 self.phase = Phase::WaitAct;
                 self.active_players = vec![actor as u8];
@@ -291,15 +367,48 @@ impl GameStateEventHandler for GameState {
                     from_who: target as i8,
                     called_tile: Some(tile),
                 });
+                let meld_idx = (self.players[actor].melds.len().saturating_sub(1)) as u8;
+                self.v2_round_events.push(
+                    crate::v2_features::events::RoundEvent::Daiminkan {
+                        actor: actor as u8,
+                        source: target as u8,
+                        claimed_tile37: crate::v2_features::tile136_to_tile37(tile),
+                        turn_idx: self.v2_discard_seq,
+                        meld_idx,
+                    },
+                );
                 self.record_replay_pao(actor, target, tile);
                 self.sync_replay_pending_kan_dora();
                 self.phase = Phase::WaitAct;
                 self.active_players = vec![actor as u8];
                 self.needs_tsumo = true;
             }
-            MjaiEvent::Ankan { actor, .. } | MjaiEvent::Kakan { actor, .. } => {
+            MjaiEvent::Ankan { actor, .. } => {
                 // The declaration opens the native response window. Concealed
-                // tiles and the original Pon stay unchanged until public commit.
+                // tiles stay unchanged until public commit.
+                self.open_replay_kan_window(actor as u8);
+            }
+            MjaiEvent::Kakan { actor, pai } => {
+                let kakan_tile = self
+                    .pending_kan
+                    .as_ref()
+                    .and_then(|(_, act)| act.tile)
+                    .or_else(|| crate::parser::mjai_to_tid(&pai))
+                    .unwrap_or(0);
+                let meld_idx = self.players[actor]
+                    .melds
+                    .iter()
+                    .position(|m| m.meld_type == MeldType::Pon && m.tiles[0] / 4 == kakan_tile / 4)
+                    .unwrap_or(0) as u8;
+                self.v2_round_events
+                    .push(crate::v2_features::events::RoundEvent::Kakan {
+                        actor: actor as u8,
+                        tile37: crate::v2_features::tile136_to_tile37(kakan_tile),
+                        turn_idx: self.v2_discard_seq,
+                        meld_idx,
+                    });
+                // The declaration opens the native response window. Original
+                // Pon stays unchanged until public commit.
                 self.open_replay_kan_window(actor as u8);
             }
             MjaiEvent::Reach { actor } => {
@@ -311,16 +420,71 @@ impl GameStateEventHandler for GameState {
                 self.players[actor].riichi_declared = true;
                 self.riichi_sticks += 1;
                 self.players[actor].score -= 1000;
+                self.v2_round_events.push(
+                    crate::v2_features::events::RoundEvent::ReachAccepted {
+                        actor: actor as u8,
+                        turn_idx: self.v2_discard_seq,
+                    },
+                );
             }
             MjaiEvent::Dora { dora_marker } => {
                 let tile = self.allocate_replay_tile(&dora_marker);
                 self.wall.dora_indicators.push(tile);
+                self.v2_round_events
+                    .push(crate::v2_features::events::RoundEvent::Dora {
+                        indicator_tile37: crate::v2_features::tile136_to_tile37(tile),
+                        dora_idx: (self.wall.dora_indicators.len().saturating_sub(1)) as u8,
+                        turn_idx: self.v2_discard_seq,
+                    });
                 self.sync_replay_pending_kan_dora();
             }
             MjaiEvent::Kita { .. } => {
                 // Kita is 3P only; ignored in 4P event handler
             }
-            MjaiEvent::Hora { .. } | MjaiEvent::Ryukyoku { .. } | MjaiEvent::EndKyoku => {
+            MjaiEvent::Hora {
+                actor,
+                target,
+                scores,
+                delta,
+                ..
+            } => {
+                if actor < 4 {
+                    self.v2_round_won[actor] = true;
+                }
+                if target < 4 && target != actor {
+                    self.v2_round_dealt_in[target] = true;
+                }
+                if let Some(sc) = scores
+                    && sc.len() == 4
+                {
+                    self.v2_replay_end_scores = Some([sc[0], sc[1], sc[2], sc[3]]);
+                } else if let Some(d) = delta
+                    && d.len() == 4
+                {
+                    for (acc, &val) in self.v2_replay_accum_deltas.iter_mut().zip(d.iter()) {
+                        *acc += val;
+                    }
+                    self.v2_replay_has_deltas = true;
+                }
+                self.is_done = true;
+            }
+            MjaiEvent::Ryukyoku { scores, delta, .. } => {
+                if let Some(sc) = scores
+                    && sc.len() == 4
+                {
+                    self.v2_replay_end_scores = Some([sc[0], sc[1], sc[2], sc[3]]);
+                } else if let Some(d) = delta
+                    && d.len() == 4
+                {
+                    for (acc, &val) in self.v2_replay_accum_deltas.iter_mut().zip(d.iter()) {
+                        *acc += val;
+                    }
+                    self.v2_replay_has_deltas = true;
+                }
+                self.is_done = true;
+            }
+            MjaiEvent::EndKyoku | MjaiEvent::EndGame => {
+                self.v2_record_round_end_if_needed(None);
                 self.is_done = true;
             }
             _ => {}
@@ -414,12 +578,30 @@ impl GameStateEventHandler for GameState {
                     self.is_first_turn = false;
                 }
                 self.is_after_kan = false;
+                let river_idx = (self.players[s].discards.len().saturating_sub(1)) as u8;
+                self.v2_round_events
+                    .push(crate::v2_features::events::RoundEvent::Dahai {
+                        actor: s as u8,
+                        tile37: crate::v2_features::tile136_to_tile37(t),
+                        tsumogiri: is_tsumogiri,
+                        is_riichi_declare: *is_liqi || *is_wliqi,
+                        is_double_riichi: *is_wliqi,
+                        turn_idx: self.v2_discard_seq,
+                        river_idx,
+                    });
+                self.v2_discard_seq = self.v2_discard_seq.saturating_add(1);
             }
             LogAction::DealTile { seat, tile, .. } => {
                 // Finalize pending riichi deposit (discard was not ronned)
                 if let Some(rp) = self.riichi_pending_acceptance.take() {
                     self.players[rp as usize].score -= 1000;
                     self.riichi_sticks += 1;
+                    self.v2_round_events.push(
+                        crate::v2_features::events::RoundEvent::ReachAccepted {
+                            actor: rp,
+                            turn_idx: self.v2_discard_seq,
+                        },
+                    );
                 }
                 self.players[*seat].hand.push(*tile);
                 self.drawn_tile = Some(*tile);
@@ -434,6 +616,14 @@ impl GameStateEventHandler for GameState {
                     self.wall.tiles.pop();
                     self.wall.drawable_count = self.wall.drawable_count.saturating_sub(1);
                 }
+                self.v2_round_events.push(
+                    crate::v2_features::events::RoundEvent::TsumoPrivate {
+                        actor: *seat as u8,
+                        tile37: crate::v2_features::tile136_to_tile37(*tile),
+                        is_rinshan: self.is_rinshan_flag,
+                        turn_idx: self.v2_discard_seq,
+                    },
+                );
             }
             LogAction::ChiPengGang {
                 seat,
@@ -490,6 +680,12 @@ impl GameStateEventHandler for GameState {
                 if let Some(rp) = self.riichi_pending_acceptance.take() {
                     self.players[rp as usize].score -= 1000;
                     self.riichi_sticks += 1;
+                    self.v2_round_events.push(
+                        crate::v2_features::events::RoundEvent::ReachAccepted {
+                            actor: rp,
+                            turn_idx: self.v2_discard_seq,
+                        },
+                    );
                 }
                 // Discard was called -> discarder loses nagashi eligibility
                 if let Some((discarder_pid, _)) = self.last_discard {
@@ -521,6 +717,62 @@ impl GameStateEventHandler for GameState {
                     from_who,
                     called_tile: ct,
                 });
+                let meld_idx = (self.players[*seat].melds.len().saturating_sub(1)) as u8;
+                let claimed_t37 = ct
+                    .map(crate::v2_features::tile136_to_tile37)
+                    .unwrap_or(crate::v2_features::events::TILE37_NONE);
+                let consumed_t37: Vec<u8> = tiles
+                    .iter()
+                    .zip(froms.iter())
+                    .filter(|&(_, &f)| f == *seat)
+                    .map(|(&t, _)| crate::v2_features::tile136_to_tile37(t))
+                    .collect();
+                let c0 = consumed_t37
+                    .first()
+                    .copied()
+                    .unwrap_or(crate::v2_features::events::TILE37_NONE);
+                let c1 = consumed_t37
+                    .get(1)
+                    .copied()
+                    .unwrap_or(crate::v2_features::events::TILE37_NONE);
+                match meld_type {
+                    MeldType::Chi => {
+                        self.v2_round_events
+                            .push(crate::v2_features::events::RoundEvent::Chi {
+                                actor: *seat as u8,
+                                source: discarder,
+                                claimed_tile37: claimed_t37,
+                                consumed0_37: c0,
+                                consumed1_37: c1,
+                                turn_idx: self.v2_discard_seq,
+                                meld_idx,
+                            });
+                    }
+                    MeldType::Pon => {
+                        self.v2_round_events
+                            .push(crate::v2_features::events::RoundEvent::Pon {
+                                actor: *seat as u8,
+                                source: discarder,
+                                claimed_tile37: claimed_t37,
+                                consumed0_37: c0,
+                                consumed1_37: c1,
+                                turn_idx: self.v2_discard_seq,
+                                meld_idx,
+                            });
+                    }
+                    MeldType::Daiminkan => {
+                        self.v2_round_events.push(
+                            crate::v2_features::events::RoundEvent::Daiminkan {
+                                actor: *seat as u8,
+                                source: discarder,
+                                claimed_tile37: claimed_t37,
+                                turn_idx: self.v2_discard_seq,
+                                meld_idx,
+                            },
+                        );
+                    }
+                    _ => {}
+                }
 
                 // PAO detection: daisangen (3 dragon melds) or daisuushii (4 wind melds)
                 if (*meld_type == MeldType::Pon || *meld_type == MeldType::Daiminkan)
@@ -623,6 +875,14 @@ impl GameStateEventHandler for GameState {
                         m_tiles = vec![88, 89, 90, 91];
                     }
 
+                    let tile37 = m_tiles
+                        .iter()
+                        .map(|&x| crate::v2_features::tile136_to_tile37(x))
+                        .min()
+                        .unwrap_or(0);
+                    let involves_red5 = m_tiles
+                        .iter()
+                        .any(|&x| crate::v2_features::is_red5_tile136(x));
                     self.players[*seat].melds.push(Meld {
                         meld_type: *meld_type,
                         tiles: m_tiles,
@@ -630,18 +890,36 @@ impl GameStateEventHandler for GameState {
                         from_who: -1,
                         called_tile: None,
                     });
+                    let meld_idx = (self.players[*seat].melds.len().saturating_sub(1)) as u8;
+                    self.v2_round_events
+                        .push(crate::v2_features::events::RoundEvent::Ankan {
+                            actor: *seat as u8,
+                            tile37,
+                            involves_red5,
+                            turn_idx: self.v2_discard_seq,
+                            meld_idx,
+                        });
                 } else {
                     // Kakan
                     let tile = tiles[0];
                     remove_hand_tile_matching(&mut self.players[*seat].hand, tile);
-                    for m in self.players[*seat].melds.iter_mut() {
+                    let mut kakan_meld_idx = 0u8;
+                    for (idx, m) in self.players[*seat].melds.iter_mut().enumerate() {
                         if m.meld_type == MeldType::Pon && m.tiles[0] / 4 == tile / 4 {
                             m.meld_type = MeldType::Kakan;
                             m.tiles.push(tile);
                             m.tiles.sort();
+                            kakan_meld_idx = idx as u8;
                             break;
                         }
                     }
+                    self.v2_round_events
+                        .push(crate::v2_features::events::RoundEvent::Kakan {
+                            actor: *seat as u8,
+                            tile37: crate::v2_features::tile136_to_tile37(tile),
+                            turn_idx: self.v2_discard_seq,
+                            meld_idx: kakan_meld_idx,
+                        });
                     // Set last_discard so chankan ron targets the kakan player
                     self.last_discard = Some((*seat as u8, tile));
                 }
@@ -659,6 +937,12 @@ impl GameStateEventHandler for GameState {
             }
             LogAction::Dora { dora_marker } => {
                 self.wall.dora_indicators.push(*dora_marker);
+                self.v2_round_events
+                    .push(crate::v2_features::events::RoundEvent::Dora {
+                        indicator_tile37: crate::v2_features::tile136_to_tile37(*dora_marker),
+                        dora_idx: (self.wall.dora_indicators.len().saturating_sub(1)) as u8,
+                        turn_idx: self.v2_discard_seq,
+                    });
             }
             LogAction::Hule { hules } => {
                 // If a riichi deposit is pending and this is a ron, the deposit
@@ -675,6 +959,16 @@ impl GameStateEventHandler for GameState {
                 for h in hules {
                     let winner = h.seat;
                     let is_tsumo = h.zimo;
+                    if winner < 4 {
+                        self.v2_round_won[winner] = true;
+                    }
+                    if !is_tsumo
+                        && let Some((discarder, _)) = self.last_discard
+                        && (discarder as usize) < 4
+                        && discarder as usize != winner
+                    {
+                        self.v2_round_dealt_in[discarder as usize] = true;
+                    }
 
                     if is_tsumo {
                         let is_oya = (winner as u8) == self.oya;
@@ -806,6 +1100,7 @@ impl GameStateEventHandler for GameState {
                     self.riichi_sticks = 0;
                 }
 
+                self.v2_record_round_end_if_needed(None);
                 self.is_done = true;
             }
             LogAction::NoTile => {
@@ -813,6 +1108,12 @@ impl GameStateEventHandler for GameState {
                 if let Some(rp) = self.riichi_pending_acceptance.take() {
                     self.players[rp as usize].score -= 1000;
                     self.riichi_sticks += 1;
+                    self.v2_round_events.push(
+                        crate::v2_features::events::RoundEvent::ReachAccepted {
+                            actor: rp,
+                            turn_idx: self.v2_discard_seq,
+                        },
+                    );
                 }
 
                 // Check for nagashi mangan first
@@ -873,6 +1174,7 @@ impl GameStateEventHandler for GameState {
                         }
                     }
                 }
+                self.v2_record_round_end_if_needed(None);
                 self.is_done = true;
             }
             LogAction::LiuJu { .. } => {
@@ -880,8 +1182,15 @@ impl GameStateEventHandler for GameState {
                 if let Some(rp) = self.riichi_pending_acceptance.take() {
                     self.players[rp as usize].score -= 1000;
                     self.riichi_sticks += 1;
+                    self.v2_round_events.push(
+                        crate::v2_features::events::RoundEvent::ReachAccepted {
+                            actor: rp,
+                            turn_idx: self.v2_discard_seq,
+                        },
+                    );
                 }
                 // Abortive draw - no score changes
+                self.v2_record_round_end_if_needed(None);
                 self.is_done = true;
             }
             _ => {}

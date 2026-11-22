@@ -1,11 +1,14 @@
-"""KAR V2 Hybrid Architecture, Pure-State GRP, and Contract Verification (v2.4)."""
+"""KAR V2 Hybrid Architecture, Pure-State GRP, and Contract Verification (v2.5)."""
 
 from .grp import (
     FrozenGRP,
+    GRPCalibrationReport,
     PureStateGRP,
     RoundBoundary,
     compute_hanchan_gae,
     compute_pbrs_round_rewards,
+    evaluate_grp_calibration,
+    train_pure_state_grp_step,
 )
 from .model import (
     CriticModelConfig,
@@ -13,25 +16,44 @@ from .model import (
     OracleCriticV2,
     RolloutVersionTag,
     V2ModelConfig,
+    belief_auxiliary_loss,
     masked_entropy_and_kl_fp32,
     masked_log_softmax_fp32,
     oracle_critic_loss,
     ppo_actor_loss,
 )
+from .rl_contract import (
+    CriticWarmupGate,
+    FrozenGAERolloutBatch,
+    HanchanTrajectoryInput,
+    PFSPOpponentEntry,
+    PFSPOpponentPool,
+    compute_explained_variance,
+)
 
 __all__ = [
     "CriticModelConfig",
+    "CriticWarmupGate",
+    "FrozenGAERolloutBatch",
     "FrozenGRP",
+    "GRPCalibrationReport",
+    "HanchanTrajectoryInput",
     "KARV2Actor",
     "OracleCriticV2",
+    "PFSPOpponentEntry",
+    "PFSPOpponentPool",
     "PureStateGRP",
     "RolloutVersionTag",
     "RoundBoundary",
     "V2ModelConfig",
+    "belief_auxiliary_loss",
+    "compute_explained_variance",
     "compute_hanchan_gae",
     "compute_pbrs_round_rewards",
+    "evaluate_grp_calibration",
     "masked_entropy_and_kl_fp32",
     "masked_log_softmax_fp32",
     "oracle_critic_loss",
     "ppo_actor_loss",
+    "train_pure_state_grp_step",
 ]

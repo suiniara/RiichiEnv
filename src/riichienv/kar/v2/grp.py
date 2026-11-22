@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 PURE_STATE_GRP_INPUT_DIM = 16
@@ -292,3 +293,137 @@ def compute_hanchan_gae(
         shaped_returns[t] = gae + v_t
 
     return step_rewards, advantages, shaped_returns
+
+
+@dataclass(frozen=True)
+class GRPCalibrationReport:
+    """Contract v2.5 Stage-1/Stage-4 PureStateGRP calibration verification metrics."""
+
+    n_samples: int
+    nll: float
+    brier_score: float
+    ece: float
+    classwise_ece: float
+    rank_probs_mean: tuple[float, float, float, float]
+
+    def passes_gate(
+        self,
+        *,
+        max_ece: float = 0.03,
+        max_classwise_ece: float = 0.03,
+        max_brier: float = 0.68,
+    ) -> bool:
+        """Check whether calibrated GRP meets the pre-RL freeze quality gate."""
+        return (
+            self.n_samples > 0
+            and self.ece <= max_ece
+            and self.classwise_ece <= max_classwise_ece
+            and self.brier_score <= max_brier
+        )
+
+
+@torch.no_grad()
+def evaluate_grp_calibration(
+    probs: torch.Tensor,
+    final_ranks: torch.Tensor,
+    *,
+    n_bins: int = 10,
+) -> GRPCalibrationReport:
+    """Evaluate 4-class GRP calibration (NLL, Brier Score, top-1 ECE, and classwise ECE).
+
+    Args:
+        probs: Predicted 4-placement probabilities `[N, 4]`.
+        final_ranks: True final placement indices `[N]` in `{0, 1, 2, 3}` (0=1st, 3=4th).
+        n_bins: Number of uniform probability bins in `[0, 1]`.
+    """
+    if probs.ndim != 2 or probs.shape[1] != 4:
+        raise ValueError(f"Expected probs shape [N, 4], got {tuple(probs.shape)}")
+    if final_ranks.ndim != 1 or final_ranks.shape[0] != probs.shape[0]:
+        raise ValueError(
+            f"Expected final_ranks shape [{probs.shape[0]}], got {tuple(final_ranks.shape)}"
+        )
+    if n_bins < 1:
+        raise ValueError(f"n_bins must be >= 1, got {n_bins}")
+
+    n = int(probs.shape[0])
+    if n == 0:
+        raise ValueError("Cannot evaluate GRP calibration on empty sample set")
+
+    p = probs.detach().float().clamp(min=1e-7, max=1.0)
+    p = p / p.sum(dim=-1, keepdim=True)
+    y = final_ranks.detach().long()
+    if bool((y < 0).any()) or bool((y > 3).any()):
+        raise ValueError("final_ranks must be in {0, 1, 2, 3}")
+
+    # 1. Negative Log-Likelihood (CE)
+    nll = float(-torch.log(p[torch.arange(n, device=p.device), y]).mean().item())
+
+    # 2. 4-class Brier Score: mean_i sum_r (p_{i,r} - 1[y_i == r])^2
+    one_hot = F.one_hot(y, num_classes=4).float()
+    brier_score = float(((p - one_hot) ** 2).sum(dim=-1).mean().item())
+
+    # 3. Top-1 Expected Calibration Error (ECE)
+    conf, pred = p.max(dim=-1)
+    correct = (pred == y).float()
+    bin_edges = torch.linspace(0.0, 1.0, n_bins + 1, device=p.device)
+    ece_val = 0.0
+    for b in range(n_bins):
+        lo = bin_edges[b]
+        hi = bin_edges[b + 1]
+        in_bin = (conf >= lo) & (conf <= hi) if b == 0 else (conf > lo) & (conf <= hi)
+        cnt = int(in_bin.sum().item())
+        if cnt > 0:
+            avg_conf = float(conf[in_bin].mean().item())
+            avg_acc = float(correct[in_bin].mean().item())
+            ece_val += (cnt / n) * abs(avg_conf - avg_acc)
+
+    # 4. 4-class marginal Classwise ECE (essential because Phi = sum_r w_r P(r))
+    cw_ece_sum = 0.0
+    for cls in range(4):
+        p_c = p[:, cls]
+        y_c = (y == cls).float()
+        cls_ece = 0.0
+        for b in range(n_bins):
+            lo = bin_edges[b]
+            hi = bin_edges[b + 1]
+            in_bin = (p_c >= lo) & (p_c <= hi) if b == 0 else (p_c > lo) & (p_c <= hi)
+            cnt = int(in_bin.sum().item())
+            if cnt > 0:
+                cls_ece += (cnt / n) * abs(
+                    float(p_c[in_bin].mean().item()) - float(y_c[in_bin].mean().item())
+                )
+        cw_ece_sum += cls_ece
+    classwise_ece = cw_ece_sum / 4.0
+
+    means = p.mean(dim=0).tolist()
+    return GRPCalibrationReport(
+        n_samples=n,
+        nll=nll,
+        brier_score=brier_score,
+        ece=ece_val,
+        classwise_ece=classwise_ece,
+        rank_probs_mean=(float(means[0]), float(means[1]), float(means[2]), float(means[3])),
+    )
+
+
+def train_pure_state_grp_step(
+    model: PureStateGRP,
+    optimizer: torch.optim.Optimizer,
+    state_feats: torch.Tensor,
+    final_ranks: torch.Tensor,
+    *,
+    max_grad_norm: float = 1.0,
+) -> dict[str, float]:
+    """Perform one supervised 4-class cross-entropy update step on [`PureStateGRP`]."""
+    if state_feats.ndim != 2 or state_feats.shape[1] != PURE_STATE_GRP_INPUT_DIM:
+        raise ValueError(
+            f"Expected state_feats shape [B, {PURE_STATE_GRP_INPUT_DIM}], got {tuple(state_feats.shape)}"
+        )
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    logits = model(state_feats.float())
+    loss = F.cross_entropy(logits.float(), final_ranks.long())
+    loss.backward()
+    grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm).item())
+    optimizer.step()
+    return {"loss": float(loss.item()), "grad_norm": grad_norm}

@@ -1,6 +1,8 @@
-"""Stage-1 Automated Contract Verification Suite for KAR V2.4 (Rust + PyTorch)."""
+"""Stage-1 Automated Contract Verification Suite for KAR V2.5 (Rust + PyTorch)."""
 
 from __future__ import annotations
+
+import random
 
 import numpy as np
 import pytest
@@ -10,18 +12,26 @@ import riichienv
 from riichienv import _riichienv as native
 from riichienv.kar.v2 import (
     CriticModelConfig,
+    CriticWarmupGate,
+    FrozenGAERolloutBatch,
     FrozenGRP,
+    HanchanTrajectoryInput,
     KARV2Actor,
     OracleCriticV2,
+    PFSPOpponentPool,
     PureStateGRP,
     RolloutVersionTag,
     RoundBoundary,
     V2ModelConfig,
+    belief_auxiliary_loss,
+    compute_explained_variance,
     compute_hanchan_gae,
     compute_pbrs_round_rewards,
+    evaluate_grp_calibration,
     masked_entropy_and_kl_fp32,
     oracle_critic_loss,
     ppo_actor_loss,
+    train_pure_state_grp_step,
 )
 from riichienv.kar.v2.model import (
     ACTION_COUNT,
@@ -434,15 +444,14 @@ def test_live_riichienv_to_rust_v2_to_pytorch_actor_and_critic() -> None:
     recovered = native.v2_decode_global_id(first_gid, obs_map[observer], None)
     assert len(recovered) >= 1
 
-    # Forward through Actor + independent Oracle Critic
-    events = torch.zeros((1, 1, EVENT_BYTES), dtype=torch.uint8)
-    events[0, 0, 0] = 1
-    events[0, 0, 1] = 4
-    events[0, 0, 2] = 4
-    events[0, 0, 3] = 5
-    events[0, 0, 4] = 37
-    events[0, 0, 5] = 37
-    event_len = torch.tensor([1], dtype=torch.long)
+    # Forward through Actor + independent Oracle Critic using REAL Rust-encoded events!
+    ev_len = int(step_data["event_len"])
+    assert ev_len >= 2  # initial DORA at idx 0 + dealer's opening TSUMO_SELF
+    events = torch.from_numpy(
+        np.frombuffer(step_data["events"], dtype=np.uint8).copy()
+    ).view(1, ev_len, EVENT_BYTES)
+    assert int(events[0, 0, 0].item()) == 1  # EventKind::Dora at index 0
+    event_len = torch.tensor([ev_len], dtype=torch.long)
 
     actor = KARV2Actor(V2ModelConfig.v2_base())
     critic = OracleCriticV2(CriticModelConfig())
@@ -563,4 +572,261 @@ def test_observation_preserves_furiten_state_and_241_byte_visible_counts() -> No
     encoded = native.v2_encode_actor_obs(obs)
     global_feats = np.frombuffer(encoded["global_feats"], dtype=np.float32)
     assert global_feats[19] == 1.0  # non-river furiten automatically propagated!
+
+
+# =========================================================================
+# 9. Contract v2.5: Live Events + HanchanTracker + Belief Targets + Stage-4 RL
+# =========================================================================
+def test_v2_encode_env_step_emits_real_events_hanchan_tracker_and_belief_targets() -> None:
+    env = riichienv.RiichiEnv(game_mode="4p-red-half", seed=202611)
+    obs_map = env.reset()
+
+    saw_completed_round = False
+    for _ in range(350):
+        if env.done():
+            break
+        actions = {}
+        for pid, obs in obs_map.items():
+            # Actor-only + Belief mode (Stage-3 BC pipeline, zero Oracle compute)
+            step_bc = native.v2_encode_env_step(env, pid, "tenhou", False, False, True)
+            assert "oracle_tile" not in step_bc
+            assert "opp_tenpai" in step_bc
+            assert step_bc["event_len"] >= 1
+            assert len(step_bc["events"]) == step_bc["event_len"] * EVENT_BYTES
+            ev = np.frombuffer(step_bc["events"], dtype=np.uint8).reshape(-1, EVENT_BYTES)
+            assert ev[0, 0] == 1  # Mandatory initial DORA at index 0
+
+            # Standalone belief targets API matches inline include_belief=True bit-for-bit
+            bt = native.v2_encode_belief_targets_env(env, pid)
+            assert bt["opp_tenpai"] == step_bc["opp_tenpai"]
+            assert bt["opp_waits"] == step_bc["opp_waits"]
+            assert bt["exact_dealin_now"] == step_bc["exact_dealin_now"]
+            assert bt["opp_hand_counts"] == step_bc["opp_hand_counts"]
+
+            if step_bc["rounds_completed"] >= 1:
+                pf = np.frombuffer(step_bc["player_feats"], dtype=np.float32).reshape(4, PLAYER_FEATS_DIM)
+                # p[20] = rounds_completed / 12.0 MUST be non-zero after round 1!
+                assert pf[0, 20] > 0.0
+                saw_completed_round = True
+
+            legal = obs.legal_actions()
+            chosen = next(
+                (a for a in legal if a.action_type in (riichienv.ActionType.TSUMO, riichienv.ActionType.RON)),
+                None,
+            )
+            if chosen is None:
+                chosen = next((a for a in legal if a.action_type == riichienv.ActionType.PASS), None)
+            if chosen is None:
+                chosen = next((a for a in legal if a.action_type == riichienv.ActionType.DISCARD), legal[0])
+            actions[pid] = chosen
+        obs_map = env.step(actions)
+        if saw_completed_round:
+            break
+
+    assert saw_completed_round, "expected >= 1 completed round with live HanchanTracker propagation"
+
+
+def test_belief_auxiliary_loss_masks_non_tenpai_waits_and_backprops_cleanly() -> None:
+    actor = KARV2Actor(V2ModelConfig.v2_base())
+    batch = _dummy_batch(batch_size=3, seq_len=12)
+    out = actor(
+        tile_feats=batch["tile_feats"],
+        events=batch["events"],
+        event_len=batch["event_len"],
+        global_feats=batch["global_feats"],
+        player_feats=batch["player_feats"],
+        cand_ids=batch["cand_ids"],
+        cand_mask=batch["cand_mask"],
+        cand_mode=batch["cand_mode"],
+        cand_dyn=batch["cand_dyn"],
+        return_belief=True,
+    )
+
+    # Case 1: Zero tenpai opponents -> wait_loss == 0.0, finite total loss, clean backward
+    loss_no_tenpai = belief_auxiliary_loss(
+        belief_out=out,
+        opp_tenpai=torch.zeros(3, 3),
+        opp_waits=torch.ones(3, 3, TILE_DIM),  # deliberately non-zero; MUST be masked out!
+        exact_dealin_now=torch.zeros(3, TILE_DIM),
+        opp_hand_counts=torch.zeros(3, 3, TILE_DIM, dtype=torch.long),
+    )
+    assert loss_no_tenpai["tenpai_active_count"].item() == 0.0
+    assert loss_no_tenpai["wait_loss"].item() == 0.0
+    assert torch.isfinite(loss_no_tenpai["loss"])
+
+    # Case 2: Active tenpai opponent -> wait_loss > 0 and gradients flow through Actor backbone
+    opp_tenpai = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 0]], dtype=torch.float32)
+    opp_waits = torch.zeros(3, 3, TILE_DIM)
+    opp_waits[0, 0, 12] = 1.0
+    opp_waits[1, 1, 4] = 1.0
+    dealin = torch.zeros(3, TILE_DIM)
+    dealin[0, 12] = 1.0
+    hand_counts = torch.randint(0, 5, (3, 3, TILE_DIM))
+
+    actor.zero_grad(set_to_none=True)
+    loss_active = belief_auxiliary_loss(
+        belief_out=out,
+        opp_tenpai=opp_tenpai,
+        opp_waits=opp_waits,
+        exact_dealin_now=dealin,
+        opp_hand_counts=hand_counts,
+    )
+    assert loss_active["tenpai_active_count"].item() == 2.0
+    assert loss_active["wait_loss"].item() > 0.0
+    loss_active["loss"].backward()
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in actor.spatial.parameters())
+
+
+def test_pure_state_grp_training_and_calibration_report() -> None:
+    torch.manual_seed(7)
+    model = PureStateGRP(hidden_dim=64)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-2)
+
+    # Synthetic separable score-to-rank dataset (seat 0 score strongly drives rank)
+    n = 256
+    feats = torch.zeros(n, 16)
+    ranks = torch.zeros(n, dtype=torch.long)
+    for i in range(n):
+        cls = i % 4
+        ranks[i] = cls
+        # Score advantage monotone with placement (0=1st highest, 3=4th lowest)
+        feats[i, 0] = (1.5 - cls) * 0.6
+        feats[i, 12:16] = torch.tensor([0.90, 0.45, 0.0, -1.35])
+
+    init_probs = model.predict_probs(feats)
+    rep_before = evaluate_grp_calibration(init_probs, ranks, n_bins=10)
+    assert not rep_before.passes_gate(max_ece=0.03, max_classwise_ece=0.03, max_brier=0.68)
+
+    for _ in range(150):
+        stats = train_pure_state_grp_step(model, opt, feats, ranks)
+        assert stats["loss"] > 0.0
+
+    final_probs = model.predict_probs(feats)
+    rep_after = evaluate_grp_calibration(final_probs, ranks, n_bins=10)
+    assert rep_after.nll < rep_before.nll
+    assert rep_after.brier_score < rep_before.brier_score
+    assert rep_after.passes_gate(max_ece=0.03, max_classwise_ece=0.03, max_brier=0.05)
+
+
+def test_critic_warmup_gate_blocks_actor_until_ev_streak() -> None:
+    gate = CriticWarmupGate(ev_threshold=0.20, required_consecutive=2, min_critic_steps=10)
+    assert not gate.actor_updates_allowed
+    with pytest.raises(RuntimeError, match="CriticWarmupGate CLOSED"):
+        gate.assert_actor_allowed()
+
+    y = torch.linspace(-1.0, 1.0, 64)
+    # High EV but before min_critic_steps=10 -> stays closed
+    ev0 = gate.record_eval(y, y, step=5)
+    assert abs(ev0 - 1.0) < 1e-6
+    assert not gate.actor_updates_allowed
+
+    # Low EV at step 10 -> resets streak
+    ev1 = gate.record_eval(torch.zeros_like(y), y, step=10)
+    assert abs(ev1 - 0.0) < 1e-6
+    assert gate.consecutive_passes == 0
+
+    # First pass at step 20 (streak=1 < 2 -> still blocked)
+    ev2 = gate.record_eval(0.9 * y, y, step=20)
+    assert ev2 >= 0.20
+    assert not gate.actor_updates_allowed
+
+    # Second consecutive pass at step 30 -> UNLOCKED!
+    ev3 = gate.record_eval(0.95 * y, y, step=30)
+    assert ev3 >= 0.20
+    assert gate.actor_updates_allowed
+    gate.assert_actor_allowed()  # Must not raise
+
+    # Round-trip checkpoint serialization
+    restored = CriticWarmupGate(ev_threshold=0.20, required_consecutive=2, min_critic_steps=10)
+    restored.load_state_dict(gate.state_dict())
+    assert restored.actor_updates_allowed
+    assert compute_explained_variance(y, y) == pytest.approx(1.0)
+
+
+def test_pfsp_opponent_pool_enforces_bc_anchor_floor_and_hardness_priority() -> None:
+    with pytest.raises(ValueError, match="bc_anchor_prob"):
+        PFSPOpponentPool(bc_anchor_prob=0.0)
+
+    pool = PFSPOpponentPool(
+        bc_anchor_id="bc_stage3",
+        latest_self_prob=0.25,
+        bc_anchor_prob=0.20,
+        max_snapshots=3,
+        pfsp_power=2.0,
+    )
+    # Before any snapshots, BC anchor gets >= 0.20 (actually 0.75)
+    d0 = pool.sampling_probabilities()
+    assert d0["bc_stage3"] == pytest.approx(0.75)
+    assert d0[PFSPOpponentPool.LATEST_SELF_ID] == pytest.approx(0.25)
+
+    # Add 5 snapshots -> FIFO eviction caps at 3, NEVER evicts bc_anchor
+    for v in range(1, 6):
+        pool.add_snapshot(f"rl_v{v}", policy_version=v)
+    assert [s.opponent_id for s in pool.snapshots] == ["rl_v3", "rl_v4", "rl_v5"]
+
+    # Record easy opponent (rl_v3: learner scores 0.90) vs hard opponent (rl_v5: learner scores 0.15)
+    for _ in range(15):
+        pool.record_match_result("rl_v3", 0.90)
+        pool.record_match_result("rl_v5", 0.15)
+
+    dist = pool.sampling_probabilities()
+    assert sum(dist.values()) == pytest.approx(1.0)
+    assert dist["bc_stage3"] == pytest.approx(0.20)
+    assert dist[PFSPOpponentPool.LATEST_SELF_ID] == pytest.approx(0.25)
+    assert dist["rl_v5"] > dist["rl_v3"] * 5.0  # hard opponent strongly prioritized!
+
+    rng = random.Random(1234)
+    opps = pool.sample_table_opponents(rng=rng)
+    assert len(opps) == 3
+    assert all(o in dist for o in opps)
+
+
+def test_frozen_gae_rollout_batch_immutability_and_version_binding() -> None:
+    tag = RolloutVersionTag(
+        policy_version=7,
+        critic_version=3,
+        grp_sha256="grp_sha_v1",
+        ruleset_sha256="rule_sha_v1",
+    )
+    traj = HanchanTrajectoryInput(
+        steps=[
+            RoundBoundary(round_index=0, phi_k=0.05, v_raw=0.10),
+            RoundBoundary(round_index=0, phi_k=0.05, v_raw=0.20),
+            RoundBoundary(round_index=1, phi_k=0.30, v_raw=0.50),
+        ],
+        round_start_potentials=[0.05, 0.30],
+        terminated=True,
+        terminal_reward=0.90,
+    )
+    batch = FrozenGAERolloutBatch.from_hanchan_trajectories([traj], version_tag=tag)
+    assert batch.num_steps == 3
+    assert not batch.advantages.requires_grad
+    assert not batch.shaped_returns.requires_grad
+
+    # Valid across multiple PPO epochs while policy/critic update within max_staleness
+    for _epoch in range(4):
+        batch.assert_ready_for_ppo_epoch(
+            current_policy_version=8,
+            expected_grp_sha256="grp_sha_v1",
+            expected_ruleset_sha256="rule_sha_v1",
+            max_staleness=2,
+        )
+
+    # Reject GRP mismatch
+    with pytest.raises(ValueError, match="GRP mismatch"):
+        batch.assert_ready_for_ppo_epoch(
+            current_policy_version=7,
+            expected_grp_sha256="grp_sha_WRONG",
+            expected_ruleset_sha256="rule_sha_v1",
+        )
+
+    # Cryptographic guard detects accidental in-place mutation of frozen GAE targets!
+    batch.shaped_returns[0] += 0.123
+    with pytest.raises(RuntimeError, match="mutated across PPO epochs"):
+        batch.assert_ready_for_ppo_epoch(
+            current_policy_version=7,
+            expected_grp_sha256="grp_sha_v1",
+            expected_ruleset_sha256="rule_sha_v1",
+        )
+
 

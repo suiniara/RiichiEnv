@@ -284,6 +284,20 @@ impl GameState {
             .kan_window
             .take()
             .expect("pending replay kan");
+        let mut ron_claims: HashMap<u8, Vec<Action>> = HashMap::new();
+        for (&seat, actions) in &window.responses {
+            let rons: Vec<Action> = actions
+                .iter()
+                .filter(|action| action.action_type == ActionType::Ron)
+                .cloned()
+                .collect();
+            if !rons.is_empty() {
+                ron_claims.insert(seat, rons);
+            }
+        }
+        if !ron_claims.is_empty() {
+            self.v2_record_passes_from_claims(&ron_claims, None);
+        }
         if let Some((actor, action)) = self.pending_kan.take() {
             if action.action_type == ActionType::Kakan {
                 self.commit_kakan_tiles(actor, action.tile.expect("kakan tile"));
@@ -297,6 +311,16 @@ impl GameState {
                         self.players[actor as usize].hand.remove(index);
                     }
                 }
+                let tile37 = action
+                    .consume_tiles
+                    .iter()
+                    .map(|&x| crate::v2_features::tile136_to_tile37(x))
+                    .min()
+                    .unwrap_or(0);
+                let involves_red5 = action
+                    .consume_tiles
+                    .iter()
+                    .any(|&x| crate::v2_features::is_red5_tile136(x));
                 self.players[actor as usize].melds.push(Meld {
                     meld_type: MeldType::Ankan,
                     tiles: action.consume_tiles,
@@ -304,6 +328,16 @@ impl GameState {
                     from_who: -1,
                     called_tile: None,
                 });
+                let meld_idx = (self.players[actor as usize].melds.len().saturating_sub(1)) as u8;
+                self.v2_round_events.push(
+                    crate::v2_features::events::RoundEvent::Ankan {
+                        actor,
+                        tile37,
+                        involves_red5,
+                        turn_idx: self.v2_discard_seq,
+                        meld_idx,
+                    },
+                );
             }
         }
         for (seat, actions) in window.responses {

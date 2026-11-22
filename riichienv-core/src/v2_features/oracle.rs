@@ -23,13 +23,13 @@ fn set_ot(out: &mut [f32; TILE_DIM * ORACLE_TILE_DIM], tile: usize, ch: usize, v
 
 /// Extract the exact dead-wall uradora indicators matching currently revealed dora indicators.
 ///
-/// In `WallState`: dead wall sits at `wall.tiles[0..14]`, with dora indicators at
-/// indices `4, 6, 8, 10, 12` and corresponding uradora indicators at `5, 7, 9, 11, 13`
-/// (and rinshan tiles at `0..4`).
+/// In `WallState`: rinshan draws call `wall.tiles.remove(0)`, shifting all
+/// dead-wall indices down by `rinshan_draw_count` (matching `GameState::_get_ura_indicators`).
 fn revealed_uradora_indicators(state: &GameState) -> Vec<u8> {
+    let shift = state.wall.rinshan_draw_count as usize;
     let mut ura = Vec::with_capacity(state.wall.dora_indicators.len());
     for i in 0..state.wall.dora_indicators.len() {
-        let ura_idx = 5 + i * 2;
+        let ura_idx = (5 + i * 2).saturating_sub(shift);
         if ura_idx < state.wall.tiles.len() {
             ura.push(state.wall.tiles[ura_idx]);
         }
@@ -37,13 +37,15 @@ fn revealed_uradora_indicators(state: &GameState) -> Vec<u8> {
     ura
 }
 
-/// Extract remaining unseen live-wall tiles (`wall.tiles[14..]`, permutation-invariant histogram)
-/// and remaining rinshan tiles (`wall.tiles[rinshan_draw_count..4]`).
+/// Extract remaining unseen live-wall tiles (`wall.tiles[(14 - rinshan_draw_count)..]`,
+/// permutation-invariant histogram) and remaining rinshan tiles (`0..(4 - rinshan_draw_count)`).
 fn live_wall_and_rinshan_histograms(state: &GameState) -> ([u8; TILE_MAX], bool, [u8; TILE_MAX]) {
+    let shift = (state.wall.rinshan_draw_count as usize).min(4);
+    let dead_wall_end = 14usize.saturating_sub(shift);
     let mut live_counts = [0u8; TILE_MAX];
     let mut live_has_red5 = false;
-    if state.wall.tiles.len() > 14 {
-        for &t in &state.wall.tiles[14..] {
+    if state.wall.tiles.len() > dead_wall_end {
+        for &t in &state.wall.tiles[dead_wall_end..] {
             let b = (t / 4) as usize;
             if b < TILE_MAX {
                 live_counts[b] = live_counts[b].saturating_add(1);
@@ -55,18 +57,109 @@ fn live_wall_and_rinshan_histograms(state: &GameState) -> ([u8; TILE_MAX], bool,
     }
 
     let mut rinshan_counts = [0u8; TILE_MAX];
-    let drawn_rinshan = (state.wall.rinshan_draw_count as usize).min(4);
-    let end_rinshan = 4usize.min(state.wall.tiles.len());
-    if drawn_rinshan < end_rinshan {
-        for &t in &state.wall.tiles[drawn_rinshan..end_rinshan] {
-            let b = (t / 4) as usize;
-            if b < TILE_MAX {
-                rinshan_counts[b] = rinshan_counts[b].saturating_add(1);
-            }
+    let remaining_rinshan = (4usize.saturating_sub(shift)).min(state.wall.tiles.len());
+    for &t in &state.wall.tiles[..remaining_rinshan] {
+        let b = (t / 4) as usize;
+        if b < TILE_MAX {
+            rinshan_counts[b] = rinshan_counts[b].saturating_add(1);
         }
     }
 
     (live_counts, live_has_red5, rinshan_counts)
+}
+
+/// Exact Stage-3 Opponent Belief ground-truth supervision targets (compile-time
+/// isolated to `&GameState`; NEVER visible to Actor inputs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BeliefTargets {
+    /// Whether each relative opponent `[1=Shimocha, 2=Toimen, 3=Kamicha]` is tenpai (`0` or `1`).
+    pub opp_tenpai: [u8; 3],
+    /// Exact rule-valid wait mask `[3, 34]` (`0` or `1`) per relative opponent.
+    pub opp_waits: [[u8; TILE_MAX]; 3],
+    /// Exact 1-step deal-in mask `[34]` (`0` or `1`): discarding tile `b` right now deals into >=1
+    /// non-furiten opponent with valid yaku.
+    pub exact_dealin_now: [u8; TILE_MAX],
+    /// Exact closed-hand copy counts `[3, 34]` (`0..=4`) per relative opponent.
+    pub opp_hand_counts: [[u8; TILE_MAX]; 3],
+}
+
+/// Extract exact Stage-3 Opponent Belief supervision targets from `&GameState`.
+pub fn encode_belief_targets(state: &GameState, observer: u8) -> Result<BeliefTargets, String> {
+    let pid = observer as usize;
+    if pid >= 4 {
+        return Err(format!("invalid observer {observer}"));
+    }
+
+    let mut opp_tenpai = [0u8; 3];
+    let mut opp_waits = [[0u8; TILE_MAX]; 3];
+    let mut exact_dealin_now = [0u8; TILE_MAX];
+    let mut opp_hand_counts = [[0u8; TILE_MAX]; 3];
+
+    for rel in 1..=3usize {
+        let opp = (pid + rel) % 4;
+        let opp_state = &state.players[opp];
+
+        for &t in &opp_state.hand {
+            let b = (t / 4) as usize;
+            if b < TILE_MAX {
+                opp_hand_counts[rel - 1][b] = opp_hand_counts[rel - 1][b].saturating_add(1).min(4);
+            }
+        }
+
+        if opp_state.hand.len() % 3 != 1 {
+            continue;
+        }
+        let eval = HandEvaluator::new(opp_state.hand.clone(), opp_state.melds.clone());
+        let waits = eval.get_waits_u8_with_rule(&state.rule);
+        if waits.is_empty() {
+            continue;
+        }
+        opp_tenpai[rel - 1] = 1;
+        let opp_furiten = FuritenState::from_game_state(state, opp as u8);
+        let opp_own_disc = own_discard_mask_u8(&opp_state.discards);
+        let opp_is_furiten = opp_furiten.any()
+            || waits
+                .iter()
+                .any(|&w| (w as usize) < TILE_MAX && opp_own_disc[w as usize]);
+        let opp_wind = Wind::from((opp as u8 + 4 - state.oya) % 4);
+
+        for &w in &waits {
+            let wb = w as usize;
+            if wb >= TILE_MAX {
+                continue;
+            }
+            opp_waits[rel - 1][wb] = 1;
+            if !opp_is_furiten {
+                let cond = Conditions {
+                    tsumo: false,
+                    riichi: opp_state.riichi_declared,
+                    double_riichi: opp_state.double_riichi_declared,
+                    ippatsu: opp_state.ippatsu_cycle,
+                    player_wind: opp_wind,
+                    round_wind: Wind::from(state.round_wind),
+                    honba: u32::from(state.honba),
+                    ..Default::default()
+                };
+                let res = eval.calc_with_rule(
+                    w * 4 + 1,
+                    &state.wall.dora_indicators,
+                    &[],
+                    Some(cond),
+                    &state.rule,
+                );
+                if res.is_win {
+                    exact_dealin_now[wb] = 1;
+                }
+            }
+        }
+    }
+
+    Ok(BeliefTargets {
+        opp_tenpai,
+        opp_waits,
+        exact_dealin_now,
+        opp_hand_counts,
+    })
 }
 
 /// Encode training-only Oracle features:
@@ -107,9 +200,10 @@ pub fn encode_oracle(
     // [19]: live_wall_has_red5 (per red-5 base34 slot 4/13/22)
     // [20]: true_uradora_value_norm
     // [21]: dead_wall_rinshan_cnt_norm
+    let dead_wall_end = 14usize.saturating_sub((state.wall.rinshan_draw_count as usize).min(4));
     let mut live_red5_per_suit = [false; 3];
-    if live_has_red5 && state.wall.tiles.len() > 14 {
-        for &t in &state.wall.tiles[14..] {
+    if live_has_red5 && state.wall.tiles.len() > dead_wall_end {
+        for &t in &state.wall.tiles[dead_wall_end..] {
             if t == 16 {
                 live_red5_per_suit[0] = true;
             } else if t == 52 {
