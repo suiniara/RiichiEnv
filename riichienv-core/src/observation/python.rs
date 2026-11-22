@@ -6,6 +6,7 @@ use crate::action::{Action, ActionEncoder, ActionType};
 use crate::rule::GameRule;
 use crate::shanten;
 use crate::types::{Meld, MeldType};
+use crate::v2_features::visible::VisibleTileCounts;
 use crate::yaku_checker;
 
 use super::Observation;
@@ -1339,6 +1340,28 @@ impl Observation {
         let byte_len = arr.len() * std::mem::size_of::<f32>();
         let byte_slice = unsafe { std::slice::from_raw_parts(arr.as_ptr() as *const u8, byte_len) };
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
+    }
+
+    /// Encode observer-visible physical tile accounting as a compact byte buffer.
+    ///
+    /// Layout (241 bytes): seen_136[136], visible_base34[34],
+    /// self_hand_base34[34], unseen_base34[34], red5_unseen[3].
+    /// Python side: np.frombuffer(data, dtype=np.uint8) and slice by offsets.
+    #[pyo3(name = "encode_visible_tile_counts")]
+    pub fn encode_visible_tile_counts_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let counts = VisibleTileCounts::from_observation(self)
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        let mut bytes = Vec::with_capacity(241);
+        bytes.extend(counts.seen_136.iter().map(|&value| u8::from(value)));
+        bytes.extend_from_slice(&counts.visible_base34);
+        bytes.extend_from_slice(&counts.self_hand_base34);
+        bytes.extend_from_slice(&counts.unseen_base34);
+        bytes.extend(counts.red5_unseen.iter().map(|&value| u8::from(value)));
+        debug_assert_eq!(bytes.len(), 241);
+        Ok(pyo3::types::PyBytes::new(py, &bytes))
     }
 
     /// Encode progression (action history) as N × 5 u16 tuples.
