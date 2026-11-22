@@ -176,6 +176,56 @@ impl HandEvaluator {
         }
     }
 
+    /// Rule-aware hand evaluation applying `GameRule` double-yakuman flags
+    /// (Junsei Chuurenpoutou, Suuankou Tanki, Kokushi 13-machi, Daisuushii)
+    /// and recalculating exact 4-player scoring after rule capping.
+    pub fn calc_with_rule(
+        &self,
+        win_tile: u8,
+        dora_indicators: &[u8],
+        ura_indicators: &[u8],
+        conditions: Option<Conditions>,
+        rule: &GameRule,
+    ) -> WinResult {
+        let cond = conditions.unwrap_or_default();
+        let mut res = self.calc(
+            win_tile,
+            dora_indicators.to_vec(),
+            ura_indicators.to_vec(),
+            Some(cond.clone()),
+        );
+
+        if res.yakuman && res.han > 13 {
+            let mut cap = 0u32;
+            for &y in &res.yaku {
+                match y {
+                    yaku::ID_JUNSEI_CHUUREN if !rule.is_junsei_chuurenpoutou_double => cap += 13,
+                    yaku::ID_SUANKO_TANKI if !rule.is_suuankou_tanki_double => cap += 13,
+                    yaku::ID_KOKUSHI_13 if !rule.is_kokushi_musou_13machi_double => cap += 13,
+                    yaku::ID_DAISUUSHI if !rule.is_daisuushii_double => cap += 13,
+                    _ => {}
+                }
+            }
+            if cap > 0 {
+                res.han = res.han.saturating_sub(cap).max(13);
+                let is_oya = cond.player_wind == Wind::East;
+                let capped = score::calculate_score(
+                    res.han as u8,
+                    0,
+                    is_oya,
+                    cond.tsumo,
+                    cond.honba,
+                    4,
+                );
+                res.ron_agari = capped.pay_ron;
+                res.tsumo_agari_oya = capped.pay_tsumo_oya;
+                res.tsumo_agari_ko = capped.pay_tsumo_ko;
+            }
+        }
+
+        res
+    }
+
     pub fn is_tenpai(&self) -> bool {
         self.wait_tiles(true).next().is_some()
     }

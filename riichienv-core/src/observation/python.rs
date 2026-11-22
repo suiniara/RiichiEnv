@@ -6,6 +6,7 @@ use crate::action::{Action, ActionEncoder, ActionType};
 use crate::rule::GameRule;
 use crate::shanten;
 use crate::types::{Meld, MeldType};
+use crate::v2_features::furiten::FuritenState;
 use crate::v2_features::visible::VisibleTileCounts;
 use crate::yaku_checker;
 
@@ -16,7 +17,7 @@ use super::helpers::get_next_tile;
 impl Observation {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (player_id, hands, melds, discards, dora_indicators, scores, riichi_declared, legal_actions, events, honba, riichi_sticks, round_wind, oya, kyoku_index, waits, is_tenpai, riichi_sutehais, last_tedashis, last_discard, drawn_tile=None, forced_tedashi=false, rule=None))]
+    #[pyo3(signature = (player_id, hands, melds, discards, dora_indicators, scores, riichi_declared, legal_actions, events, honba, riichi_sticks, round_wind, oya, kyoku_index, waits, is_tenpai, riichi_sutehais, last_tedashis, last_discard, drawn_tile=None, forced_tedashi=false, rule=None, furiten=None))]
     pub fn py_new(
         player_id: u8,
         hands: Vec<Vec<u8>>,
@@ -40,6 +41,7 @@ impl Observation {
         drawn_tile: Option<u8>,
         forced_tedashi: bool,
         rule: Option<GameRule>,
+        furiten: Option<FuritenState>,
     ) -> Self {
         let hands: [Vec<u8>; 4] = hands.try_into().expect("expected 4 hands");
         let melds: [Vec<Meld>; 4] = melds.try_into().expect("expected 4 melds");
@@ -77,6 +79,9 @@ impl Observation {
         );
         obs.forced_tedashi = forced_tedashi;
         obs.rule = rule.unwrap_or_default();
+        if let Some(f) = furiten {
+            obs.furiten = f;
+        }
         obs
     }
 
@@ -1342,11 +1347,11 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
-    /// Encode observer-visible physical tile accounting as a compact byte buffer.
+    /// Encode observer-visible physical tile accounting as a compact 241-byte buffer
+    /// (compatible with commit `5de9ff3`).
     ///
-    /// Layout (241 bytes): seen_136[136], visible_base34[34],
-    /// self_hand_base34[34], unseen_base34[34], red5_unseen[3].
-    /// Python side: np.frombuffer(data, dtype=np.uint8) and slice by offsets.
+    /// Layout (241 bytes): `seen_136[136] || visible_base34[34] || self_hand_base34[34]
+    /// || unseen_base34[34] || red5_unseen[3]`.
     #[pyo3(name = "encode_visible_tile_counts")]
     pub fn encode_visible_tile_counts_py<'py>(
         &self,
@@ -1354,13 +1359,17 @@ impl Observation {
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         let counts = VisibleTileCounts::from_observation(self)
             .map_err(pyo3::exceptions::PyValueError::new_err)?;
-        let mut bytes = Vec::with_capacity(241);
-        bytes.extend(counts.seen_136.iter().map(|&value| u8::from(value)));
-        bytes.extend_from_slice(&counts.visible_base34);
-        bytes.extend_from_slice(&counts.self_hand_base34);
-        bytes.extend_from_slice(&counts.unseen_base34);
-        bytes.extend(counts.red5_unseen.iter().map(|&value| u8::from(value)));
-        debug_assert_eq!(bytes.len(), 241);
+        let bytes = counts.to_bytes_241();
+        Ok(pyo3::types::PyBytes::new(py, &bytes))
+    }
+
+    /// Encode observer's preserved [`FuritenState`] as 3 bytes: `[permanent, temporary, riichi]`.
+    #[pyo3(name = "encode_furiten_state")]
+    pub fn encode_furiten_state_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let bytes = self.furiten.to_bytes();
         Ok(pyo3::types::PyBytes::new(py, &bytes))
     }
 

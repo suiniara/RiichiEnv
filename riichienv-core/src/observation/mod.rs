@@ -62,6 +62,11 @@ pub struct Observation {
     /// observations. Old serialized observations keep the legacy default.
     #[serde(default)]
     pub rule: GameRule,
+    /// Full observer furiten state (`permanent`, `temporary`, `riichi`) captured
+    /// directly from the Rust state machine so frozen observations never lose
+    /// temporary/riichi furiten.
+    #[serde(default)]
+    pub furiten: crate::v2_features::furiten::FuritenState,
 }
 
 /// Pure Rust methods (no PyO3 dependency).
@@ -89,9 +94,17 @@ impl Observation {
         last_discard: Option<u32>,
         drawn_tile: Option<u8>,
     ) -> Self {
-        let hands_u32 = hands.map(|h| h.into_iter().map(|x| x as u32).collect());
-        let discards_u32 = discards.map(|d| d.into_iter().map(|x| x as u32).collect());
-        let dora_u32 = dora_indicators.iter().map(|&x| x as u32).collect();
+        let hands_u32: [Vec<u32>; 4] = hands.map(|h| h.into_iter().map(|x| x as u32).collect());
+        let discards_u32: [Vec<u32>; 4] =
+            discards.map(|d| d.into_iter().map(|x| x as u32).collect());
+        let dora_u32: Vec<u32> = dora_indicators.iter().map(|&x| x as u32).collect();
+
+        let own_disc_mask = crate::v2_features::furiten::own_discard_mask_u32(
+            &discards_u32[player_id as usize],
+        );
+        let permanent_furiten = waits
+            .iter()
+            .any(|&w| (w as usize) < 34 && own_disc_mask[w as usize]);
 
         Self {
             player_id,
@@ -118,6 +131,11 @@ impl Observation {
             drawn_tile,
             forced_tedashi: false,
             rule: GameRule::default(),
+            furiten: crate::v2_features::furiten::FuritenState {
+                permanent: permanent_furiten,
+                temporary: false,
+                riichi: false,
+            },
         }
     }
 

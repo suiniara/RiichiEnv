@@ -188,6 +188,120 @@ impl GameState {
         Ok(())
     }
 
+    /// Install a seeded continuation wall while also resampling non-riichi
+    /// opponents' concealed hands from the observer's unknown tile pool so
+    /// counterfactual branches marginalize over P(H_{-i} | X) instead of
+    /// conditioning on exact future-recorded opponent hands.
+    pub fn prepare_observer_continuation_wall(
+        &mut self,
+        observer: u8,
+        seed: u64,
+    ) -> RiichiResult<()> {
+        use rand::prelude::*;
+
+        if observer >= NP as u8 {
+            return Err(RiichiError::InvalidState {
+                message: "Observer seat must be in 0..4".into(),
+            });
+        }
+        if self.is_done || self.phase != Phase::WaitAct || self.pending_kan.is_some() {
+            return Err(RiichiError::InvalidState {
+                message: "Continuation wall can only be prepared at a stable own-action cutoff".into(),
+            });
+        }
+        let obs = observer as usize;
+        let mut visible = [false; 136];
+        let mut resample_seats = Vec::new();
+        let mut resampled_tile_count = 0usize;
+        for (seat, player) in self.players.iter().enumerate() {
+            // Keep observer's own hand and any riichi-declared opponent's tenpai hand fixed;
+            // resample all other opponents' concealed hands together with the unknown wall.
+            if seat == obs || player.riichi_declared {
+                for &tile in &player.hand {
+                    visible[tile as usize] = true;
+                }
+            } else {
+                resample_seats.push((seat, player.hand.len()));
+                resampled_tile_count += player.hand.len();
+            }
+            for &tile in &player.discards {
+                visible[tile as usize] = true;
+            }
+            for meld in &player.melds {
+                for &tile in &meld.tiles {
+                    visible[tile as usize] = true;
+                }
+            }
+        }
+        let mut pool: Vec<u8> = (0..136u8).filter(|&tile| !visible[tile as usize]).collect();
+        if pool.len() != self.wall.tiles.len() + resampled_tile_count {
+            return Err(RiichiError::InvalidState {
+                message: format!(
+                    "Observer continuation pool has {} unknown tiles but needs {}",
+                    pool.len(),
+                    self.wall.tiles.len() + resampled_tile_count
+                ),
+            });
+        }
+        let mut fixed = Vec::with_capacity(self.wall.dora_indicators.len());
+        for (index, &indicator) in self.wall.dora_indicators.iter().enumerate() {
+            if visible[indicator as usize] {
+                return Err(RiichiError::InvalidState {
+                    message: "A public dora indicator is also present in a visible player zone".into(),
+                });
+            }
+            let position = (4 + 2 * index).saturating_sub(self.wall.rinshan_draw_count as usize);
+            if position >= self.wall.tiles.len() {
+                return Err(RiichiError::InvalidState {
+                    message: "A revealed dora indicator lies outside the remaining wall".into(),
+                });
+            }
+            let Some(found) = pool.iter().position(|&tile| tile == indicator) else {
+                return Err(RiichiError::InvalidState {
+                    message: "A revealed dora indicator is missing from the unknown tile pool".into(),
+                });
+            };
+            pool.swap_remove(found);
+            fixed.push((position, indicator));
+        }
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        pool.shuffle(&mut rng);
+        let mut next = pool.into_iter();
+        for (seat, hand_len) in resample_seats {
+            let mut new_hand: Vec<u8> = (&mut next).take(hand_len).collect();
+            new_hand.sort();
+            self.players[seat].hand = new_hand;
+        }
+        let mut wall = vec![0u8; self.wall.tiles.len()];
+        for (position, tile) in fixed {
+            wall[position] = tile;
+        }
+        let fixed_positions: std::collections::HashSet<usize> = self
+            .wall
+            .dora_indicators
+            .iter()
+            .enumerate()
+            .map(|(index, _)| (4 + 2 * index).saturating_sub(self.wall.rinshan_draw_count as usize))
+            .collect();
+        for (index, tile) in wall.iter_mut().enumerate() {
+            if !fixed_positions.contains(&index) {
+                *tile = next.next().expect("observer wall pool length was checked");
+            }
+        }
+        if next.next().is_some() {
+            return Err(RiichiError::InvalidState {
+                message: "Observer continuation wall left unused physical tiles".into(),
+            });
+        }
+        self.wall.tiles = wall;
+        self.wall.seed = Some(seed);
+        self.wall.hand_index = 1;
+        self.wall.salt = format!("observer-continuation-{obs}-{seed:016x}");
+        self.wall.wall_digest.clear();
+        Ok(())
+    }
+
     pub fn np(&self) -> usize {
         NP
     }
@@ -385,8 +499,16 @@ impl GameState {
             self.drawn_tile,
         );
 
+        obs.tsumogiri_flags = std::array::from_fn(|i| {
+            self.players[i]
+                .discard_from_hand
+                .iter()
+                .map(|&from_hand| !from_hand)
+                .collect()
+        });
         obs.rule = self.rule;
         obs.forced_tedashi = self.is_forced_tedashi(player_id);
+        obs.furiten = crate::v2_features::furiten::FuritenState::from_game_state(self, player_id);
 
         // Attach pre-computed progression snapshot.
         #[cfg(feature = "python")]

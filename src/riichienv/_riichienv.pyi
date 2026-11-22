@@ -159,7 +159,15 @@ class Meld:
     tiles: list[int]
     opened: bool
     from_who: int
-    def __init__(self, meld_type: MeldType, tiles: list[int], opened: bool, from_who: int = -1): ...
+    called_tile: int | None
+    def __init__(
+        self,
+        meld_type: MeldType,
+        tiles: list[int],
+        opened: bool,
+        from_who: int = -1,
+        called_tile: int | None = None,
+    ): ...
 
 class Conditions:
     tsumo: bool
@@ -295,6 +303,9 @@ class Observation:
     prev_events_size: int
     forced_tedashi: bool
     rule: GameRule
+    furiten: FuritenState
+    def encode_visible_tile_counts(self) -> bytes: ...
+    def encode_furiten_state(self) -> bytes: ...
     def legal_riichi_discards(self) -> list[Action]:
         """Return complete native RIICHI actions with their legal physical discard tiles."""
         ...
@@ -984,6 +995,7 @@ __all__ = [
     "MeldType",
     "Observation",
     "Observation3P",
+    "FuritenState",
     "Phase",
     "MjSoulReplay",
     "MjaiReplay",
@@ -1003,6 +1015,12 @@ __all__ = [
     "native_draw_payments",
     "native_end_game_pot",
     "native_round_transition",
+    "v2_manifest_table",
+    "v2_calc_with_rule",
+    "v2_encode_actor_obs",
+    "v2_encode_oracle_env",
+    "v2_encode_env_step",
+    "v2_decode_global_id",
 ]
 
 def native_win_payments(
@@ -1028,3 +1046,44 @@ def native_round_transition(
     initial_seat_order: list[int] | tuple[int, ...] = (0, 1, 2, 3),
     rule: GameRule | None = None,
 ) -> tuple[int, int, int, bool, bool, str | None]: ...
+class FuritenState:
+    permanent: bool
+    temporary: bool
+    riichi: bool
+    def __init__(self, permanent: bool = False, temporary: bool = False, riichi: bool = False) -> None: ...
+    def any(self) -> bool: ...
+    def non_river_active(self) -> bool: ...
+
+def v2_manifest_table() -> dict[str, Any]: ...
+def v2_calc_with_rule(
+    hand_136: list[int],
+    melds: list[Meld],
+    win_tile: int,
+    dora_indicators: list[int],
+    ura_indicators: list[int],
+    conditions: Conditions | None = None,
+    rule: GameRule | None = None,
+) -> WinResult: ...
+def v2_encode_actor_obs(
+    obs: Observation,
+    phase: int = 0,
+    trigger_actor_rel: int | None = None,
+    live_wall_left: int = 70,
+    is_first_turn: bool = False,
+    temp_furiten: bool | None = None,
+    riichi_furiten: bool | None = None,
+    rule_profile: str = "tenhou",
+    enable_early_shape_hint: bool = False,
+) -> dict[str, Any]: ...
+def v2_encode_oracle_env(env: RiichiEnv, observer: int) -> dict[str, Any]: ...
+def v2_encode_env_step(
+    env: RiichiEnv,
+    observer: int,
+    rule_profile: str = "tenhou",
+    enable_early_shape_hint: bool = False,
+) -> dict[str, Any]: ...
+def v2_decode_global_id(
+    global_id: int,
+    obs: Observation,
+    source_rel_hint: int | None = None,
+) -> list[Action]: ...

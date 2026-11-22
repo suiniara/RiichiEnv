@@ -1,8 +1,8 @@
-"""Python binding contract for KAR V2 physical visible tile counts."""
+"""Python binding contract for KAR V2 physical visible tile counts (aligned with commit 5de9ff3)."""
 
 import pytest
 
-from riichienv import Observation
+from riichienv import Meld, MeldType, Observation
 
 
 def make_observation(*, hands=None, discards=None, dora_indicators=None):
@@ -58,8 +58,6 @@ def test_visible_tile_counts_python_binary_layout_and_conservation():
 
 def test_visible_tile_counts_deduplicates_called_discard_in_meld():
     # Physical tile 4 is present in both the source river and the called meld.
-    from riichienv import Meld, MeldType
-
     meld = Meld(MeldType.Chi, [4, 8, 12], True, 1, 4)
     obs = Observation(
         player_id=0,

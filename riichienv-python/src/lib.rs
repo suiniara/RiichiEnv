@@ -4,6 +4,7 @@ mod env;
 mod observer;
 mod public_rules;
 mod rules;
+mod v2_features;
 
 #[pyfunction]
 #[pyo3(name = "calculate_score", signature = (han, fu, is_oya, is_tsumo, honba, num_players=4))]
@@ -54,6 +55,7 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     observer::register(m)?;
     public_rules::register(m)?;
     rules::register(m)?;
+    v2_features::register(m)?;
     m.add_class::<riichienv_core::types::Meld>()?;
     m.add_class::<riichienv_core::types::MeldType>()?;
     m.add_class::<riichienv_core::types::Wind>()?;
@@ -78,6 +80,7 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<riichienv_core::action::Action3P>()?;
     m.add_class::<riichienv_core::observation::Observation>()?;
     m.add_class::<riichienv_core::observation_3p::Observation3P>()?;
+    m.add_class::<riichienv_core::v2_features::furiten::FuritenState>()?;
     m.add_class::<env::RiichiEnv>()?;
 
     m.add_function(wrap_pyfunction!(calculate_score_py, m)?)?;

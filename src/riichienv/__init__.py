@@ -1,5 +1,6 @@
 from . import consts, convert
 from ._riichienv import (
+    FuritenState,
     GameRule,
     Kyoku,
     Meld,
@@ -53,6 +54,7 @@ __all__ = [
     "MeldType",
     "Observation",
     "Observation3P",
+    "FuritenState",
     "MjSoulReplay",
     "MjaiReplay",
     "Score",
